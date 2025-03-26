@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "douse"
+version = "0.0.1"
+description = "Domains of Unknown Shape, from Eigenvalues"
+authors = [{name = "Hayden Ringer", email = "hringer@vt.edu"}]
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "numpy >= 2.0",
+    "scipy >= 1.14",
+    "matplotlib >= 3.9",
+    "joblib >= 1.4",
+    "jupyter>=1.1.1",
+    "lappy>=0.0.1",
+    "ipython==8.22.0",
+]
+
+[tool.uv.sources]
+lappy = { path = "../pymps" }
