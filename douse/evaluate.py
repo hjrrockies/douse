@@ -10,12 +10,21 @@ and only realized on each new one, so `n_basis` is identical at every iterate an
 change the basis size underneath the optimizer -- which is not merely wasteful, it makes the
 objective discontinuous.
 
-**Track by value, not by index.** After the first solve each iterate is seeded from the previous
-one, which is ~2.7x faster than a fresh global scan and cannot silently return a different mode
-the way an index can. The cost is that tracking follows a mode THROUGH a crossing while an index
-would swap at it -- and since the optima of these problems generally sit at crossings, that
-difference is the whole open question. `min_gap` reports how close the spectrum came to a
-crossing so a caller can at least see it happening.
+**Track by value, then RESTORE THE ORDER.** Each iterate is seeded from the previous one, which
+is ~2.7x faster than a fresh global scan. But tracking follows a mode THROUGH a crossing, while
+an objective written in terms of `lam_k` means the k-th SMALLEST -- so the tracked array must be
+sorted before anything indexes it.
+
+Omitting that sort is not a cosmetic bug. Maximizing `lam_2/lam_1` over quadrilaterals reported
+2.6936 at its third iterate, above the Payne--Polya--Weinberger bound of 2.5387 that every
+bounded planar domain obeys. Tracking had returned `[19.855, 50.807, 48.444]`: `lam_2` and
+`lam_3` had crossed and swapped, so the objective read the third mode as the second. The true
+ratio there was 2.2877. Nothing about the number looked wrong except that it violated a theorem.
+
+Sorting alone is not enough either, because two seeds can converge onto the SAME mode, which
+leaves a duplicate and a missing eigenvalue that sorting cannot detect. `_verify_multiplicity`
+checks any coincident group against the tension spectrum -- a genuine m-fold eigenvalue has m
+small tensions, a collapse has one -- and falls back to a full solve when the check fails.
 
 **...and check that what tracking returned is actually an eigenvalue.** `lappy`'s `track` refuses
 a minimum whose tension exceeds `ttol`, but the default `ttol = 1e-3` is calibrated for FINDING
@@ -107,6 +116,7 @@ class SpectrumEvaluator:
         self.n_solves = 0
         self.n_tracks = 0
         self.n_track_refusals = 0
+        self.n_collapses = 0
         self.min_gap = np.inf
 
     def __repr__(self):
@@ -158,12 +168,16 @@ class SpectrumEvaluator:
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter('ignore')
-                    cand = np.array([evp.track(float(s)) for s in seed[:self.n_eigs]])
+                    cand = np.sort(np.array([evp.track(float(s))
+                                             for s in seed[:self.n_eigs]]))
                     worst = max(float(np.atleast_1d(solver.sigma(float(l)))[0]) for l in cand)
+                    collapsed = not self._verify_multiplicity(solver, cand)
                 if worst > self.track_ttol:
                     # `track`'s own guard uses lappy's ttol=1e-3, which is a detection threshold,
                     # not a convergence one. Verify against something an optimizer can use.
                     self.n_track_refusals += 1
+                elif collapsed:
+                    self.n_collapses += 1        # two seeds landed on one mode
                 else:
                     lams = cand
                     self.n_tracks += 1
@@ -195,6 +209,27 @@ class SpectrumEvaluator:
 
         self._last = (p.copy(), lams.copy())
         return lams, solver
+
+    def _verify_multiplicity(self, solver, lams, rtol=1e-9):
+        """Does each coincident group of tracked values really have that multiplicity?
+
+        Two seeds converging onto one mode leaves a duplicate and drops an eigenvalue, and no
+        amount of sorting reveals it -- the array looks like a legitimate degenerate spectrum.
+        The tension spectrum tells them apart: an m-fold eigenvalue makes the first m generalized
+        singular values small, a single mode makes only the first one small.
+        """
+        i = 0
+        while i < len(lams):
+            j = i + 1
+            while j < len(lams) and (lams[j] - lams[j - 1]) <= rtol*abs(lams[j]):
+                j += 1
+            m = j - i
+            if m > 1:
+                t = np.atleast_1d(solver.tensions(float(np.mean(lams[i:j]))))
+                if len(t) < m or t[m - 1] > self.track_ttol:
+                    return False
+            i = j
+        return True
 
     def __call__(self, p, seed=None):
         """`(lams, dlams_dp)` -- the spectrum and its `(K, n_p)` Jacobian."""

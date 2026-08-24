@@ -224,3 +224,76 @@ def test_the_triangle_has_no_null_directions(square):
     assert abs(rep['ratio'] - 7/3) < 1e-9, rep['ratio']      # equilateral: exactly 7/3
     assert rep['null_dim'] == 0
     assert rep['Q_eigenvalues'].max() < 0
+
+
+# ── Tracked eigenvalues must stay ORDERED ───────────────────────────────────────
+
+@pytest.mark.slow
+def test_a_ratio_run_never_exceeds_the_ppw_bound():
+    """A theorem as a regression test, and it caught a real bug.
+
+    Ashbaugh--Benguria: `lam_2/lam_1 <= (j_11/j_01)^2 = 2.5387340` for EVERY bounded connected
+    planar domain, with equality only for the disk. So any reported value above it is an error,
+    whatever it looks like locally.
+
+    Maximizing the ratio over quadrilaterals used to report 2.6936 on its third iterate.
+    `SpectrumEvaluator` tracks each eigenvalue from its own value at the previous iterate, which
+    correctly follows a mode THROUGH a crossing -- and then handed back
+    `[19.855, 50.807, 48.444]`, unsorted, so an objective reading `lams[1]` got the third mode.
+    The true ratio there was 2.2877.
+    """
+    from douse import SpectrumEvaluator, ObjectiveFunction, RatioObjective
+    from douse.objective import RatioObjective as RO
+    DISK = (3.8317059702/2.4048255577)**2
+
+    rng = np.random.default_rng(0)
+    v = _regular(4)
+    v = v + 0.13*(rng.normal(size=4) + 1j*rng.normal(size=4))*np.abs(v).mean()
+
+    fam = VertexPolygon(4, perim=PERIM)
+    ev = SpectrumEvaluator(fam, n_eigs=3, warn_gap=0.0, degenerate_tol=0.0)
+    obj = ObjectiveFunction(ev, RO(1))
+    p, alpha = param_vector(v, PERIM), 0.01
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        val, g = obj(p)
+        for _ in range(10):
+            for _ in range(40):
+                q = p - alpha*g
+                if fam.is_valid(q):
+                    v2, g2 = obj(q)
+                    if np.isfinite(v2) and v2 < val:
+                        break
+                alpha *= 0.5
+            else:
+                break
+            p, val, g = q, v2, g2
+            alpha *= 1.6
+            lams = ev._last[1]
+            assert np.all(np.diff(lams) >= -1e-12), f'tracked eigenvalues out of order: {lams}'
+            assert -val <= DISK + 1e-9, (
+                f'reported lam_2/lam_1 = {-val:.6f}, above the Payne--Polya--Weinberger bound '
+                f'{DISK:.6f} that every planar domain obeys')
+
+
+def test_verify_multiplicity_rejects_a_collapse():
+    """Sorting cannot see two seeds landing on one mode -- the array still looks like a
+    legitimate degenerate spectrum. The tension spectrum is what tells them apart."""
+    from douse import SpectrumEvaluator
+
+    class _FakeSolver:
+        def __init__(self, tensions):
+            self._t = np.asarray(tensions)
+
+        def tensions(self, lam):
+            return self._t
+
+    ev = SpectrumEvaluator(VertexPolygon(4, perim=PERIM), n_eigs=3, track_ttol=1e-8)
+    lams = np.array([10.0, 20.0, 20.0])
+    # a genuine double: the first TWO tensions are small
+    assert ev._verify_multiplicity(_FakeSolver([1e-12, 1e-12, 0.5]), lams)
+    # a collapse: only the first is small, so the pair is one mode counted twice
+    assert not ev._verify_multiplicity(_FakeSolver([1e-12, 0.4, 0.7]), lams)
+    # no coincident group at all: nothing to check
+    assert ev._verify_multiplicity(_FakeSolver([0.9, 0.9, 0.9]), np.array([1.0, 2.0, 3.0]))
