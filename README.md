@@ -8,26 +8,38 @@ eigenfunctions, and Cauchy-data boundary integrals. `douse` owns *families* of d
 from a parameter vector to a domain, its derivative, the shape-derivative formulas, and the
 optimizers. See `lappy/docs/scope_and_downstream.md` for why the line is drawn there.
 
-## Status: Milestone 1 complete
+## Status: Milestones 1-3 complete
 
-**`dlam/dp` is implemented and verified against finite differences.** Nothing else is built yet.
+**The stack runs end to end and recovers the known optima.** Minimizing `lam_1` over polygons of
+fixed perimeter from a generic starting shape:
+
+| family | result | exact | error | shape |
+|---|---|---|---|---|
+| triangle | 29.608813203268 | `3 pi^2` | −9.6e-14 | sides equal to 2.5e-08, angles 60° ± 1.9e-06 |
+| quadrilateral | 19.739208802178 | `2 pi^2` | −9.3e-13 | sides equal to 2.1e-07, angles 90° ± 2.2e-05 |
+
+Those are the two cases where the answer is a theorem (Pólya–Szegő); `n >= 5` is open.
+`benchmarks/known_minimizers.py` reproduces them.
 
 ```python
 import numpy as np
-from lappy import Eigenproblem, basis_plan as BP
-from lappy.asymp import weyl_est
-from lappy.mps import MPSEigensolver
-from douse import VertexPolygon, param_vector, dlam_dp
+from douse import (VertexPolygon, param_vector, SpectrumEvaluator, ObjectiveFunction,
+                   EigenvalueObjective, descend)
 
-fam = VertexPolygon(4, perim=4.0)                       # perimeter-4 quadrilaterals, 4 parameters
-p   = param_vector(np.array([0, 1.3, 1.1+0.9j, 0.15+0.8j]), 4.0)
-dom = fam(p)                                            # a lappy.Polygon
+fam = VertexPolygon(4, perim=4.0)        # perimeter-4 quadrilaterals, 4 parameters
+p0  = param_vector(np.array([0, 1.3, 1.1+0.9j, 0.15+0.8j]), 4.0)
 
-plan   = BP.plan_basis(dom, weyl_est(6, dom), target=1e-14)
-solver = MPSEigensolver.from_domain(dom, basis=BP.realize(plan, dom), prec=1e-13)
-lam    = float(Eigenproblem(dom, eval_solver=solver, precision=1e-13).solve(1)[0])
+ev  = SpectrumEvaluator(fam, n_eigs=1)   # frozen plan, tracked eigenvalues, verified
+obj = ObjectiveFunction(ev, EigenvalueObjective(0))      # minimize lam_1
+res = descend(obj, p0)
 
-g = dlam_dp(fam, p, solver, lam)                         # (4,) gradient
+print(res.fun, 2*np.pi**2)               # -> the square
+```
+
+For the spectrum and its Jacobian alone, without an optimizer:
+
+```python
+lams, J = ev(p0)                         # (K,) and (K, 2N-4)
 ```
 
 The whole gradient costs about **one** eigenvalue evaluation, not `2N` of them: the
@@ -41,7 +53,10 @@ differencing the solver.
 |---|---|
 | `douse/polygon.py` | `VertexPolygon`, the perimeter-constrained vertex parametrization, and `d_vertices_dp` |
 | `douse/derivative.py` | the Hadamard shape derivative and the chain rule to `p` |
-| `douse/opt.py` | **not ported.** Pre-existing objective code (normalized reciprocals, ℓ² loss) against an old lappy API. It does not import. Milestone 2 starts here. |
+| `douse/objective.py` | `EigenvalueObjective` (forward), `SpectralMatch` (inverse, scale-invariant), and the arithmetic under them |
+| `douse/evaluate.py` | `SpectrumEvaluator` — frozen plan, tracked-and-verified eigenvalues — and `ObjectiveFunction` |
+| `douse/optimize.py` | `descend`, a backtracking method that respects the parametrization's boundary |
+| `douse/opt.py` | **superseded**, kept only until its loss functions are confirmed to have no remaining use. Does not import. |
 
 ## Three things to know before using it
 
@@ -56,6 +71,15 @@ corner, and `bdry_quad` is the node set for *normalizing* eigenfunctions, not fo
 corner-moving velocity. `douse.derivative` defaults correctly; the difference on an L-shape's
 reentrant vertex is 6.1 digits against 9.3, with both answers looking plausible.
 
+**A tracked eigenvalue is verified before it is trusted.** `lappy`'s `track` refuses a minimum
+whose tension exceeds `ttol`, but the default `ttol = 1e-3` is a threshold for deciding whether a
+tension minimum is a mode *at all*, not whether a located value has converged. The first
+end-to-end run converged 2.8e-03 **below** `2 pi^2`, which is impossible — `track` had returned a
+point with tension 2.0e-04, inside `ttol`, where the true eigenvalue was 2.9e-03 away.
+`SpectrumEvaluator` checks against `track_ttol = 1e-8` and falls back to a full solve. Tightening
+the solver's own `ttol` instead is wrong and was tried: it made `solve` return *zero* eigenvalues
+on an ordinary triangle.
+
 **Multiple eigenvalues are refused, on purpose.** The shape derivative of a degenerate eigenvalue
 is not a gradient — it is the spectrum of an `m x m` matrix, and `lam` is only directionally
 differentiable. `dlam_dvertices` raises with that explanation rather than returning a number.
@@ -64,13 +88,20 @@ optimizer consumes them, not a patch.
 
 ## Next
 
-- **Milestone 2** — the objective (scale-invariant eigenvalue ratios + a loss) with its gradient, FD-verified.
-- **Milestone 3** — minimize `lam_1` over perimeter-constrained polygons. Triangles and
-  quadrilaterals have known answers (equilateral, square), so the same code validates itself;
-  `n >= 5` is open.
+- **Degenerate optima.** The open question. `lam` is only directionally differentiable at a
+  multiple eigenvalue, and these problems optimize *towards* one; `SpectrumEvaluator` warns when
+  the gap closes but nothing handles it. Needed before any gap or higher-mode objective.
+- **A real constraint, not an `inf` barrier.** The admissible set has a boundary and `descend`
+  merely refuses to cross it. `scipy`'s L-BFGS-B stalls at iteration 1 against `inf`. The smooth
+  self-intersection constraint sketched in the old `opt.py` plus one for the closing budget
+  would let a proper constrained method run.
+- **The inverse problem.** `SpectralMatch` is implemented and its gradient is FD-verified, but no
+  recovery has been attempted end to end.
+- **`n >= 5`.** Where the forward problem stops being a test and starts being a question.
 
 ## Tests
 
 ```sh
-uv run pytest             # 31 tests, ~12 s
+uv run pytest                  # 52 tests, ~3 min
+uv run pytest -m "not slow"    # the fast subset, <1 s
 ```

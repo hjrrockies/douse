@@ -26,7 +26,8 @@ import numpy as np
 
 from lappy.eigfun_integrals import eigfun_cauchy_data, normal_velocity, weighted_integral
 
-__all__ = ['vertex_velocity', 'dlam_dvertices', 'dlam_dp']
+__all__ = ['vertex_velocity', 'velocity_fields', 'dlam_dvertices', 'dlam_dp',
+           'dlams_dvertices', 'dlams_dp']
 
 
 def vertex_velocity(bq, k, n_vert, direction=1.0 + 0.0j):
@@ -56,6 +57,63 @@ def vertex_velocity(bq, k, n_vert, direction=1.0 + 0.0j):
     return dp
 
 
+def velocity_fields(bq, n_vert):
+    """`V.n` at every node for each of the `2N` vertex coordinate directions.
+
+    Shape `(2N, n_nodes)`, ordered `[d/dx_0, ..., d/dx_{N-1}, d/dy_0, ..., d/dy_{N-1}]`.
+
+    These depend on the GEOMETRY ALONE -- not on lambda, not on the eigenfunction -- so a
+    K-eigenvalue Jacobian builds them once and reuses them for every mode. That is most of why
+    `dlams_dp` costs barely more than `dlam_dp`.
+    """
+    fields = np.empty((2*n_vert, len(bq.pts)))
+    for k in range(n_vert):
+        for axis, direction in ((0, 1.0 + 0.0j), (1, 0.0 + 1.0j)):
+            fields[axis*n_vert + k] = normal_velocity(bq, vertex_velocity(bq, k, n_vert,
+                                                                          direction))
+    return fields
+
+
+def _refuse_multiple(mult):
+    if mult != 1:
+        raise NotImplementedError(
+            f'mult={mult}: the shape derivative of a multiple eigenvalue is not a gradient. It '
+            f'is the set of eigenvalues of the m x m matrix `-int (du_i/dn)(du_j/dn) (V.n) ds`, '
+            f'one matrix per direction, and lam is only directionally differentiable there. '
+            f'`lappy.weighted_integral` already returns that matrix for mult>1, so the pieces '
+            f'exist; what is missing is a decision about which optimizer consumes them. '
+            f'Degenerate optima are the rule for these problems, so this is worth doing properly '
+            f'rather than papering over.')
+
+
+def dlams_dvertices(solver, lams, n_vert, bq=None):
+    """Jacobian of several SIMPLE eigenvalues w.r.t. the vertex coordinates: `(K, 2N)`, real.
+
+    One row per eigenvalue, same column layout as `dlam_dvertices`. The velocity fields are
+    built once and shared, so the marginal cost of another mode is one `eigenfunction_coef` plus
+    one Cauchy-data evaluation -- not another `2N` integrals from scratch.
+    """
+    if bq is None:
+        bq = solver.hadamard_quad
+    fields = velocity_fields(bq, n_vert)
+    J = np.empty((len(lams), 2*n_vert))
+    for j, lam in enumerate(lams):
+        coef = solver.eigenfunction_coef(float(lam), mult=1)     # L^2-orthonormal
+        ed = eigfun_cauchy_data(solver.basis, float(lam), coef, bq)
+        for i in range(2*n_vert):
+            J[j, i] = -weighted_integral(ed, 'NN', fields[i])[0, 0]
+    return J
+
+
+def dlams_dp(family, p, solver, lams, bq=None):
+    """Jacobian of several eigenvalues w.r.t. the parameters: `(K, 2N-4)`, real.
+
+    The chain rule applied row-wise. This is what an objective built on more than one eigenvalue
+    -- a spectral match, an eigenvalue gap -- differentiates through.
+    """
+    return dlams_dvertices(solver, lams, family.n, bq=bq) @ family.d_vertices_dp(p)
+
+
 def dlam_dvertices(solver, lam, n_vert, mult=1, bq=None):
     """Gradient of `lam` with respect to the vertex coordinates: shape `(2N,)`, real.
 
@@ -68,27 +126,8 @@ def dlam_dvertices(solver, lam, n_vert, mult=1, bq=None):
     `bq` defaults to `solver.hadamard_quad`, which is the correct node set here and not the one
     `solver.bdry_quad` gives (see the module docstring). Pass one explicitly only if you know why.
     """
-    if mult != 1:
-        raise NotImplementedError(
-            f'mult={mult}: the shape derivative of a multiple eigenvalue is not a gradient. It '
-            f'is the set of eigenvalues of the m x m matrix `-int (du_i/dn)(du_j/dn) (V.n) ds`, '
-            f'one matrix per direction, and lam is only directionally differentiable there. '
-            f'`lappy.weighted_integral` already returns that matrix for mult>1, so the pieces '
-            f'exist; what is missing is a decision about which optimizer consumes them. '
-            f'Degenerate optima are the rule for these problems, so this is worth doing properly '
-            f'rather than papering over.')
-
-    if bq is None:
-        bq = solver.hadamard_quad
-    coef = solver.eigenfunction_coef(lam, mult=1)          # L^2-orthonormal
-    ed = eigfun_cauchy_data(solver.basis, lam, coef, bq)
-
-    grad = np.zeros(2*n_vert)
-    for k in range(n_vert):
-        for axis, direction in ((0, 1.0 + 0.0j), (1, 0.0 + 1.0j)):
-            Vn = normal_velocity(bq, vertex_velocity(bq, k, n_vert, direction))
-            grad[axis*n_vert + k] = -weighted_integral(ed, 'NN', Vn)[0, 0]
-    return grad
+    _refuse_multiple(mult)
+    return dlams_dvertices(solver, [lam], n_vert, bq=bq)[0]
 
 
 def dlam_dp(family, p, solver, lam, mult=1, bq=None):
@@ -102,5 +141,5 @@ def dlam_dp(family, p, solver, lam, mult=1, bq=None):
     routine does not solve, so that a caller running an optimization can reuse the solver it
     already built.
     """
-    grad_v = dlam_dvertices(solver, lam, family.n, mult=mult, bq=bq)
-    return grad_v @ family.d_vertices_dp(p)
+    _refuse_multiple(mult)
+    return dlams_dp(family, p, solver, [lam], bq=bq)[0]
