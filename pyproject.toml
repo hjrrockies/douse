@@ -5,10 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "douse"
 version = "0.0.1"
-description = "Domains of Unknown Shape, from Eigenvalues"
+description = "Domains of Unknown Shape, from Eigenvalues: shape optimization and inverse spectral problems on top of lappy"
 authors = [{name = "Hayden Ringer", email = "hringer@vt.edu"}]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 
 dependencies = [
     "numpy >= 2.0",
@@ -16,9 +16,9 @@ dependencies = [
     "matplotlib >= 3.9",
     "joblib >= 1.4",
     "jupyter>=1.1.1",
-    "lappy>=0.0.1",
+    "lappy>=0.9",
     "ipython==8.22.0",
 ]
 
 [tool.uv.sources]
-lappy = { path = "../pymps" }
+lappy = { path = "../lappy", editable = true }
