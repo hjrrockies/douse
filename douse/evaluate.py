@@ -48,7 +48,35 @@ from lappy.mps import MPSEigensolver
 
 from .derivative import dlams_dp
 
-__all__ = ['SpectrumEvaluator', 'ObjectiveFunction']
+__all__ = ['SpectrumEvaluator', 'ObjectiveFunction', 'DegenerateSpectrum']
+
+
+class DegenerateSpectrum(RuntimeError):
+    """Two tracked eigenvalues have merged, so the simple-eigenvalue gradient is meaningless.
+
+    At a multiple eigenvalue `lam` is only DIRECTIONALLY differentiable: the modes that emerge
+    under a perturbation `V` are the eigenvalues of `M(V)_ij = -int (du_i/dn)(du_j/dn)(V.n) ds`,
+    and `lappy.weighted_integral(..., mult=m)` returns exactly that matrix. What the
+    simple-eigenvalue path returns instead is built from `eigenfunction_coef(lam, mult=1)`, which
+    hands back an ARBITRARY vector out of the m-dimensional eigenspace -- so it is not a bad
+    approximation to the right answer, it is a different quantity.
+
+    Measured at the unit square, where lam_2 = lam_3 = 5 pi^2 exactly:
+
+        parameter      true directional derivatives      simple-eigenvalue path
+        p[0]              -14.222,  +14.222                  +14.032,  +14.032
+        p[2]              -32.847,  +32.847                   +9.212,   +9.212
+        p[3]              -29.609,  +29.609                   -4.820,   -4.820
+
+    Identical for both modes, wrong by factors of three to six, and carrying no sign that two
+    branches exist at all. Hence a raise rather than a warning: an optimizer that continued here
+    would follow a confident wrong gradient, and in a long run a warning is just noise.
+
+    Note the true splits are symmetric about zero -- `tr M = 0` in these directions -- which is
+    the general fact that SYMMETRIC functions of a cluster stay smooth even where the individual
+    eigenvalues do not. `lam_2 + lam_3` has an honest gradient at the square. Rephrasing an
+    objective in terms of the whole cluster is often cheaper than handling the nonsmoothness.
+    """
 
 
 class SpectrumEvaluator:
@@ -63,13 +91,15 @@ class SpectrumEvaluator:
     """
 
     def __init__(self, family, n_eigs=1, target=1e-14, prec=1e-13, plan_at=None,
-                 lam_max_window=6, warn_gap=1e-3, track_ttol=1e-8):
+                 lam_max_window=6, warn_gap=1e-3, degenerate_tol=1e-6,
+                 track_ttol=1e-8):
         self.family = family
         self.n_eigs = int(n_eigs)
         self.target = float(target)
         self.prec = float(prec)
         self.lam_max_window = int(lam_max_window)
         self.warn_gap = float(warn_gap)
+        self.degenerate_tol = float(degenerate_tol)
         self.track_ttol = float(track_ttol)
         self._plan = None
         self._plan_at = None if plan_at is None else np.array(plan_at, dtype=float)
@@ -148,6 +178,14 @@ class SpectrumEvaluator:
         if len(lams) > 1:
             gap = float(np.min(np.diff(np.sort(lams))/np.sort(lams)[:-1]))
             self.min_gap = min(self.min_gap, gap)
+            if gap < self.degenerate_tol:
+                raise DegenerateSpectrum(
+                    f'two of the tracked eigenvalues are within {gap:.2e} (relative) at this '
+                    f'shape, below degenerate_tol={self.degenerate_tol:.1e}. The '
+                    f'simple-eigenvalue gradient is not an approximation here, it is a different '
+                    f'quantity -- see DegenerateSpectrum. Use the m x m cluster matrix, or an '
+                    f'objective that is a symmetric function of the cluster, or raise '
+                    f'degenerate_tol if you know this crossing is benign.')
             if gap < self.warn_gap:
                 warnings.warn(
                     f'the tracked eigenvalues are within {gap:.2e} (relative) of each other at '

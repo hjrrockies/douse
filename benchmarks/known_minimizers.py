@@ -46,3 +46,34 @@ for name, c in CASES.items():
     print(f'   sides: max |s - mean| = {np.max(np.abs(sides-sides.mean())):.2e}   '
           f'angles: max |a - {180*(n-2)/n:.0f}| = {np.max(np.abs(ang-180*(n-2)/n)):.2e}')
     print(f'   {ev.n_solves} solves, {ev.n_tracks} tracks, {ev.n_track_refusals} track refusals\n')
+
+
+# ── lam_2, and the degeneracy question ──────────────────────────────────────────
+#
+# Minimizing lam_2 over quadrilaterals of perimeter 4 does NOT give the square. For a rectangle
+# L x H with L + H = 2 and L >= H the second mode is (2,1), so
+#
+#     lam_2 = pi^2 (4/L^2 + 1/H^2),   minimized at   L = 2 * 4^(1/3) / (1 + 4^(1/3))
+#
+#     L = 1.227023580871,  H = 0.772976419129,  lam_2 = 42.7396543166
+#
+# against the square's 5 pi^2 = 49.3480220054. Recorded 2026-08-24, from a generic starting
+# quadrilateral: reached to |dlam_2| = 3.8e-11 and |dL| = 4.2e-07 in 88 iterations, 179 s.
+#
+# The reason this one was run: to find out whether an objective on lam_2 walks into a degeneracy,
+# since the square carries the double lam_2 = lam_3 = 5 pi^2. It does not. The relative gap
+# stays near 0.70 along the accepted path (0.38 counting rejected trial steps), five orders above
+# `degenerate_tol`. So the simple-eigenvalue gradient is valid for the whole descent and no
+# cluster machinery is needed here.
+#
+# Where it WOULD be needed, the failure is not graceful. At the square itself, measured against
+# the exact splits:
+#
+#     parameter      true directional derivatives      simple-eigenvalue path
+#     p[0]              -14.222,  +14.222                  +14.032,  +14.032
+#     p[2]              -32.847,  +32.847                   +9.212,   +9.212
+#     p[3]              -29.609,  +29.609                   -4.820,   -4.820
+#
+# Identical for both modes and wrong by factors of three to six, because
+# `eigenfunction_coef(lam, mult=1)` returns an arbitrary vector from the two-dimensional
+# eigenspace. Hence `SpectrumEvaluator` raises `DegenerateSpectrum` rather than continuing.
