@@ -166,3 +166,6 @@ uv.lock
 # .npz,.npy files
 *.npz
 *.npy
+
+# generated animations: reproducible from benchmarks/animate_runs.py, and large
+benchmarks/animations/

@@ -21,6 +21,21 @@ fixed perimeter from a generic starting shape:
 Those are the two cases where the answer is a theorem (Pólya–Szegő); `n >= 5` is open.
 `benchmarks/known_minimizers.py` reproduces them.
 
+Minimizing `lam_2` instead does **not** give the square — it gives a rectangle with
+`L = 2*4^(1/3)/(1+4^(1/3)) = 1.227023580871` and `lam_2 = 42.7396543166`, reached to 3.8e-11.
+
+### Animations
+
+```sh
+uv run python -m benchmarks.animate_runs            # writes benchmarks/animations/*.mp4
+```
+
+Three panels — the shape against the exact minimizer in grey dashes, the eigenvalues against
+their exact values in black dashes, and the error on a log axis, since these runs converge
+through thirteen orders and a linear axis shows none of it. The `min_lam2_quad` one is the most
+informative: `lam_2` and `lam_3` stay far apart the whole way, which is the measurement that said
+a cluster optimizer is not yet needed.
+
 ```python
 import numpy as np
 from douse import (VertexPolygon, param_vector, SpectrumEvaluator, ObjectiveFunction,
