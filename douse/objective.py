@@ -18,7 +18,8 @@ scale-invariant coordinates instead -- see `normalized_reciprocals`.
 """
 import numpy as np
 
-__all__ = ['normalized_reciprocals', 'l2_loss', 'EigenvalueObjective', 'SpectralMatch']
+__all__ = ['normalized_reciprocals', 'l2_loss', 'EigenvalueObjective', 'RatioObjective',
+           'SpectralMatch']
 
 
 def normalized_reciprocals(lams, jac=False):
@@ -147,3 +148,51 @@ class SpectralMatch:
         nu, dnu_dlam = normalized_reciprocals(lams, jac=True)
         loss, dloss_dnu = l2_loss(nu, self.nu_target, jac=True, log=self.log)
         return loss, dloss_dnu @ dnu_dlam @ np.asarray(dlams)
+
+
+class RatioObjective:
+    """`lam_k / lam_1` -- the polygon analogue of Osting's spectral-ratio problems.
+
+    `sign=-1` (the default) maximizes, since `descend` minimizes; the reported value is
+    `sign * lam_k/lam_1`, so a maximization run reports a negative number that decreases.
+
+    SCALE-INVARIANT BY CONSTRUCTION, which is why it fits this parametrization so well: scaling a
+    domain divides every eigenvalue by the same factor, so the ratio does not see size at all.
+    The fixed perimeter is then pure gauge -- it removes the scaling degree of freedom without
+    imposing any physics on the objective.
+
+    KNOWN STRUCTURE, for k = 2. Over all planar domains `lam_2/lam_1` is maximized by the disk at
+    2.5387340 (Payne--Polya--Weinberger). Measured over regular N-gons it climbs monotonically
+    towards that: 7/3 at N=3, exactly 5/2 at N=4, then 2.5268387, 2.5340068, 2.5365339, 2.5375926
+    for N=5..8. And at EVERY regular N-gon `lam_2 = lam_3` exactly -- so if the regular N-gon is
+    the maximizer, this objective's optimum sits on a degeneracy, where `lam_2` is only
+    directionally differentiable and no gradient method converges.
+
+    `douse.certify` handles that case without an optimizer: at the regular N-gon
+    `grad(lam_1) = 0` as well, and local maximality reduces to a determinant condition on the
+    2 x 2 cluster matrices.
+    """
+
+    def __init__(self, k=1, sign=-1.0):
+        if k < 1:
+            raise ValueError(f'k must be at least 1 (0-based); lam_1/lam_1 is constant. Got {k}')
+        self.k = int(k)
+        self.sign = float(sign)
+
+    def __repr__(self):
+        what = 'maximize' if self.sign < 0 else 'minimize'
+        return f'RatioObjective({what} lam_{self.k + 1}/lam_1)'
+
+    @property
+    def n_eigs(self):
+        return self.k + 1
+
+    def __call__(self, lams, dlams):
+        lams = np.asarray(lams, dtype=float)
+        if len(lams) <= self.k:
+            raise ValueError(f'objective needs lam_{self.k + 1} but only {len(lams)} '
+                             f'eigenvalues were supplied')
+        dlams = np.asarray(dlams, dtype=float)
+        l1, lk = lams[0], lams[self.k]
+        grad = (dlams[self.k]*l1 - lk*dlams[0])/l1**2
+        return self.sign*float(lk/l1), self.sign*grad

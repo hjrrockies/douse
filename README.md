@@ -24,6 +24,34 @@ Those are the two cases where the answer is a theorem (Pólya–Szegő); `n >= 5
 Minimizing `lam_2` instead does **not** give the square — it gives a rectangle with
 `L = 2*4^(1/3)/(1+4^(1/3)) = 1.227023580871` and `lam_2 = 42.7396543166`, reached to 3.8e-11.
 
+### Spectral ratios: `lam_k/lam_1`
+
+The polygon analogue of Osting's Fourier-boundary work, and the reason `douse.certify` exists.
+Over all planar domains the disk maximizes `lam_2/lam_1` at 2.5387340 (Payne–Pólya–Weinberger);
+over regular N-gons the ratio climbs monotonically towards it, and **at every one of them
+`lam_2 = lam_3` exactly** — so the conjectured optimum sits on a degeneracy, where no gradient
+method converges.
+
+```sh
+uv run python -m benchmarks.regular_ngon_ratio
+```
+
+| N | n_p | λ₂/λ₁ | rank Q | null dim | worst curvature |
+|---|---|---|---|---|---|
+| 3 | 2 | 2.3333333 (= 7/3) | 2 | **0** | — first order is decisive |
+| 4 | 4 | 2.5000000 (= 5/2) | 2 | 2 | −1.565 |
+| 5 | 6 | 2.5268387 | 2 | 4 | −1.814 |
+| 6 | 8 | 2.5340068 | 2 | 6 | −1.756 |
+| 7 | 10 | 2.5365339 | 2 | 8 | −1.445 |
+
+**The first-order condition is automatic, not evidence.** At these points `grad lam_1 = 0` (the
+regular N-gon minimizes `lam_1`) and `tr M = 0`, which forces `C = -A` and hence
+`det M(d) = -(A·d)² - (B·d)² ≤ 0` identically. So `Q = -AAᵀ - BBᵀ` is negative semidefinite of
+rank ≤ 2 whatever `n_p` is — measured rank exactly 2 in every case. The content is second order,
+on the `n_p - 2` null directions, and there the ratio falls quadratically. That is evidence for a
+local maximum, not a proof; `N = 3` is the sole case where first order settles it, because
+`n_p = 2` leaves no null space.
+
 ### Animations
 
 ```sh
@@ -71,6 +99,7 @@ differencing the solver.
 | `douse/objective.py` | `EigenvalueObjective` (forward), `SpectralMatch` (inverse, scale-invariant), and the arithmetic under them |
 | `douse/evaluate.py` | `SpectrumEvaluator` — frozen plan, tracked-and-verified eigenvalues — and `ObjectiveFunction` |
 | `douse/optimize.py` | `descend`, a backtracking method that respects the parametrization's boundary |
+| `douse/certify.py` | cluster analysis at a degenerate optimum: `first_order_report`, `second_order_probe` |
 | `douse/opt.py` | **superseded**, kept only until its loss functions are confirmed to have no remaining use. Does not import. |
 
 ## Three things to know before using it
@@ -117,6 +146,6 @@ optimizer consumes them, not a patch.
 ## Tests
 
 ```sh
-uv run pytest                  # 52 tests, ~3 min
+uv run pytest                  # 68 tests, ~5 min
 uv run pytest -m "not slow"    # the fast subset, <1 s
 ```

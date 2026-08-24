@@ -27,7 +27,8 @@ import numpy as np
 from lappy.eigfun_integrals import eigfun_cauchy_data, normal_velocity, weighted_integral
 
 __all__ = ['vertex_velocity', 'velocity_fields', 'dlam_dvertices', 'dlam_dp',
-           'dlams_dvertices', 'dlams_dp']
+           'dlams_dvertices', 'dlams_dp', 'detect_cluster', 'cluster_matrices',
+           'directional_derivatives']
 
 
 def vertex_velocity(bq, k, n_vert, direction=1.0 + 0.0j):
@@ -143,3 +144,61 @@ def dlam_dp(family, p, solver, lam, mult=1, bq=None):
     """
     _refuse_multiple(mult)
     return dlams_dp(family, p, solver, [lam], bq=bq)[0]
+
+
+# ── Degenerate clusters ──────────────────────────────────────────────────────────
+#
+# Where `dlams_dp` stops applying. At a multiple eigenvalue the modes that emerge under a
+# perturbation `V` are the eigenvalues of an m x m matrix linear in `V`, and the routines below
+# expose that matrix rather than pretending a gradient exists.
+
+
+def detect_cluster(lams, k, rtol=1e-6):
+    """`(lo, hi)` bounding the cluster of `lams` that contains index `k`, as a half-open range.
+
+    Membership is decided by RELATIVE GAP in the computed spectrum, with the tolerance in the
+    caller's hands. It is deliberately not delegated to the solver's own multiplicity estimate:
+    that quantity is least reliable exactly here, and `lappy`'s got it wrong in both directions
+    on `reg_ngon_6` -- reporting a double at a simple eigenvalue, while its reference table
+    listed a genuine double as simple.
+    """
+    lams = np.asarray(lams, dtype=float)
+    if not 0 <= k < len(lams):
+        raise IndexError(f'k={k} is outside a spectrum of length {len(lams)}')
+    order = np.argsort(lams)
+    pos = int(np.where(order == k)[0][0]) if not np.all(np.diff(lams) >= 0) else k
+    srt = lams[order]
+    lo = hi = pos
+    while lo > 0 and (srt[lo] - srt[lo - 1]) <= rtol*abs(srt[lo]):
+        lo -= 1
+    while hi + 1 < len(srt) and (srt[hi + 1] - srt[hi]) <= rtol*abs(srt[hi]):
+        hi += 1
+    return lo, hi + 1
+
+
+def cluster_matrices(family, p, solver, lam, mult, bq=None):
+    """`(n_p, m, m)` -- the matrix `M^(i)` for each parameter direction.
+
+    `M(d) = sum_i d_i M^(i)` is linear in `d`, and its EIGENVALUES are the one-sided directional
+    derivatives of the m eigenvalues in the cluster. That linearity is the whole reason this
+    problem is tractable: the local model of an ordered eigenvalue is an eigenvalue of an affine
+    matrix function, which is the well-understood case.
+
+    Only the spectrum of `M(d)` means anything. `eigenfunction_coef(mult=m)` returns an arbitrary
+    orthonormal basis of the eigenspace, so the entries depend on a choice that moves under
+    perturbation -- never difference them across iterates, never cache the basis.
+    """
+    if bq is None:
+        bq = solver.hadamard_quad
+    fields = velocity_fields(bq, family.n)
+    Jv = family.d_vertices_dp(p)
+    coef = solver.eigenfunction_coef(float(lam), mult=int(mult))
+    ed = eigfun_cauchy_data(solver.basis, float(lam), coef, bq)
+    return np.array([-weighted_integral(ed, 'NN', fields.T @ Jv[:, i])
+                     for i in range(Jv.shape[1])])
+
+
+def directional_derivatives(Ms, d):
+    """Sorted directional derivatives of the cluster in direction `d`: `eig(sum_i d_i M^(i))`."""
+    d = np.asarray(d, dtype=float)
+    return np.linalg.eigvalsh(np.einsum('i,ijk->jk', d, np.asarray(Ms)))
