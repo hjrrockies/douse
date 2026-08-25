@@ -18,6 +18,7 @@ dependencies = [
     "jupyter>=1.1.1",
     "lappy>=0.9",
     "ipython==8.22.0",
+    "cvxpy>=1.9.2",
 ]
 
 [tool.uv.sources]

@@ -10,6 +10,8 @@ from . import evaluate
 from . import optimize
 from . import certify
 from . import cluster_opt
+from . import constraints
+from . import degeneracy
 
 # classes and functions available directly from douse
 from .polygon import VertexPolygon, polygon_vertices, param_vector
@@ -20,4 +22,7 @@ from .objective import (EigenvalueObjective, RatioObjective, SpectralMatch,
 from .evaluate import SpectrumEvaluator, ObjectiveFunction
 from .optimize import descend, OptimizeResult
 from .certify import first_order_report, second_order_probe, det_form
-from .cluster_opt import maximize_ratio, local_model, trust_region_step
+from .cluster_opt import maximize_ratio, local_model, trust_region_step, model_gain
+from .constraints import Constraint, ConstraintSet, MinEdgeLength, ClosingBudget
+from .degeneracy import (effective_vertices, interior_angles, turning_angles,
+                         canonicalize)
