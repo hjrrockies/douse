@@ -44,6 +44,20 @@ uv run python -m benchmarks.regular_ngon_ratio
 | 6 | 8 | 2.5340068 | 2 | 6 | −1.756 |
 | 7 | 10 | 2.5365339 | 2 | 8 | −1.445 |
 
+### Optimizing through the degeneracy
+
+`douse.cluster_opt.maximize_ratio` is a trust-region method whose local model is the m×m cluster
+matrix rather than a gradient, so it remains valid where `lam_k` is only directionally
+differentiable.
+
+| | descent stalls at | cluster method | improvement |
+|---|---|---|---|
+| N=4 (square) | 5.70e-04 short | **6.9e-09 short** | 82,000× |
+| N=5 (pentagon) | 1.15e-02 short | 1.97e-04 short* | 58× |
+
+\* N=5 does not converge in 300 iterations and ends with the gap still open (0.75) and angles
+7.5° off. N=4 finishes AT the degeneracy (gap 5.3e-09) with angles within 0.004°.
+
 **The first-order condition is automatic, not evidence.** At these points `grad lam_1 = 0` (the
 regular N-gon minimizes `lam_1`) and `tr M = 0`, which forces `C = -A` and hence
 `det M(d) = -(A·d)² - (B·d)² ≤ 0` identically. So `Q = -AAᵀ - BBᵀ` is negative semidefinite of
@@ -100,6 +114,7 @@ differencing the solver.
 | `douse/evaluate.py` | `SpectrumEvaluator` — frozen plan, tracked-and-verified eigenvalues — and `ObjectiveFunction` |
 | `douse/optimize.py` | `descend`, a backtracking method that respects the parametrization's boundary |
 | `douse/certify.py` | cluster analysis at a degenerate optimum: `first_order_report`, `second_order_probe` |
+| `douse/cluster_opt.py` | `maximize_ratio` — trust-region ascent valid through a degeneracy |
 | `douse/opt.py` | **superseded**, kept only until its loss functions are confirmed to have no remaining use. Does not import. |
 
 ## Three things to know before using it
@@ -146,6 +161,6 @@ optimizer consumes them, not a patch.
 ## Tests
 
 ```sh
-uv run pytest                  # 68 tests, ~5 min
+uv run pytest                  # 77 tests, ~12 min
 uv run pytest -m "not slow"    # the fast subset, <1 s
 ```

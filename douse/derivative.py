@@ -176,8 +176,21 @@ def detect_cluster(lams, k, rtol=1e-6):
     return lo, hi + 1
 
 
-def cluster_matrices(family, p, solver, lam, mult, bq=None):
+def cluster_matrices(family, p, solver, lam, mult, bq=None, lams=None):
     """`(n_p, m, m)` -- the matrix `M^(i)` for each parameter direction.
+
+    `lams`, if given, is the m individual eigenvalues of the cluster, and the basis is then built
+    from their OWN eigenfunctions (`mult=1` each) rather than from the m-dimensional cluster.
+    That matters whenever the cluster is only NEARLY degenerate and a caller wants to add the
+    actual splitting `Lambda = diag(lam_i - lam_k)` to the model: `Lambda` is diagonal only in
+    the basis that diagonalizes the unperturbed operator, and `eigenfunction_coef(mult=m)`
+    returns an ARBITRARY Loewdin basis of the eigenspace instead. Adding the two in mismatched
+    bases produces a model whose predicted direction is wrong -- measured as a trust-region ratio
+    that stays negative (-0.2 to -1.2) as the radius shrinks, where a correct first-order model
+    gives +1.
+
+    At an exact degeneracy the individual eigenfunctions are not defined, but `Lambda = 0` there
+    and any orthonormal basis of the eigenspace serves, so pass `lams=None`.
 
     `M(d) = sum_i d_i M^(i)` is linear in `d`, and its EIGENVALUES are the one-sided directional
     derivatives of the m eigenvalues in the cluster. That linearity is the whole reason this
@@ -192,7 +205,10 @@ def cluster_matrices(family, p, solver, lam, mult, bq=None):
         bq = solver.hadamard_quad
     fields = velocity_fields(bq, family.n)
     Jv = family.d_vertices_dp(p)
-    coef = solver.eigenfunction_coef(float(lam), mult=int(mult))
+    if lams is None:
+        coef = solver.eigenfunction_coef(float(lam), mult=int(mult))
+    else:
+        coef = np.hstack([solver.eigenfunction_coef(float(l), mult=1) for l in lams])
     ed = eigfun_cauchy_data(solver.basis, float(lam), coef, bq)
     return np.array([-weighted_integral(ed, 'NN', fields.T @ Jv[:, i])
                      for i in range(Jv.shape[1])])
