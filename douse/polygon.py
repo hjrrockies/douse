@@ -29,8 +29,8 @@ import numpy as np
 from lappy import Polygon
 from lappy.utils import edge_lengths, polygon_area, polygon_perimeter
 
-__all__ = ['polygon_vertices', 'd_vertices_dp', 'param_vector', 'perimeter_gradient',
-           'VertexPolygon', 'n_params', 'n_vertices']
+__all__ = ['polygon_vertices', 'd_vertices_dp', 'param_vector', 'gauge_vector',
+           'perimeter_gradient', 'VertexPolygon', 'n_params', 'n_vertices']
 
 
 def n_params(n_vert):
@@ -171,6 +171,34 @@ def param_vector(vertices, perim=1.0):
     # longest side last, so it becomes the closing edge that the gauge puts on the +x axis
     vertices = np.roll(vertices, -int(np.argmax(edge_lengths(vertices))) - 1)
 
+    vertices = vertices - vertices[-1]
+    vertices = vertices*np.exp(-1j*np.angle(vertices[0] - vertices[-1]))
+    vertices = vertices/(edge_lengths(vertices).sum()/perim)
+    return np.concatenate([vertices[1:-1].real, vertices[1:-1].imag])
+
+
+def gauge_vector(vertices, perim=1.0, anchor=0):
+    """`param_vector` WITHOUT the longest-side roll: the caller chooses which vertex anchors.
+
+    `param_vector` fixes the gauge and also picks the labelling, by putting the longest side last.
+    That second choice is the non-smooth one, and it is also the wrong one when a caller has
+    already decided which vertex should be `v_0` -- it silently overrides them.
+
+    IT HAS TO BE OVERRIDABLE, because `v_0` is the vertex `polygon_vertices` solves for and the
+    solve fails when `v_0` is FLAT. The two closing edges are then collinear, so the closing
+    budget `C` equals `|v_1|` exactly and the constructor refuses with "no such polygon exists" --
+    on a perfectly good shape, purely because of how it was labelled. Measured on the unit square
+    written as an 8-gon with four flat vertices, which is exactly the representation
+    `douse.constraints` relies on being available: `param_vector` rolls a flat vertex into `v_0`
+    (every side ties at 0.5, so `argmax` takes the first) and the round trip raises.
+
+    `anchor` is the index that becomes `v_0`. `douse.degeneracy.canonicalize_p` passes the corner
+    furthest from flat.
+    """
+    vertices = np.asarray(vertices, dtype=complex).copy()
+    if polygon_area(vertices) < 0:
+        vertices = vertices[::-1]
+    vertices = np.roll(vertices, -int(anchor))
     vertices = vertices - vertices[-1]
     vertices = vertices*np.exp(-1j*np.angle(vertices[0] - vertices[-1]))
     vertices = vertices/(edge_lengths(vertices).sum()/perim)
