@@ -50,13 +50,32 @@ uv run python -m benchmarks.regular_ngon_ratio
 matrix rather than a gradient, so it remains valid where `lam_k` is only directionally
 differentiable.
 
-| | descent stalls at | cluster method | improvement |
+| | descent stalls at | cluster method | in cluster mode |
 |---|---|---|---|
-| N=4 (square) | 5.70e-04 short | **6.9e-09 short** | 82,000× |
-| N=5 (pentagon) | 1.15e-02 short | 1.97e-04 short* | 58× |
+| N=4 (square) | 5.70e-04 short | **5.4e-09 short**, angles within 1e-4° | 57 of 58 steps |
+| N=5 (pentagon) | 1.15e-02 short | **reaches the pentagon**, angles within 0.06° | 230 of 234 |
 
-\* N=5 does not converge in 300 iterations and ends with the gap still open (0.75) and angles
-7.5° off. N=4 finishes AT the degeneracy (gap 5.3e-09) with angles within 0.004°.
+N=5 used to end 1.97e-04 short with the gap still open at 0.75 and only 14 of 300 steps in
+cluster mode. Two things were wrong, and neither was a second local maximum. The eps-active
+cluster width was pinned at `1e-3` instead of being tied to the trust radius, so the run barely
+entered cluster mode; and the concave subproblem, posed as an LMI in `(d, t)`, had a degenerate
+determinant constraint at its own start point and stopped there — **45% short of the true
+optimum** at `Delta = 0.05`, worse as the radius shrank. Recast as linear-minus-a-norm it agrees
+with brute force to 1e-13.
+
+A control run separates them: fixing only the subproblem leaves N=5 at 2.63e-05 short with 13 of
+300 steps in cluster mode — better by 7.5×, same failure. The active-set width is what makes it
+converge. See `docs/todo.md`.
+
+**Every `k` is answered now.** The position of `lam_k` inside its cluster decides the subproblem:
+lowest is concave (SDP; a 2×2 fast path), highest is convex and reduces exactly to a search over
+the unit sphere `S^{m-1}`, and an interior position is neither, so the exact model — an `m×m`
+`eigvalsh`, free next to an eigensolve — is maximized directly. `m > 2` is handled throughout.
+
+And the convex branch immediately says something. At the exact square the model gain for
+`lam_2/lam_1` is 0, as it must be if the square is the maximizer — but for `lam_3/lam_1` it is
+4.4e-02, so **the square is not a local maximizer of `lam_3/lam_1`**, though the two ratios are
+equal there (5/2). Same at the equilateral triangle.
 
 **The first-order condition is automatic, not evidence.** At these points `grad lam_1 = 0` (the
 regular N-gon minimizes `lam_1`) and `tr M = 0`, which forces `C = -A` and hence
@@ -149,21 +168,20 @@ optimizer consumes them, not a patch.
 
 `docs/todo.md` has the full list. The critical path:
 
-1. **The convex branch — k=3, and k=5 for N≥5.** There `lam_k` is the *highest* member of its
-   cluster, so the local model is `lam_max` of an affine matrix function: convex, and outside
-   what `cluster_opt` solves. For m=2 it reduces exactly to a one-dimensional search over a
-   circle (`docs/spectral_optimization.tex` §6.2), so it is roughly half a day rather than a
-   research project — and it is where the interesting optimizers are expected to be.
-2. **Why N=5 does not converge for k=2.** It ends with the gap still open at 0.75 and only 14 of
-   300 steps in cluster mode, so it never approached a degeneracy at all. Slow convergence toward
-   the pentagon, or a different non-regular local maximum? The second would be a finding.
-3. **Multi-start.** Every statement here is local, including that the regular N-gon is optimal.
+1. **A real constraint, not an `inf` barrier.** Nothing currently prevents a self-intersecting
+   polygon that is admissible to the perimeter arithmetic. A smooth non-crossing constraint plus
+   one for the closing budget would let a properly constrained method run.
+2. **Multi-start.** Every statement here is local, including that the regular N-gon is optimal.
    Globality is what a paper needs.
-4. **k=4**, untested and expected to work as-is — another lowest-of-cluster case.
+3. **Track the whole set, not one value at a time.** `SpectrumEvaluator` tracks each eigenvalue
+   independently and then repairs the result. At general `k` the spectrum is mostly near-
+   degenerate clusters, so the repair path becomes the common one. One scan over the union window
+   is cheaper and cannot collapse.
+4. **k=4 end to end.** The static structure is pinned against exact spectra for k = 2..6; no k=4
+   optimization has been run.
 
-Deferred deliberately: clusters with m > 2 (D_N gives m=2 generically), a real constraint to
-replace the `inf` barrier that confines `descend` to plain backtracking, and the inverse problem,
-which is implemented and FD-verified but has never been run end to end.
+Deferred deliberately: the inverse problem, which is implemented and FD-verified but has never
+been run end to end.
 
 ## Tests
 
