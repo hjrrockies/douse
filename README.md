@@ -147,16 +147,23 @@ optimizer consumes them, not a patch.
 
 ## Next
 
-- **Degenerate optima.** The open question. `lam` is only directionally differentiable at a
-  multiple eigenvalue, and these problems optimize *towards* one; `SpectrumEvaluator` warns when
-  the gap closes but nothing handles it. Needed before any gap or higher-mode objective.
-- **A real constraint, not an `inf` barrier.** The admissible set has a boundary and `descend`
-  merely refuses to cross it. `scipy`'s L-BFGS-B stalls at iteration 1 against `inf`. The smooth
-  self-intersection constraint sketched in the old `opt.py` plus one for the closing budget
-  would let a proper constrained method run.
-- **The inverse problem.** `SpectralMatch` is implemented and its gradient is FD-verified, but no
-  recovery has been attempted end to end.
-- **`n >= 5`.** Where the forward problem stops being a test and starts being a question.
+`docs/todo.md` has the full list. The critical path:
+
+1. **The convex branch — k=3, and k=5 for N≥5.** There `lam_k` is the *highest* member of its
+   cluster, so the local model is `lam_max` of an affine matrix function: convex, and outside
+   what `cluster_opt` solves. For m=2 it reduces exactly to a one-dimensional search over a
+   circle (`docs/spectral_optimization.tex` §6.2), so it is roughly half a day rather than a
+   research project — and it is where the interesting optimizers are expected to be.
+2. **Why N=5 does not converge for k=2.** It ends with the gap still open at 0.75 and only 14 of
+   300 steps in cluster mode, so it never approached a degeneracy at all. Slow convergence toward
+   the pentagon, or a different non-regular local maximum? The second would be a finding.
+3. **Multi-start.** Every statement here is local, including that the regular N-gon is optimal.
+   Globality is what a paper needs.
+4. **k=4**, untested and expected to work as-is — another lowest-of-cluster case.
+
+Deferred deliberately: clusters with m > 2 (D_N gives m=2 generically), a real constraint to
+replace the `inf` barrier that confines `descend` to plain backtracking, and the inverse problem,
+which is implemented and FD-verified but has never been run end to end.
 
 ## Tests
 
@@ -164,3 +171,21 @@ optimizer consumes them, not a patch.
 uv run pytest                  # 77 tests, ~12 min
 uv run pytest -m "not slow"    # the fast subset, <1 s
 ```
+
+Most of the twelve minutes is three full optimization runs. If that starts discouraging you from
+running the suite, trim their iteration counts before dropping the cases — the acceptance value
+is in *reaching* the square, not in its last three digits.
+
+## Documentation
+
+- [`docs/spectral_optimization.tex`](docs/spectral_optimization.tex) → `.pdf` — the mathematics:
+  parametrization and its implicit Jacobian, the Hadamard derivative, what replaces it at a
+  multiple eigenvalue, both trust-region subproblems, and why the first-order optimality
+  condition at a regular N-gon is automatic rather than informative. Build with
+  `latexmk -pdf spectral_optimization.tex`.
+- [`docs/todo.md`](docs/todo.md) — what is open, what is settled, and the claims that were
+  retracted along the way.
+- [`lappy/docs/polygon_contract.md`](../lappy/docs/polygon_contract.md) — what the forward solver
+  promises, its validated envelope, and its known defects. Read it before trusting a number.
+- [`lappy/docs/scope_and_downstream.md`](../lappy/docs/scope_and_downstream.md) — where lappy
+  stops and this package begins.
