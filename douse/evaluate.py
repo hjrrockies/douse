@@ -101,7 +101,7 @@ class SpectrumEvaluator:
 
     def __init__(self, family, n_eigs=1, target=1e-14, prec=1e-13, plan_at=None,
                  lam_max_window=6, warn_gap=1e-3, degenerate_tol=1e-6,
-                 track_ttol=1e-8):
+                 track_ttol=1e-8, use_track_set=True, replan_tol=1e-9):
         self.family = family
         self.n_eigs = int(n_eigs)
         self.target = float(target)
@@ -110,6 +110,11 @@ class SpectrumEvaluator:
         self.warn_gap = float(warn_gap)
         self.degenerate_tol = float(degenerate_tol)
         self.track_ttol = float(track_ttol)
+        self.use_track_set = bool(use_track_set)
+        self.replan_tol = None if replan_tol is None else float(replan_tol)
+        self.n_replans = 0
+        self.worst_sigma = 0.0
+        self.last_mults = None
         self._plan = None
         self._plan_at = None if plan_at is None else np.array(plan_at, dtype=float)
         self._last = None            # (p, lams) for continuation
@@ -164,7 +169,26 @@ class SpectrumEvaluator:
             seed = self._last[1]
 
         lams = None
-        if seed is not None and len(seed) >= self.n_eigs:
+        if self.use_track_set and seed is not None and len(seed) >= self.n_eigs:
+            # ONE windowed scan for the whole set. See `lappy.Eigenproblem.track_set`: tracking
+            # the K values separately succeeded once in 46 steps on a rectangle family walked
+            # into a degeneracy, and one of the successes was wrong by 1.1e-08 having passed
+            # every guard. track_set cannot collapse two seeds onto one mode, because it does no
+            # per-seed convergence -- it brackets every minimum in the window at once.
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    cand, mults = evp.track_set(np.asarray(seed[:self.n_eigs], dtype=float))
+                    worst = max(float(np.atleast_1d(solver.sigma(float(l)))[0]) for l in cand)
+                if worst > self.track_ttol:
+                    self.n_track_refusals += 1
+                else:
+                    lams, self.last_mults = np.asarray(cand, dtype=float), mults
+                    self.n_tracks += 1
+            except EigensolverFailure:
+                self.n_track_refusals += 1
+        if lams is None and not self.use_track_set and seed is not None \
+                and len(seed) >= self.n_eigs:
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter('ignore')
@@ -188,6 +212,7 @@ class SpectrumEvaluator:
                 warnings.simplefilter('ignore')
                 lams = np.asarray(evp.solve(self.n_eigs), dtype=float)[:self.n_eigs]
             self.n_solves += 1
+            self.last_mults = None
 
         if len(lams) > 1:
             gap = float(np.min(np.diff(np.sort(lams))/np.sort(lams)[:-1]))
@@ -206,6 +231,35 @@ class SpectrumEvaluator:
                     f'this shape. An index-based objective is not differentiable through a '
                     f'crossing, and these problems tend to optimize TOWARDS one, so a gradient '
                     f'method may stall or chatter here rather than converge.')
+
+        # THE FROZEN PLAN HAS TO BE WATCHED, and nothing was watching it. `plan` promises that a
+        # shape wandering out of the plan's reach "shows up as a rising tension rather than as a
+        # silent change of basis, and `sigma_at` is how a caller checks" -- but no caller checked,
+        # so the failure was silent after all. Measured at the end of a `max lam_3/lam_1` run at
+        # N=5: the plan frozen at the starting shape gave sigma = 1.6e-04 where a plan built at
+        # that shape gives 5.4e-11, a factor of 2.9 MILLION, and `F` was wrong by 1.6e-06.
+        #
+        # That number is the whole stall. The trust region shrinks below 1e-06, the predicted
+        # gain drops under the error in `F`, `rho` goes negative (measured: -0.52 at a radius of
+        # 1e-06, against 0.99 at 1e-03 where the model is fine), every step is rejected and the
+        # radius collapses -- leaving the run at a point whose gradient is still O(1).
+        #
+        # Re-planning is a discrete change of basis and does make `F` jump slightly, which is
+        # exactly what freezing exists to prevent. A jump of 1e-06 once is cheaper than a
+        # systematic 1e-06 error forever.
+        if self.replan_tol is not None and len(lams):
+            sig = float(np.atleast_1d(solver.sigma(float(lams[0])))[0])
+            self.worst_sigma = max(self.worst_sigma, sig)
+            if sig > self.replan_tol:
+                self.replan(p)
+                self.n_replans += 1
+                dom, solver = self.solver(p)
+                evp = Eigenproblem(dom, eval_solver=solver, precision=self.prec)
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    lams = np.asarray(evp.solve(self.n_eigs), dtype=float)[:self.n_eigs]
+                self.n_solves += 1
+                self.last_mults = None
 
         self._last = (p.copy(), lams.copy())
         return lams, solver
@@ -242,6 +296,26 @@ class SpectrumEvaluator:
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             return float(np.atleast_1d(solver.sigma(float(lam)))[0])
+
+    def replan(self, p=None):
+        """Throw the frozen plan away so the next call rebuilds it. For a DISCRETE jump only.
+
+        The plan is frozen on purpose: an identical basis size at every iterate is what makes a
+        change in `lam` attributable to the shape rather than to the discretization, and
+        re-planning inside a continuous walk makes the objective discontinuous. None of that
+        applies at a deliberate jump between two representations of a degenerate shape, where the
+        objective moves by `O(eps)` anyway.
+
+        And the plan cannot survive that jump regardless. `BasisPlan` carries one corner block per
+        CORNER, and a flat vertex is not a corner -- so a plan frozen on a 5-corner pentagon,
+        realized on the 4-corner quadrilateral the pentagon collapsed to, indexes `fb_orders[4]`
+        into an array of length 4 and raises `IndexError` inside `lappy.basis_plan.realize`. The
+        frozen-plan architecture assumes a constant corner count across the family, which
+        degeneration is precisely the act of violating.
+        """
+        self._plan = None
+        self._plan_at = None if p is None else np.asarray(p, dtype=float)
+        self.reset_continuation()
 
     def reset_continuation(self):
         """Forget the previous iterate, so the next call does a full solve. Use after a jump."""
