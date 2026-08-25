@@ -1,0 +1,404 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.1in]{geometry}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{microtype}
+\usepackage[htt]{hyphenat}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue]{hyperref}
+
+\newcommand{\dd}{\,\mathrm{d}}
+\newcommand{\Om}{\Omega}
+\newcommand{\bd}{\partial\Omega}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\pdn}[1]{\frac{\partial #1}{\partial n}}
+\newcommand{\lammin}{\lambda_{\min}}
+\newcommand{\lammax}{\lambda_{\max}}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\theoremstyle{definition}
+\newtheorem{fact}{Fact}
+
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.15}
+
+\title{Spectral Shape Optimization over Polygons\\
+\large The mathematics \code{douse} implements, and where it bites}
+\author{douse development notes}
+\date{2026-08-24}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We optimize functionals of the Dirichlet Laplacian spectrum over $N$-gons of fixed perimeter ---
+principally $\lambda_k/\lambda_1$, the polygon analogue of Osting's optimization over
+Fourier-boundary domains. This note records the mathematics actually used: the parametrization
+and its Jacobian, the Hadamard shape derivative, what replaces it at a multiple eigenvalue, and
+the two trust-region subproblems that result. Several of the subtleties below were found by
+running the code and getting plausible wrong answers, and those are flagged where they arise;
+they are properties of the mathematics, not of the implementation.
+\end{abstract}
+
+\section{The problem}
+
+For a bounded, connected, open $\Om\subset\mathbb{R}^2$ let
+$0<\lambda_1(\Om)<\lambda_2(\Om)\le\lambda_3(\Om)\le\cdots$ be the Dirichlet eigenvalues,
+\[
+  -\Delta u_j=\lambda_j u_j \ \text{ in }\Om,\qquad u_j=0 \ \text{ on }\bd,
+\]
+repeated by multiplicity, with $\{u_j\}$ orthonormal in $L^2(\Om)$. Two classical facts frame
+everything that follows.
+
+\begin{fact}[Krahn]\label{fact:krahn}
+$\lambda_1$ is simple for connected $\Om$: its eigenfunction may be taken positive, and two
+orthogonal positive functions cannot coexist.
+\end{fact}
+
+\noindent This is why objectives built on $\lambda_1$ alone are smooth, and why the denominator
+of $\lambda_k/\lambda_1$ never participates in a degeneracy.
+
+\begin{fact}[Payne--P\'olya--Weinberger; proved by Ashbaugh--Benguria]\label{fact:ppw}
+For every bounded connected planar $\Om$,
+\[
+  \frac{\lambda_2}{\lambda_1}\;\le\;\left(\frac{j_{1,1}}{j_{0,1}}\right)^{\!2}=2.5387340\ldots,
+\]
+with equality only for the disk.
+\end{fact}
+
+\noindent Fact~\ref{fact:ppw} is not merely context: we use it as a \emph{runtime invariant}. Any
+reported $\lambda_2/\lambda_1$ above it is an error, whatever it looks like locally, and it has
+twice caught bugs that testing did not.
+
+\subsection{The objective}
+
+We maximize
+\begin{equation}\label{eq:F}
+  F(\Om)\;=\;\frac{\lambda_k(\Om)}{\lambda_1(\Om)} .
+\end{equation}
+Scaling $\Om\mapsto c\,\Om$ sends $\lambda_j\mapsto c^{-2}\lambda_j$, so $F$ is
+\emph{scale invariant}. Consequently the perimeter constraint imposed below is pure gauge: it
+removes the scaling degree of freedom and imposes no physics on \eqref{eq:F}. (For an objective
+such as $\min\lambda_1$, which is \emph{not} scale invariant, the same constraint is the entire
+content of the problem.)
+
+\section{Parametrizing $N$-gons}\label{sec:param}
+
+An $N$-gon has $2N$ coordinates, but the spectrum does not see all of them: translations,
+rotations and reflections leave it fixed, and scaling acts as above. Optimizing over all $2N$
+would wander a four-dimensional manifold of identical spectra. We therefore fix the gauge by
+construction. Writing vertices as complex numbers $v_0,\dots,v_{N-1}$,
+\[
+  v_{N-1}=0,\qquad v_0\in\mathbb{R}_{>0},\qquad \operatorname{per}(\Om)=P \ \text{fixed},
+\]
+leaving $v_1,\dots,v_{N-2}$ free: $N-2$ complex numbers, hence
+\[
+  p=(x_1,\dots,x_{N-2},\,y_1,\dots,y_{N-2})\in\mathbb{R}^{2N-4}.
+\]
+Orientation is fixed by requiring positive (counter-clockwise) area, which excludes the mirror
+image; the mirror has the same spectrum, so nothing is lost.
+
+Given $p$, let $C=P-\sum_{j=1}^{N-2}|v_{j+1}-v_j|$ (with $v_{N-1}=0$) be the perimeter left for
+the two closing edges $0\to v_0$ and $v_0\to v_1$. Writing $v_0=a>0$, the constraint
+$|a-v_1|+a=C$ gives
+\begin{equation}\label{eq:a}
+  a=\frac{C^2-x_1^2-y_1^2}{2\,(C-x_1)},
+\end{equation}
+real and positive exactly when $C>|v_1|$, i.e.\ when the two closing edges can reach. Outside
+that region no polygon exists; the admissible set is therefore a proper subset of
+$\mathbb{R}^{2N-4}$, which an unconstrained line search will leave.
+
+\subsection{The Jacobian, implicitly}
+
+We need $\partial v/\partial p\in\mathbb{R}^{2N\times(2N-4)}$. Differentiating \eqref{eq:a}
+directly is possible and error-prone. Instead differentiate the constraint
+$\operatorname{per}(v)=P$ implicitly. With $u_k=(v_k-v_{k-1})/|v_k-v_{k-1}|$ the unit edge
+vectors,
+\begin{equation}\label{eq:pergrad}
+  \frac{\partial \operatorname{per}}{\partial v_k}=u_k-u_{k+1},
+\end{equation}
+and since $x_j,y_j$ for $j=1,\dots,N-2$ \emph{are} the parameters while $v_{N-1}$ and $\Im v_0$
+are pinned, the only nontrivial row is
+\begin{equation}\label{eq:implicit}
+  \frac{\partial x_0}{\partial p}
+  =-\frac{1}{\partial\operatorname{per}/\partial x_0}
+    \left(\frac{\partial\operatorname{per}}{\partial x_1},\dots,
+          \frac{\partial\operatorname{per}}{\partial y_{N-2}}\right).
+\end{equation}
+Every column of the resulting Jacobian is tangent to $\{\operatorname{per}=P\}$, which is what
+lets an optimizer move without a multiplier.
+
+\paragraph{One direction only.} The map $p\mapsto v$ is smooth. Its inverse --- putting a given
+polygon into the gauge --- is \emph{not}: it selects the longest side and normalizes orientation,
+and both choices jump when sides tie. A regular $N$-gon ties everywhere, and regular $N$-gons are
+what these problems converge to, so the canonical map has a branch cut sitting exactly on the
+target. Use it to build an initial $p$; never inside a loop.
+
+\section{The shape derivative of a simple eigenvalue}
+
+Let $V$ be a velocity field on $\bd$ and $\Om_t$ the domain transported by it. For a
+\emph{simple} $\lambda$ with $\|u\|_{L^2(\Om)}=1$, the Hadamard formula gives
+\begin{equation}\label{eq:hadamard}
+  \frac{\dd\lambda}{\dd t}\bigg|_{t=0}
+  \;=\;-\int_{\bd}\Big(\pdn{u}\Big)^{\!2}\,(V\!\cdot\!n)\dd s ,
+\end{equation}
+$n$ the outward normal. Only the normal component enters: sliding the boundary along itself does
+not move the domain.
+
+\subsection{The velocity of a vertex}
+
+For a polygon parametrized by its vertices, the design variable \emph{is} a vertex. Moving $v_j$
+by $\delta$ while holding the others fixed displaces the two incident edges linearly. In
+normalized arclength $\tau\in[0,1]$ along segment $j$ (running $v_j\to v_{j+1}$),
+\begin{equation}\label{eq:vertexvel}
+  \delta p(\tau)=
+  \begin{cases}
+    \tau\,\delta & \text{on segment } j-1\quad(\text{$v_j$ is its endpoint}),\\
+    (1-\tau)\,\delta & \text{on segment } j\quad(\text{$v_j$ is its start}),\\
+    0 & \text{otherwise},
+  \end{cases}
+\end{equation}
+and $V\!\cdot\!n=\Re(\overline{n}\,\delta p)$. Both edges remain straight, so \eqref{eq:vertexvel}
+is exact rather than a linearization.
+
+\paragraph{One solve buys the whole gradient.} The Cauchy data $\partial u/\partial n$ is
+computed once; each of the $2N$ partial derivatives is then \eqref{eq:hadamard} against a
+different $V\!\cdot\!n$, i.e.\ a weighted dot product. So $\nabla_p\lambda$ costs about one
+eigenvalue evaluation, not $2N$ of them --- the reason to use Hadamard rather than differencing
+the solver.
+
+\paragraph{A quadrature trap.} A vertex perturbation \emph{moves a corner}, and near a corner of
+interior angle $\omega$ with $\nu=\pi/\omega$ one has
+$(\partial u/\partial n)^2\sim r^{2\nu-2}$, while \eqref{eq:vertexvel} contributes
+$V\!\cdot\!n\sim r$. The corner-adapted quadrature that normalizes eigenfunctions is built for the
+eigenfunction's own exponent family and does \emph{not} integrate that weight exactly. Measured
+on an L-shape's reentrant vertex against a five-point central difference: $6.1$ digits with the
+normalization node set, $9.3$ with the one built for integer powers, both answers looking
+entirely plausible. For $\nu>1$ the integrand vanishes at the corner and the distinction is
+invisible --- which is why the trap only appears once a reentrant corner becomes a design
+variable.
+
+\section{Multiple eigenvalues}\label{sec:degen}
+
+Formula \eqref{eq:hadamard} requires $u$, and at a multiple eigenvalue there is no distinguished
+$u$. Let $\lambda$ have multiplicity $m$ with orthonormal eigenfunctions $u_1,\dots,u_m$ spanning
+the eigenspace, and define the symmetric $m\times m$ matrix
+\begin{equation}\label{eq:M}
+  M(V)_{ij}\;=\;-\int_{\bd}\pdn{u_i}\,\pdn{u_j}\,(V\!\cdot\!n)\dd s .
+\end{equation}
+Then the $m$ eigenvalue branches emerging from $\lambda$ have one-sided derivatives equal to the
+\emph{eigenvalues of} $M(V)$, ordered accordingly. Two consequences organize everything below.
+
+\begin{enumerate}
+\item $V\mapsto M(V)$ is \textbf{linear}. So along a parameter direction $d$,
+  $M(d)=\sum_i d_i M^{(i)}$ is an affine matrix function, and the local model of an ordered
+  eigenvalue is an ordered eigenvalue of an affine matrix function --- the best-understood case
+  in nonsmooth optimization.
+\item Only the \textbf{spectrum} of $M$ is meaningful. The basis $\{u_i\}$ is an arbitrary
+  orthonormal basis of the eigenspace and rotates under perturbation, so individual entries carry
+  no information. On the unit square's double $\lambda_2=\lambda_3=5\pi^2$, an edge translation
+  gives entries $-50.4,-48.3$ with off-diagonal $-29.6$, against eigenvalues $-19.7$ and $-79.0$:
+  nothing about the entries resembles the answer.
+\end{enumerate}
+
+\paragraph{Symmetric functions stay smooth.} If $f$ is symmetric in the cluster then
+$\sum_j f(\lambda_j)=\operatorname{tr}f(\Lambda+M)$ is a polynomial in the entries of $M$, hence
+smooth in the shape. In particular $\lambda_2+\lambda_3$ has an honest gradient where
+$\lambda_2$ and $\lambda_3$ separately do not. Rephrasing an objective over a whole cluster is
+often cheaper than handling the nonsmoothness.
+
+\subsection{Near-degenerate clusters, and a basis trap}\label{sec:nearly}
+
+In practice a cluster is $\varepsilon$-active: its members are near-equal, not equal. If the
+cluster eigenvalues are $\lambda_{\ell},\dots,\lambda_{\ell+m-1}$ then the correct first-order
+model is the spectrum of
+\begin{equation}\label{eq:LambdaM}
+  \Lambda+M(d),\qquad \Lambda=\operatorname{diag}(\lambda_{\ell}-\lambda_k,\dots,
+  \lambda_{\ell+m-1}-\lambda_k),
+\end{equation}
+not of $M(d)$ alone. Dropping $\Lambda$ makes the existing splitting appear free and inflates the
+predicted gain.
+
+\medskip
+\noindent\textbf{But $\Lambda$ is diagonal only in the basis that diagonalizes the unperturbed
+cluster.} A L\"owdin orthonormalization of the eigenspace does not; adding $\Lambda$ to an $M$
+built in that basis sums two matrices in different bases and yields a model whose predicted
+\emph{direction} is wrong. The symptom is unmistakable once looked for: the trust-region ratio
+\[
+  \rho=\frac{F(p+d)-F(p)}{\text{predicted gain}}
+\]
+stays \emph{negative} as the radius shrinks ($-0.24,-0.49,-0.65,-0.75,-0.81,-1.23$ measured)
+where a correct first-order model must give $\rho\to1$. The remedy is to build $M$ from the
+individual eigenfunctions when the splitting is numerically resolvable, and to fall back to the
+cluster basis with $\Lambda=0$ when it is not --- there $\Lambda$ vanishes and any orthonormal
+basis serves.
+
+\section{Differentiating the ratio}
+
+With $F=\lambda_k/\lambda_1$ and $g_1=\nabla_p\lambda_1$ (which exists, by
+Fact~\ref{fact:krahn}), the directional derivative in direction $d$ is
+\begin{equation}\label{eq:dF}
+  \dd F(d)\;=\;\frac{\sigma_j\big(\Lambda+M(d)\big)\,\lambda_1-\lambda_k\,(g_1\!\cdot\!d)}
+                    {\lambda_1^{2}},
+\end{equation}
+where $\sigma_j$ is the $j$-th ordered eigenvalue and $j$ is the position of $\lambda_k$ within
+its cluster. When the cluster is a singleton, $\sigma_0$ is linear and \eqref{eq:dF} is an
+ordinary gradient.
+
+\subsection{The dichotomy that decides the algorithm}
+
+$\lammin$ of an affine matrix function is \textbf{concave}; $\lammax$ is \textbf{convex}. Hence
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lLL@{}}
+\toprule
+position of $\lambda_k$ & model of $\dd F$ & maximizing it \\
+\midrule
+lowest of its cluster & concave & concave program: one optimum, tractable \\
+highest of its cluster & convex & maximum on the boundary; nonconvex in general \\
+simple & linear & ordinary steepest ascent \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent At regular $N$-gons the pattern (measured) is: $\lambda_1$ simple, then alternating
+doubles, with $\lambda_2$ always the \emph{lowest} member of a double. So $k=2$ --- and $k=4$ for
+$N\ge5$ --- lands in the tractable column, while $k=3$ (and $k=5$ for $N\ge5$) does not.
+
+\section{The trust-region subproblems}
+
+At each iterate we maximize the model \eqref{eq:dF} over $\|d\|\le\Delta$.
+
+\subsection{Concave case: $\lambda_k$ lowest}
+
+Introducing $t$ for $\lammin$,
+\begin{equation}\label{eq:sdp}
+  \max_{d,\,t}\ \ t\lambda_1-\lambda_k(g_1\!\cdot\!d)
+  \qquad\text{s.t.}\qquad \Lambda+M(d)\succeq tI,\quad \|d\|\le\Delta ,
+\end{equation}
+a semidefinite program. For $m=2$ the matrix inequality is two scalar conditions,
+\[
+  \operatorname{tr}\big(\Lambda+M(d)-tI\big)\ge0,
+  \qquad \det\big(\Lambda+M(d)-tI\big)\ge0,
+\]
+so \eqref{eq:sdp} is a small smooth NLP and no SDP solver is required. Since the dihedral
+symmetry $D_N$ produces $m=2$ generically, the cheap case is also the common one.
+
+\subsection{Convex case: $\lambda_k$ highest}\label{sec:convex}
+
+Here the subproblem maximizes a convex function over a ball. For $m=2$ it nonetheless reduces
+exactly to a one-dimensional search. Write $M(d)=\begin{pmatrix}\alpha&\beta\\
+\beta&\gamma\end{pmatrix}$ with $\alpha=A\!\cdot\!d$, $\beta=B\!\cdot\!d$, $\gamma=C\!\cdot\!d$
+linear in $d$. Then
+\begin{equation}\label{eq:lammax}
+  \lammax\big(M(d)\big)=\underbrace{\tfrac{\alpha+\gamma}{2}}_{\ell\cdot d}
+  +\Big\|\underbrace{\big(\tfrac{\alpha-\gamma}{2},\ \beta\big)}_{L d}\Big\|
+  \;=\;\ell\!\cdot\!d+\|Ld\|,\qquad L:\mathbb{R}^{n_p}\to\mathbb{R}^2 .
+\end{equation}
+Using $\|w\|=\max_{\|u\|\le1}u^{\!\top}w$ and exchanging the maxima,
+\begin{equation}\label{eq:reduction}
+  \max_{\|d\|\le\Delta}\Big[\ell\!\cdot\!d+\|Ld\|\Big]
+  \;=\;\max_{\|u\|\le1}\ \Delta\,\big\|\ell+L^{\!\top}u\big\| .
+\end{equation}
+Since $u\in\mathbb{R}^2$, \eqref{eq:reduction} is a maximization over the unit circle: a
+one-dimensional search, exact, with the optimal $d$ recovered from the maximizing $u$. The
+convex case is therefore not the research obstacle it first appears to be, provided $m=2$.
+
+\subsection{Criticality is gain per unit radius}
+
+The optimal value of \eqref{eq:sdp} scales with $\Delta$. Testing it directly declares optimality
+whenever the radius has shrunk --- observed at a point whose directional derivative was still
+$1.4$. The stopping test must be
+\[
+  \text{criticality}\;=\;\frac{\text{optimal model gain}}{\Delta},
+\]
+which is the largest achievable directional derivative and vanishes only at a first-order
+critical point.
+
+\section{First-order optimality, and a condition that is vacuous}\label{sec:vacuous}
+
+Take $k=2$ at a regular $N$-gon. Two facts hold there to machine precision, both measured:
+\begin{enumerate}
+\item $g_1=0$, because the regular $N$-gon \emph{minimizes} $\lambda_1$ at fixed perimeter
+  (P\'olya--Szeg\H{o} for $N=3,4$);
+\item $\operatorname{tr}M(d)=0$ for all $d$, i.e.\ $\lambda_2+\lambda_3$ is stationary.
+\end{enumerate}
+With $g_1=0$, \eqref{eq:dF} collapses to $\dd F(d)=\lammin(M(d))/\lambda_1$, so a local maximum
+requires $\lammin(M(d))\le0$ for all $d$. Because $M(-d)=-M(d)$ this is equivalent to $M(d)$
+never being definite, and for $m=2$ exactly to $\det M(d)\le0$.
+
+Now use the second fact. Traceless means $\gamma=-\alpha$, i.e.\ $C=-A$, so
+\begin{equation}\label{eq:autodet}
+  \det M(d)=(A\!\cdot\!d)(C\!\cdot\!d)-(B\!\cdot\!d)^2
+  =-(A\!\cdot\!d)^2-(B\!\cdot\!d)^2\;\le\;0 \qquad\text{identically.}
+\end{equation}
+The quadratic form is $Q=-AA^{\!\top}-BB^{\!\top}$: negative semidefinite by construction, of
+rank at most $2$ whatever $n_p$ is (measured rank exactly $2$ against $n_p=4,6,8,10$).
+
+\medskip
+\noindent\textbf{So the first-order condition is satisfied automatically and certifies nothing.}
+It cannot distinguish a maximum from anything else. This is worth stating plainly because an
+earlier version of these notes reported the determinant test as a certificate on the strength of
+margins of order $10^{-13}$ --- which were not small, but structurally zero.
+
+The content lies in the $n_p-2$ dimensional null space $\{d:A\!\cdot\!d=B\!\cdot\!d=0\}$, where
+$\dd F=0$ and the verdict is second order. Measured there, $F$ falls quadratically along every
+sampled direction. That is evidence, not proof. The exception is $N=3$: then $n_p=2$ equals
+$\operatorname{rank}Q$, the null space is trivial, $Q\prec0$ strictly, and the equilateral
+triangle is a genuine first-order strict local maximizer.
+
+\section{Invariants used as checks}
+
+Because a wrong shape derivative is finite and plausible rather than catastrophic, we check
+against statements that are true independently of the code.
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lL@{}}
+\toprule
+invariant & what it caught \\
+\midrule
+Fact~\ref{fact:ppw}, $\lambda_2/\lambda_1\le2.5387340$
+  & a reported $2.6936$: tracked eigenvalues were returned unsorted after $\lambda_2$ and
+    $\lambda_3$ crossed, so the objective read the third mode as the second. Also a reported
+    $2.5400$: the objective was stale relative to the eigenvalues it was supposed to describe. \\
+P\'olya--Szeg\H{o}, regular $N$-gon minimizes $\lambda_1$
+  & a run converging $2.8\times10^{-3}$ \emph{below} $2\pi^2$ for the square, which is
+    impossible; the eigenvalue search had accepted a point whose tension was
+    $2\times10^{-4}$. \\
+$\rho\to1$ as $\Delta\to0$
+  & the basis mismatch of \S\ref{sec:nearly}. \\
+Rigid motions leave $\lambda$ fixed
+  & sign and bookkeeping errors in the assembled $\nabla_v\lambda$, which must sum to zero over
+    all vertices in each coordinate. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{What is not handled}
+
+\begin{itemize}
+\item \textbf{Clusters with $m>2$.} Both \eqref{eq:sdp} and \eqref{eq:reduction} are written for
+  $2\times2$ blocks. General $m$ needs an SDP solver for the concave case; the convex case is
+  genuinely harder, since \eqref{eq:lammax} is special to $m=2$.
+\item \textbf{Global optimality.} Everything here is local. Whether the regular $N$-gon maximizes
+  $\lambda_2/\lambda_1$ among $N$-gons is open; we have local evidence only.
+\item \textbf{Corner-moving velocities at a reentrant corner in the certified regime.} The
+  quadrature caveat above is handled by a separate node set, but the interaction with very sharp
+  corners ($\nu\ll1$) is untested.
+\end{itemize}
+
+\section*{Pointers}
+
+\noindent\begin{tabularx}{\textwidth}{@{}lL@{}}
+\toprule
+\S\ref{sec:param} & \code{douse/polygon.py} \\
+\eqref{eq:hadamard}--\eqref{eq:vertexvel} & \code{douse/derivative.py}; the Hadamard node set is
+  \code{lappy}'s \code{MPSEigensolver.hadamard\_quad} \\
+\S\ref{sec:degen}--\S\ref{sec:nearly} & \code{douse/derivative.py} (\code{cluster\_matrices}),
+  \code{douse/cluster\_opt.py} (\code{local\_model}) \\
+\eqref{eq:sdp} & \code{douse/cluster\_opt.py} (\code{trust\_region\_step}) \\
+\S\ref{sec:vacuous} & \code{douse/certify.py} \\
+\bottomrule
+\end{tabularx}
+
+\end{document}

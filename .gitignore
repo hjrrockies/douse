@@ -169,3 +169,12 @@ uv.lock
 
 # generated animations: reproducible from benchmarks/animate_runs.py, and large
 benchmarks/animations/
+
+# LaTeX build artifacts (the .tex and .pdf are tracked; these are not)
+docs/*.aux
+docs/*.log
+docs/*.out
+docs/*.fls
+docs/*.fdb_latexmk
+docs/*.synctex.gz
+docs/*.toc
