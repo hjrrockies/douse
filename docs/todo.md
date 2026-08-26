@@ -562,14 +562,37 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
       and no gradient at a cluster. Simply printing a result failed. It now formats whichever of
       the two producers' fields are present.
 
+## Spectral guards — what is watched, and what still is not
+
+- [x] **A missed mode is invisible to `worst_sigma`, and now has its own detector.**
+      `douse/spectral_guard.py`: place a cut in every gap between distinct levels of the tracked
+      set and compare Weyl's three-term count against what was found. Measured separation, on the
+      square's exact spectrum and the nine certified grid cells — clean worst +0.319, the real
+      missed-mode run +1.010, threshold 0.5. Recorded as `worst_weyl_deficit` on every
+      `maximize_ratio` result and every `ratio_multistart` ledger row.
+      **Known blind spot, pinned by a test:** a mode missing in the TOPMOST gap sits above every
+      cut and is not seen. Callers must request more eigenvalues than the objective consumes;
+      `ratio_multistart` asks for `k+2` and uses `k+1`. Do not remove that margin.
+- [ ] **PPW per iterate on the `maximize_ratio` path.** Cheap, it is a theorem, and the invariant
+      list claimed it existed for long enough to matter. Only constrains `k=1`.
+- [ ] **Recalibrate `DEFICIT_TOL` beyond N=4..6, k<=5.** The threshold is evidence about the range
+      it was measured on. The stored `worst_weyl_deficit` column makes this a query, not a rerun.
+
 ## Invariants that have caught real bugs
 
 Kept here because every bug in this work returned a plausible number rather than crashing, and
 two were caught by theorems rather than by tests. Tabulated with what each caught in
 `docs/spectral_optimization.tex` §8.
 
-- `lam_2/lam_1 ≤ 2.5387340` (Payne–Pólya–Weinberger) — checked at every iterate, not just at the
-  end, because a stale objective passed an end-only check.
+- `lam_2/lam_1 ≤ 2.5387340` (Payne–Pólya–Weinberger) — **NOT checked per iterate on the current
+  path, contrary to what this list said until 2026-08-26.** The per-iterate check lived in the
+  older `descend` path; `maximize_ratio` has never had one. What exists today is the regression
+  tests (`test_certify.py`, `test_cluster_opt.py`) and an after-the-fact filter in
+  `benchmarks/summarize_grid.py` and `benchmarks/plot_optima.py`. The claim mattered: a run
+  reporting 2.6203 survived 92 iterations partly because this list said something was watching.
+- **The Weyl count of the tracked set** (`douse.spectral_guard`) — the tracked values must be
+  CONSECUTIVE, and `worst_sigma` cannot tell that they are not. Recorded per run as
+  `worst_weyl_deficit`, and unlike PPW it covers every `k`, not just `k=1`.
 - The regular N-gon minimizes `lam_1` — a run converging BELOW `2π²` is impossible.
 - `rho → 1` as the trust radius shrinks — a first-order model that does not is wrong in
   direction, not merely in magnitude.

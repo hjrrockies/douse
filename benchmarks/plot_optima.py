@@ -27,7 +27,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
-from douse import VertexPolygon
+from douse import VertexPolygon, spectral_guard
 
 PERIM = 4.0
 LEDGERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run', 'ratio_multistart')
@@ -97,6 +97,23 @@ def collect(include_pre_fix, sigma_max=1e-6, res_max=1e-4):
             # and the impossible shape would be drawn as the answer.
             impossible = [r for r in clean if r['k'] == 1 and r['fun'] > PPW + 1e-9]
             clean = [r for r in clean if r not in impossible]
+            # AND THE GENERAL FORM OF THE SAME FAILURE, which PPW only catches at k=1: a tracked
+            # set that is not consecutive. Recomputed from `x` and `lams` so it applies to rows
+            # written before the guard existed. See `douse.spectral_guard`.
+            def _skipped(r):
+                d = r.get('worst_weyl_deficit')
+                if d is None or not np.isfinite(d):
+                    try:
+                        dom = VertexPolygon(r['N'], perim=PERIM)(np.asarray(r['x'], dtype=float))
+                        d = spectral_guard.weyl_deficit(dom, r['lams'])
+                    except Exception:                                 # noqa: BLE001
+                        return False
+                return np.isfinite(d) and d > spectral_guard.DEFICIT_TOL
+            n_skipped = sum(_skipped(r) for r in clean)
+            clean = [r for r in clean if not _skipped(r)]
+            if n_skipped:
+                print(f'  N={N} k={k}: dropped {n_skipped} run(s) whose tracked set is not '
+                      f'consecutive (Weyl deficit > {spectral_guard.DEFICIT_TOL})')
             if impossible:
                 print(f'  N={N} k={k}: dropped {len(impossible)} run(s) above the PPW bound '
                       f'{PPW:.7f} (max {max(r["fun"] for r in impossible):.7f}) -- a missed mode')

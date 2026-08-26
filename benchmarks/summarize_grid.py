@@ -48,6 +48,8 @@ import warnings
 
 import numpy as np
 
+from douse import VertexPolygon, spectral_guard
+
 PPW = (3.8317059702/2.4048255577)**2      # Payne--Polya--Weinberger: lam_2/lam_1 <= this
 
 try:
@@ -75,7 +77,7 @@ def revalidate(row, n_extra=3):
 
     Returns `(ratio, lams, ok)` -- `ok` is False when the fresh solve disagrees with the record.
     """
-    from douse import SpectrumEvaluator, VertexPolygon
+    from douse import SpectrumEvaluator
 
     N, k = row['N'], row['k']
     fam = VertexPolygon(N, perim=PERIM)
@@ -102,17 +104,41 @@ def load(path):
     return rows
 
 
+def row_deficit(r):
+    """`worst_weyl_deficit` for a row, RECOMPUTED from `x` and `lams` when it is absent.
+
+    Rows written before the guard existed have no such field, and they are exactly the rows most
+    worth auditing. `x` and `lams` are stored, so the statistic is recoverable for every row ever
+    written -- an audit of the 81 rows on disk found 3 with a deficit above threshold, none of
+    which had certified.
+    """
+    d = r.get('worst_weyl_deficit')
+    if d is not None and np.isfinite(d):
+        return float(d)
+    try:
+        dom = VertexPolygon(r['N'], perim=PERIM)(np.asarray(r['x'], dtype=float))
+        return float(spectral_guard.weyl_deficit(dom, r['lams']))
+    except Exception:                                                 # noqa: BLE001
+        return float('nan')
+
+
 def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5):
     """Best certified value in a cell, and how many starts agree with it."""
     crashed = [r for r in rows if not r.get('ok', True)]
     ok = [r for r in rows if r.get('ok', True)]
     drifted = [r for r in ok if r['worst_sigma'] > sigma_max]
     clean = [r for r in ok if r['worst_sigma'] <= sigma_max]
+    # A NON-CONSECUTIVE TRACKED SET IS NOT A RESULT, and `worst_sigma` above cannot see one:
+    # the 2.6203 run had sigma = 1e-09. Dropped here rather than merely reported, because a
+    # value promoted out of this function is quoted.
+    skipped = [r for r in clean if row_deficit(r) > spectral_guard.DEFICIT_TOL]
+    clean = [r for r in clean if not (row_deficit(r) > spectral_guard.DEFICIT_TOL)]
     good = [r for r in clean
             if r.get('success') and np.isfinite(r.get('resolution', np.nan))
             and r['resolution'] <= res_max]
     if not good:
         return dict(best=None, n_total=len(rows), n_crashed=len(crashed),
+                    n_skipped_mode=len(skipped),
                     n_drifted=len(drifted), n_certified=0, n_agree=0, n_near=0,
                     n_clean=len(clean),
                     best_uncertified=(max((r['fun'] for r in clean), default=None)))
@@ -127,6 +153,7 @@ def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5):
     # starts found the SAME point, and conflating them throws away the globality evidence.
     n_near = sum(abs(r['fun'] - best['fun']) <= near_rtol*abs(best['fun']) for r in clean)
     return dict(best=best, n_total=len(rows), n_crashed=len(crashed), n_clean=len(clean),
+                n_skipped_mode=len(skipped),
                 n_drifted=len(drifted), n_certified=len(good), n_agree=len(agreeing),
                 n_near=n_near, spread=spread, best_uncertified=None)
 

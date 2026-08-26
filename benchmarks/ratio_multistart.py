@@ -26,6 +26,13 @@ the same command skips the starts already there. These runs take minutes each an
 READ `worst_sigma` IN EVERY ROW. A run whose frozen basis drifted is not a result -- that is what
 produced the retracted 3.0717 for a problem whose answer is above 3.18. Rows whose `worst_sigma`
 exceeds `--sigma-max` are reported separately and excluded from the grouping.
+
+AND READ `worst_weyl_deficit`, which catches the OTHER failure. `worst_sigma` says how well the
+basis resolved what it found; it cannot say that a mode was SKIPPED. N=6 `lam_2/lam_1` start 2
+once reported 2.6203171651 -- above the PPW bound, therefore impossible -- at a pristine
+sigma = 1e-09, because `lam_2` was missing and the run had been optimizing `lam_3/lam_1` for 92
+iterations. A value at or below 0 is clean; at or above ~1 a mode is probably missing. See
+`douse.spectral_guard`.
 """
 import argparse
 import json
@@ -105,6 +112,8 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None):
                 edges=[float(t) for t in np.sort(dg.edge_lengths(v))],
                 angles=[float(t) for t in np.sort(np.degrees(dg.interior_angles(v)))],
                 worst_sigma=float(res.worst_sigma), n_replans=int(res.n_replans),
+                worst_weyl_deficit=float(getattr(res, 'worst_weyl_deficit', float('nan'))),
+                n_weyl_flags=int(getattr(res, 'n_weyl_flags', 0)),
                 n_qn_steps=int(res.n_qn_steps), n_cluster_steps=int(res.n_cluster_steps),
                 n_degeneracy_moves=int(res.n_degeneracy_moves),
                 resolution=float(getattr(res, 'resolution', float('nan'))),

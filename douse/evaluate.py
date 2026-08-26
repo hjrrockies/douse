@@ -52,6 +52,8 @@ import numpy as np
 
 from lappy import Eigenproblem, basis_plan as BP
 from lappy.asymp import weyl_est
+
+from .spectral_guard import weyl_report
 from lappy.core import EigensolverFailure
 from lappy.mps import MPSEigensolver
 
@@ -114,6 +116,10 @@ class SpectrumEvaluator:
         self.replan_tol = None if replan_tol is None else float(replan_tol)
         self.n_replans = 0
         self.worst_sigma = 0.0
+        # A MISSED MODE IS INVISIBLE TO `worst_sigma`; see `douse.spectral_guard`. Tracked the
+        # same way -- worst over the run, so a caller filters on one number.
+        self.worst_weyl_deficit = -np.inf
+        self.n_weyl_flags = 0
         self.last_mults = None
         self._plan = None
         self._plan_at = None if plan_at is None else np.array(plan_at, dtype=float)
@@ -260,6 +266,21 @@ class SpectrumEvaluator:
                     lams = np.asarray(evp.solve(self.n_eigs), dtype=float)[:self.n_eigs]
                 self.n_solves += 1
                 self.last_mults = None
+
+        # IS THIS THE CONSECUTIVE SET IT CLAIMS TO BE? Every consumer reads `lams` as
+        # `lam_1 .. lam_K`, and nothing checked. `spectral_guard` compares the count Weyl puts in
+        # the returned window against the number found; a skipped mode shows up as a shortfall
+        # that `worst_sigma` is structurally blind to. Reported, not enforced -- Weyl is
+        # asymptotic and this is a heuristic, so it warns ONCE per evaluator and records the worst
+        # value for a filter to act on.
+        if len(lams) >= 2:
+            deficit, message = weyl_report(dom, lams)
+            if np.isfinite(deficit):
+                self.worst_weyl_deficit = max(self.worst_weyl_deficit, deficit)
+            if message:
+                self.n_weyl_flags += 1
+                if self.n_weyl_flags == 1:
+                    warnings.warn(message)
 
         self._last = (p.copy(), lams.copy())
         return lams, solver

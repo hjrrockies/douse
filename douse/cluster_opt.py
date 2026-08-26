@@ -1043,5 +1043,11 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                           # numbers make that visible on the first run instead of the fourth.
                           worst_sigma=float(getattr(evaluator, 'worst_sigma', np.nan)),
                           n_replans=int(getattr(evaluator, 'n_replans', 0)),
+                          # ...and `worst_sigma` is blind to a mode being SKIPPED rather than
+                          # badly resolved. See `douse.spectral_guard`: N=6 `lam_2/lam_1` once
+                          # reported 2.6203, above the PPW bound, at sigma = 1e-09.
+                          worst_weyl_deficit=float(getattr(evaluator, 'worst_weyl_deficit',
+                                                           np.nan)),
+                          n_weyl_flags=int(getattr(evaluator, 'n_weyl_flags', 0)),
                           lams_tracked=lams_tracked, fun_tracked=F_tracked,
                           verified=bool(verify_final), success=success, message=message)
