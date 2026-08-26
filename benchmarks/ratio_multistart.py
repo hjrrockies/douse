@@ -200,7 +200,13 @@ def main():
                 for i in todo]
         print(f'running {len(jobs)} start(s) on {args.workers} worker(s), '
               f'{threads} thread(s) each', flush=True)
-        with ProcessPoolExecutor(max_workers=args.workers) as ex:
+        # ONE START PER PROCESS. Without `max_tasks_per_child` a worker is recycled across many
+        # starts, so each start inherits whatever the previous one's heap left behind -- and a
+        # 400-iterate start builds ~400 solvers. `lappy` now bounds and promptly frees its caches,
+        # so this is belt and braces rather than the fix, but a fresh process also returns
+        # allocator fragmentation to the OS, which nothing inside the process can do. Re-import
+        # costs a few seconds against starts that run 20-40 minutes.
+        with ProcessPoolExecutor(max_workers=args.workers, max_tasks_per_child=1) as ex:
             futs = {ex.submit(_cell, j): j[2] for j in jobs}
             for fut in as_completed(futs):
                 row = fut.result()
