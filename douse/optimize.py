@@ -34,9 +34,24 @@ class OptimizeResult(dict):
     __setattr__ = dict.__setitem__
 
     def __repr__(self):
-        return (f'OptimizeResult(fun={self.fun:.12g}, nit={self.nit}, nfev={self.nfev}, '
-                f'grad_norm={self.grad_norm:.3g}, success={self.success}, '
-                f'message={self.message!r})')
+        # BUILT FROM WHATEVER IS PRESENT, because two producers fill this in differently:
+        # `descend` sets `nfev` and `grad_norm`, `cluster_opt.maximize_ratio` sets neither (it has
+        # no line search and no gradient at a cluster) and sets `delta`, `gap` and `worst_sigma`
+        # instead. The fixed format string raised `AttributeError: nfev` on every
+        # `maximize_ratio` result, so simply printing one -- in a notebook, in a log line, in a
+        # debugger -- failed.
+        parts = []
+        for key, fmt in (('fun', '.12g'), ('nit', 'd'), ('nfev', 'd'), ('grad_norm', '.3g'),
+                         ('gap', '.3g'), ('delta', '.3g'), ('worst_sigma', '.1e')):
+            if key in self and self[key] is not None:
+                try:
+                    parts.append(f'{key}={self[key]:{fmt}}')
+                except (TypeError, ValueError):
+                    parts.append(f'{key}={self[key]!r}')
+        for key in ('success', 'message'):
+            if key in self:
+                parts.append(f'{key}={self[key]!r}')
+        return f"OptimizeResult({', '.join(parts)})"
 
 
 def descend(obj, p0, is_valid=None, max_iter=200, alpha0=0.02, grow=1.6, shrink=0.5,

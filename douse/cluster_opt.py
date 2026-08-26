@@ -83,8 +83,10 @@ from . import degeneracy as _dg
 from .derivative import cluster_matrices, dlams_dp
 from .polygon import gauge_vector
 from .optimize import OptimizeResult
+from .quasi_newton import SR1, tr_subproblem
 
-__all__ = ['local_model', 'trust_region_step', 'maximize_ratio', 'model_gain']
+__all__ = ['local_model', 'trust_region_step', 'maximize_ratio', 'model_gain',
+           'model_gain2']
 
 
 def _active_cluster(lams, k, eps_abs):
@@ -104,23 +106,58 @@ def _active_cluster(lams, k, eps_abs):
     return lo, hi + 1
 
 
+def _eps_width(lam_k, eps_rel, eps_abs, eps_floor_rel):
+    """The absolute half-width of the eps-active set: the requested width, but never below the
+    resolution floor. Split out from `local_model` so the arithmetic can be tested without an
+    eigensolve, because getting it wrong is silent -- see `local_model` for the measurement."""
+    width = float(eps_rel)*abs(lam_k) if eps_abs is None else float(eps_abs)
+    return max(width, float(eps_floor_rel)*abs(lam_k))
+
+
 def _cluster_scale(Ms):
     """`||(||M^(i)||_2)_i||` -- how far a unit step can move the cluster members apart."""
     return float(np.linalg.norm([np.linalg.norm(M, 2) for M in Ms]))
 
 
-def local_model(family, p, solver, lams, k=1, eps_rel=1e-3, eps_abs=None, align_rtol=1e-9):
+def local_model(family, p, solver, lams, k=1, eps_rel=1e-3, eps_abs=None, align_rtol=1e-9,
+                eps_floor_rel=1e-9):
     """The first-order model of `lam_k/lam_1` at `p`.
 
     Returns a dict with `mode` ('smooth' or 'cluster'), the pieces the trust-region step needs,
     and the cluster range so a caller can see the model switch happening. `eps_abs` overrides
     `eps_rel*|lam_k|` when given, which is how `maximize_ratio` ties the active set to the trust
     radius.
+
+    `eps_floor_rel` IS WHAT STOPS A CONVERGING RUN FROM DESTROYING ITSELF, and it is not a
+    tuning constant. Tying the active set to the trust radius is right on the way in and wrong at
+    the end: `eps_abs = Delta*scale` keeps shrinking, so a converged run eventually stops
+    recognising a pair of eigenvalues it cannot even resolve.
+
+    Measured at the N=4 `max lam_4/lam_1` optimum, where `lam_4` and `lam_5` are split by 1.16e-08
+    absolute (1.14e-10 relative -- numerically identical, against a basis resolving to ~1e-10):
+
+        delta     eps_abs    m   criticality
+        1e-06     1.23e-04   2     1.11e-06
+        1e-10     1.23e-08   2     1.10e-06
+        1e-12     1.23e-10   1     1.35e+00   <-- cluster lost
+        5.7e-15   6.98e-13   1     1.35e+00
+
+    Below `delta = split/scale = 9.4e-11` the model reverts to `m = 1` and reports the
+    simple-eigenvalue gradient at a degenerate point -- which `DegenerateSpectrum` documents as a
+    DIFFERENT QUANTITY, wrong by factors of three to six, not an approximation. So the optimizer
+    is handed a confident O(1) ascent direction where the truth is 1e-06, every step fails, and
+    the radius grinds to 5.68e-15. That is the "trust radius collapsed" ending on 8 of the first
+    10 multi-start runs, including every run that found the BEST answer.
+
+    THE ASYMMETRY IS WHAT JUSTIFIES A FLOOR. Over-clustering is benign: `Lam` carries the real
+    splitting, so a cluster with one extra nearly-degenerate member is still exact at an exact
+    degeneracy and correct in the approach to one (module docstring). Under-clustering is
+    catastrophic, as above. When in doubt, cluster. The floor is relative to `|lam_k|` and set at
+    the scale of the eigenvalue accuracy these runs actually achieve.
     """
     lams = np.asarray(lams, dtype=float)
     lam_1, lam_k = float(lams[0]), float(lams[k])
-    if eps_abs is None:
-        eps_abs = float(eps_rel)*abs(lam_k)
+    eps_abs = _eps_width(lam_k, eps_rel, eps_abs, eps_floor_rel)
     lo, hi = _active_cluster(lams, k, float(eps_abs))
     m, j = hi - lo, k - lo
     out = dict(cluster=(lo, hi), m=m, j=j, lam_1=lam_1, lam_k=lam_k, ratio=lam_k/lam_1,
@@ -132,7 +169,10 @@ def local_model(family, p, solver, lams, k=1, eps_rel=1e-3, eps_abs=None, align_
         g1, gk = J[0], J[-1]
         out.update(mode='smooth', g1=g1, gk=gk,
                    grad=(gk*lam_1 - lam_k*g1)/lam_1**2,
-                   scale=float(np.linalg.norm(gk)))
+                   scale=float(np.linalg.norm(gk)),
+                   # `mu` is the mean of the active cluster, which for a singleton IS `lam_k`.
+                   # Named the same in both branches so the second-order model has one formula.
+                   mu=lam_k, gmu=gk)
         return out
 
     g1 = dlams_dp(family, p, solver, [lam_1])[0]
@@ -143,8 +183,16 @@ def local_model(family, p, solver, lams, k=1, eps_rel=1e-3, eps_abs=None, align_
     Ms = cluster_matrices(family, p, solver, float(np.mean(lams[lo:hi])), m,
                           lams=(lams[lo:hi] if aligned else None))
     Lam = np.diag(lams[lo:hi] - lam_k) if aligned else np.zeros((m, m))
+    # THE CLUSTER MEAN IS SMOOTH WHERE ITS MEMBERS ARE NOT. `sum_{i in cluster} lam_i` is an
+    # analytic function of `p` through a crossing -- it is the individual branches that are only
+    # directionally differentiable -- and its gradient is `(1/m) tr M^(i)`, which is basis-
+    # independent and so is read off `Ms` whether or not the aligned basis was available. This
+    # is what lets `model_gain2` carry curvature through a degeneracy: the splitting stays
+    # first-order (it is the nonsmooth part, and a second-order model of it would be fiction),
+    # while the mean the whole cluster rides on gets a Hessian like any smooth scalar.
+    gmu = np.array([float(np.trace(M)) for M in Ms])/m
     out.update(mode='cluster', g1=g1, Ms=Ms, Lam=Lam, split=split, aligned=aligned,
-               scale=_cluster_scale(Ms))
+               scale=_cluster_scale(Ms), mu=float(np.mean(lams[lo:hi])), gmu=gmu)
     return out
 
 
@@ -163,6 +211,141 @@ def model_gain(model, d):
     sig = float(np.linalg.eigvalsh(S)[model['j']])
     lam_1, lam_k = model['lam_1'], model['lam_k']
     return float((sig*lam_1 - lam_k*(model['g1'] @ d))/lam_1**2)
+
+
+def model_gain2(model, d, H1=None, Hmu=None):
+    """The SECOND-ORDER local model of `dF(d)`: a quotient of quadratics, not a linearization.
+
+    `model_gain` linearizes `lam_k/lam_1` -- numerator, denominator and quotient all at once.
+    Two of those three are avoidable, and avoiding them is nearly free:
+
+        num(d) = lam_k + sigma_j(Lam + M(d)) + (1/2) d^T Hmu d
+        den(d) = lam_1 + g1.d            + (1/2) d^T H1  d
+        dF(d)  = num/den - lam_k/lam_1
+
+    THE QUOTIENT IS EXACT AND COSTS NOTHING. Even with `H1 = Hmu = 0` this is a better model than
+    `model_gain`, because the ratio's own curvature is not an approximation of anything -- it is
+    arithmetic on numbers already in hand. At a trust radius of 0.5 with `lam_1 ~ 20`, `g1.d` is
+    O(1), so the linearized quotient is wrong in the third significant figure of its own gain.
+
+    THE CURVATURE IS CARRIED BY THE TWO SMOOTH SCALARS, `lam_1` and the cluster mean `mu`, and by
+    nothing else. `sigma_j` of an affine matrix function stays FIRST-ORDER on purpose: that term
+    is the nonsmooth one, the whole reason `cluster_opt` exists, and it is already exact to first
+    order in the only sense a directional derivative can be. What a Hessian can legitimately
+    describe is the smooth surface the cluster rides on, and `local_model` supplies a gradient for
+    both pieces of it at EVERY iterate -- `g1` in both branches, `gmu` as `gk` when the cluster is
+    a singleton and as `(1/m) tr M^(i)` when it is not.
+
+    Reduces to `model_gain` as `d -> 0`, so the first-order criticality certificate is untouched;
+    `maximize_ratio` deliberately keeps measuring the stop against `model_gain`.
+    """
+    d = np.asarray(d, dtype=float)
+    lam_1, lam_k = model['lam_1'], model['lam_k']
+    if model['mode'] == 'smooth':
+        shift = float(model['gk'] @ d)
+    else:
+        S = model['Lam'] + np.einsum('i,ijk->jk', d, model['Ms'])
+        shift = float(np.linalg.eigvalsh(S)[model['j']])
+    num = lam_k + shift
+    den = lam_1 + float(model['g1'] @ d)
+    if Hmu is not None:
+        num += 0.5*float(d @ (Hmu @ d))
+    if H1 is not None:
+        den += 0.5*float(d @ (H1 @ d))
+    if not np.isfinite(num) or not np.isfinite(den) or den <= 0:
+        return -np.inf
+    return float(num/den - lam_k/lam_1)
+
+
+def model_gain2_grad(model, d, H1=None, Hmu=None):
+    """`d/dd` of `model_gain2`. A subgradient where `sigma_j` is degenerate, which SLSQP tolerates."""
+    d = np.asarray(d, dtype=float)
+    lam_1, lam_k, g1 = model['lam_1'], model['lam_k'], model['g1']
+    if model['mode'] == 'smooth':
+        shift, gshift = float(model['gk'] @ d), np.asarray(model['gk'], dtype=float)
+    else:
+        S = model['Lam'] + np.einsum('i,ijk->jk', d, model['Ms'])
+        w, U = np.linalg.eigh(S)
+        u = U[:, model['j']]
+        shift = float(w[model['j']])
+        # d(sigma_j)/dd_i = u^T M^(i) u, the Hellmann--Feynman derivative of an ordered eigenvalue.
+        gshift = np.einsum('ijk,j,k->i', model['Ms'], u, u)
+    num, gnum = lam_k + shift, gshift.astype(float)
+    den, gden = lam_1 + float(g1 @ d), np.asarray(g1, dtype=float).copy()
+    if Hmu is not None:
+        num += 0.5*float(d @ (Hmu @ d))
+        gnum = gnum + Hmu @ d
+    if H1 is not None:
+        den += 0.5*float(d @ (H1 @ d))
+        gden = gden + H1 @ d
+    if den <= 0:
+        return np.zeros_like(d)
+    return gnum/den - num*gden/den**2
+
+
+def _step_second_order(model, delta, H1, Hmu, seeds, lin=None, rng=None, n_rand=6):
+    """Maximize `model_gain2` over the trust region (and any reachable linear constraints).
+
+    None of the exact first-order reductions survives a quadratic term, so they are demoted to
+    SEEDS -- which is what they are good at, being the exact optimum of a model that differs from
+    this one only at second order. The polish is SLSQP with the analytic gradient above. One
+    evaluation is an `m x m` eigvalsh against a ~300 ms eigensolve, so the whole multi-start is
+    free at the resolution that matters.
+
+    Returns the best `d` found, never worse than the best seed.
+    """
+    n_p = len(model['g1'])
+    rng = np.random.default_rng(0) if rng is None else rng
+    f = lambda z: -model_gain2(model, z, H1, Hmu)
+    fp = lambda z: -model_gain2_grad(model, z, H1, Hmu)
+
+    cons = [dict(type='ineq', fun=lambda z: delta**2 - z @ z, jac=lambda z: -2*z)]
+    if lin is not None and len(_active_rows(lin, delta)):
+        c, A = lin
+        cons.append(dict(type='ineq', fun=lambda z: c + A @ z, jac=lambda z: A))
+
+    starts = [np.zeros(n_p)]
+    for sd in seeds:
+        sd = np.asarray(sd, dtype=float)
+        if sd.size == n_p and np.all(np.isfinite(sd)):
+            starts += [sd, 0.5*sd, 0.25*sd]
+    r = rng.normal(size=(n_rand, n_p))
+    starts += list(delta*r/np.linalg.norm(r, axis=1, keepdims=True))
+
+    best, best_d = -np.inf, np.zeros(n_p)
+    for z0 in starts:                       # the seeds themselves are candidates, polish or not
+        z = np.asarray(z0, dtype=float)
+        nz = float(np.linalg.norm(z))
+        if nz > delta:
+            z = z*(delta/nz)
+        g = model_gain2(model, z, H1, Hmu)
+        if g > best and _feasible(z, lin):
+            best, best_d = g, z
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        for z0 in starts:
+            res = minimize(f, z0, jac=fp, method='SLSQP', constraints=cons,
+                           options=dict(maxiter=200, ftol=1e-16))
+            z = np.asarray(res.x, dtype=float)
+            if not np.all(np.isfinite(z)):
+                continue
+            nz = float(np.linalg.norm(z))
+            if nz > delta:
+                z = z*(delta/nz)
+            g = model_gain2(model, z, H1, Hmu)
+            if g > best and _feasible(z, lin):
+                best, best_d = g, z
+    return best_d
+
+
+def _feasible(d, lin, tol=1e-9):
+    """Does `d` satisfy the linearized constraints? Vacuously true when there are none."""
+    if lin is None:
+        return True
+    c, A = lin
+    if c.size == 0:
+        return True
+    return bool(np.min(c + A @ d) >= -tol*max(1.0, float(np.abs(c).max())))
 
 
 def _step_smooth(model, delta):
@@ -520,8 +703,10 @@ def _degeneracy_move(evaluator, p, F, k, gain_tol=0.0):
 
 
 def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto',
-                   max_iter=200, gain_tol=1e-7, eta=0.1, callback=None, rng=None,
-                   verify_final=True, constraints=None, degeneracy_moves=True):
+                   max_iter=200, gain_tol=1e-7, eta=0.1, eta_grow=0.75, plateau_rtol=0.05,
+                   plateau_shrink=1e-3, plateau_max=1e-3, callback=None, rng=None,
+                   verify_final=True, constraints=None, degeneracy_moves=True,
+                   quasi_newton=True):
     """Trust-region ascent on `lam_k/lam_1`, valid through a degeneracy.
 
     `evaluator` must be a `SpectrumEvaluator` with `degenerate_tol=0` -- the guard that normally
@@ -540,8 +725,71 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     eigensolves, is tried only when the floor is binding AND the ordinary step was rejected, and
     is accepted only on a measured improvement.
 
-    Stops when the model's best first-order gain per unit radius falls below `gain_tol`, which is
-    the first-order optimality certificate, not a step-size heuristic.
+    `eta_grow` is the threshold the radius grows on. **Lowering it was tried and MEASURED WORSE;
+    0.75 is right and the reason is worth keeping.**
+
+    A stalled-looking N=5 `max lam_3/lam_1` run turned out not to be stalled at all. Instrumented
+    per iterate: `delta` sat at 1.56e-03, nowhere near collapse; 130 of 200 steps were ACCEPTED;
+    `rho` ran +0.24 to +0.97, every one positive; and `F` climbed monotonically to the last
+    iterate. It is converging, slowly. `rho` settling at 0.62-0.70 -- just under 0.75 -- looked
+    like the radius being pinned by an arbitrary threshold, so `eta_grow=0.6` was tried.
+
+    It made things WORSE: F 3.1907912 against 3.1910526 over the same 200 iterations, with 94
+    accepted steps instead of 130. The tail says exactly why -- a LIMIT CYCLE:
+
+        191  delta 3.13e-03  rho +0.864   accept
+        192  delta 1.56e-03  rho -0.352   reject, shrink
+        193  delta 3.13e-03  rho +0.864   accept
+        194  delta 1.56e-03  rho -0.303   reject, shrink
+
+    every other iteration spent on a probe at a radius the model does not support. So 1.56e-03 is
+    not a threshold artifact, it is the genuine radius of validity of the local model here, and
+    `rho` flips from +0.86 to -0.3 on a single doubling -- a sharp breakdown characteristic of the
+    cluster structure, where doubling the step crosses out of the region the current branch
+    assignment holds in. The lever for N=5 is therefore a model valid over a LARGER region, not a
+    threshold tweak.
+
+    Reading the same run as noise-limited was the obvious guess and the wrong one: `worst_sigma`
+    was 2.5e-04, which looks exactly like the 1.6e-04 behind the retracted 3.0717, and was not the
+    cause. The discriminator is whether `rho` goes negative as the radius SHRINKS. Here it was
+    healthy at the working radius and negative only ABOVE it, which is the opposite pattern.
+
+    `quasi_newton` puts a BFGS second-order model under the SMOOTH branch (`douse.quasi_newton`).
+    The first-order branch there was steepest ascent pinned to the trust boundary, which is what
+    made the iteration count the binding constraint rather than the eigensolver. Curvature is
+    accumulated only across consecutive smooth iterates -- a cluster has no gradient to difference
+    -- and the matrix is kept but the chain broken whenever the model switches, the basis is
+    replanned, or a degeneracy move jumps the shape.
+
+    Stops when the model's best FIRST-ORDER gain per unit radius falls below `gain_tol`, OR when
+    that quantity stops depending on the radius at all -- see `plateau_rtol`.
+
+    `plateau_rtol`, `plateau_shrink`, `plateau_max` DEFINE THE SECOND STOP, AND IT IS THE ONE THAT
+    FIRES IN PRACTICE. `gain_tol` is an absolute threshold on a quantity that has a floor set by
+    the accuracy of the shape derivatives, so it certifies or does not according to where a given
+    shape's floor happens to fall relative to it. Measured at five converged N=4 endpoints:
+    plateaus of 8.9e-08, 1.6e-07, 4.2e-07, 8.2e-07 and 1.1e-06, of which `gain_tol=1e-7`
+    certified two and let the other three grind their radius to 5.68e-15 -- and the two it
+    certified were the WORSE local maximum. Same optimizer, same shapes, opposite verdicts.
+
+    The floor is identifiable because criticality stops depending on the radius there: at a
+    genuinely non-critical point, shrinking the radius drives the model's gain per unit radius
+    toward the true directional derivative, which is O(1); at the floor it does not move. So when
+    criticality is already small (`<= plateau_max`) the model is re-solved at
+    `delta*plateau_shrink` and the two compared; agreement to `plateau_rtol` stops the run and
+    reports `resolution`, the criticality actually achieved. Costs two subproblem solves, no
+    eigensolve -- `Ms` and `g1` are already in hand.
+
+    **`res.resolution` is part of the answer and should be quoted with it.** "First-order optimal"
+    with no resolution attached is the claim this stop exists to stop making. It also triages: the
+    same plateau separated a junk shape (6.2e+04), an unconverged run (2.1e-03) and four converged
+    ones (5e-06 and below) with no other information.
+
+    Pass `plateau_rtol=None` to disable and go back to `gain_tol` alone. That test is deliberately
+    measured against the linear model even when the step taken was the quadratic one: near a
+    maximum the Newton step goes interior and its predicted gain falls quadratically in `|grad|`
+    while `delta` stays at `delta_max`, so a quadratic `gain/delta` would certify optimality at
+    `|grad| ~ 3e-04`. The quadratic gain is used for `rho`, where it belongs.
 
     `verify_final` re-solves the last iterate from cold before returning, and IT IS NOT OPTIONAL
     IN SPIRIT. These runs converge ONTO a degeneracy, which is the one place tracking is least
@@ -562,7 +810,15 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     p = np.array(p0, dtype=float)
     delta, message, success = float(delta0), f'reached max_iter={max_iter}', False
     n_cluster_steps, n_interior_steps, n_infeasible, it = 0, 0, 0, 0
-    n_degeneracy_moves = 0
+    n_degeneracy_moves, n_qn_steps = 0, 0
+    resolution = np.nan
+    # TWO Hessians, one per smooth scalar in `model_gain2`. SR1 rather than BFGS because neither
+    # `lam_1` nor the cluster mean is convex along the path a run takes, and `tr_subproblem`
+    # solves the indefinite subproblem exactly, so there is nothing that needs them kept positive.
+    H1 = SR1(len(p)) if quasi_newton else None
+    Hmu = SR1(len(p)) if quasi_newton else None
+    n_replans_seen = int(getattr(evaluator, 'n_replans', 0))
+    cluster_seen = None                # the active (lo, hi); `mu` changes identity when it does
     auto = isinstance(eps_rel, str)
     if auto and eps_rel != 'auto':
         raise ValueError(f"eps_rel must be a float or 'auto', got {eps_rel!r}")
@@ -591,17 +847,113 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                     n_interior_steps += 1
 
             lin = None if constraints is None else constraints(p)
+
+            # SECANT PAIRS, FOR THE TWO SMOOTH SCALARS `model_gain2` CARRIES CURVATURE ON.
+            # Neither is `F` itself, which is the point: `F` has no gradient at a cluster, so a
+            # pair differencing two of ITS gradients across one differences two things that are
+            # not comparable. `lam_1` and the cluster mean `mu` both have honest gradients at
+            # every iterate a run visits, in cluster mode as much as in smooth mode.
+            if H1 is not None:
+                # A REPLAN MOVES `F` BY A SMALL DISCRETE JUMP -- that is what it is for -- and a
+                # secant pair straddling one reads that jump as curvature. Break both chains.
+                if int(getattr(evaluator, 'n_replans', 0)) != n_replans_seen:
+                    n_replans_seen = int(getattr(evaluator, 'n_replans', 0))
+                    H1.chain_broken()
+                    Hmu.chain_broken()
+                # `lam_1` is simple and smooth at every iterate these runs visit, in cluster mode
+                # as much as in smooth mode, so ITS chain never breaks on a mode switch.
+                H1.observe(p, model['g1'])
+                # `mu` is the mean of the ACTIVE cluster, so it changes identity whenever the
+                # active set does -- and `eps_rel='auto'` resizes that set every iterate. A pair
+                # spanning a change differences two different functions.
+                if cluster_seen != model['cluster']:
+                    Hmu.chain_broken()
+                    cluster_seen = model['cluster']
+                Hmu.observe(p, model['gmu'])
+
             d, gain = trust_region_step(model, delta, rng=rng, lin=lin)
             # Criticality is gain PER UNIT RADIUS. The raw gain scales with `delta`, so testing
             # it directly declares optimality whenever the radius has shrunk -- measured: a run
             # stopping at gain 6.8e-05 while gain/delta was still 1.4, i.e. an O(1) directional
             # derivative and nowhere near optimal.
+            #
+            # Measured against the FIRST-ORDER step even when the quadratic one is taken below.
+            # In smooth mode this is exactly `||grad F||`.
             crit = gain/delta if delta > 0 else 0.0
             if crit <= gain_tol:
                 success = True
                 message = (f'criticality {crit:.3g} (gain {gain:.3g} at radius {delta:.3g}) '
                            f'below gain_tol: first-order optimal')
+                resolution = crit
                 break
+
+            # THE CRITICALITY PLATEAU. `gain_tol` is an absolute threshold on a quantity that has
+            # a FLOOR, so it certifies or does not according to where a given shape's floor
+            # happens to land relative to it -- which is not a property of the shape. Measured at
+            # five converged N=4 endpoints: plateaus of 8.9e-08, 1.6e-07, 4.2e-07, 8.2e-07,
+            # 1.1e-06, of which `gain_tol=1e-7` certified the first two and collapsed the radius
+            # on the other three. Same optimizer, same quality, opposite verdicts; and the two it
+            # certified were the WORSE local maximum.
+            #
+            # What identifies the floor is that criticality stops depending on the radius. At a
+            # genuinely non-critical point the model's gain per unit radius keeps rising as the
+            # radius shrinks toward the true directional derivative; at the floor it is flat. So
+            # re-evaluate the FIRST-ORDER model at a much smaller radius and compare. Two extra
+            # subproblem solves per check, no eigensolve -- `Ms` and `g1` are already in hand.
+            if plateau_rtol is not None and crit <= plateau_max:
+                d_s, gain_s = trust_region_step(model, delta*plateau_shrink, rng=rng, lin=lin)
+                crit_s = gain_s/(delta*plateau_shrink)
+                if abs(crit_s - crit) <= plateau_rtol*max(crit, crit_s):
+                    success = True
+                    resolution = max(crit, crit_s)
+                    message = (f'criticality plateaued at {resolution:.3g} '
+                               f'(radius {delta:.3g} -> {delta*plateau_shrink:.3g} moves it by '
+                               f'{abs(crit_s - crit)/max(crit, crit_s):.1e}): first-order optimal '
+                               f'to that resolution')
+                    break
+
+            # THE SECOND-ORDER STEP REPLACES THE FIRST-ORDER ONE, in every mode. The first-order
+            # step stays as the seed -- it is the exact optimum of a model differing from this
+            # one only at second order -- and `_step_second_order` never returns anything worse
+            # than its best seed, so this cannot lose ground to the branch it supersedes.
+            #
+            # `gain` becomes the SECOND-ORDER predicted gain, which is what `rho` must be
+            # measured against: `rho = (F(p+d) - F(p))/gain` compares a measured improvement with
+            # a predicted one, and predicting with a model other than the one that chose `d` is
+            # how a trust region ends up rejecting good steps. The stopping test above already
+            # ran, against the first-order gain, and is unaffected.
+            if quasi_newton:
+                # Note the second-order step runs from the FIRST iterate, before any curvature
+                # has been absorbed. With both Hessians still zero `model_gain2` is the exact
+                # quotient of the two linear models rather than the linearization of their
+                # quotient, which is a strictly better model at no cost and using no information
+                # the first-order branch did not already have.
+                use1 = H1.B if H1.ready else None
+                usemu = Hmu.B if Hmu.ready else None
+                seeds = [d]
+                if model['mode'] == 'smooth':
+                    # A Newton-like seed from the quadratic Taylor form of the same model, which
+                    # the SLSQP polish is unlikely to find on its own starting from `d`. The
+                    # Hessian of the MINIMIZED `-F` from the numerator's curvature is `-Hmu/lam_1`.
+                    Hq = -(usemu if usemu is not None
+                           else np.zeros((len(p), len(p))))/model['lam_1']
+                    seeds.append(tr_subproblem(-model['grad'], Hq, delta)[0])
+                d2 = _step_second_order(model, delta, use1, usemu, seeds, lin=lin, rng=rng)
+                g2 = model_gain2(model, d2, use1, usemu)
+                if np.isfinite(g2) and g2 > 0:
+                    d, gain = d2, float(g2)
+                    n_qn_steps += 1
+                else:
+                    # The second-order model says nothing in this ball helps while the first-order
+                    # one says otherwise: the radius is past where the quadratic is trustworthy.
+                    # Shrink and re-model rather than spend an eigensolve finding that out.
+                    delta *= 0.5
+                    if callback is not None:
+                        callback(p, F, model, delta, -np.inf)
+                    if delta < 1e-14:
+                        message = f'trust radius collapsed to {delta:.3g}'
+                        break
+                    continue
 
             q = p + d
             rho = -np.inf
@@ -620,7 +972,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                 rho = (F_q - F)/gain if gain > 0 else -np.inf
                 if rho > eta:
                     p, F, lams, solver = q, F_q, lams_q, solver_q
-                    if rho > 0.75:
+                    if rho > eta_grow:
                         delta = min(2*delta, delta_max)
                 else:
                     delta *= 0.5
@@ -648,6 +1000,14 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                     p, F, lams, solver = moved
                     delta = float(delta0)
                     n_degeneracy_moves += 1
+                    if H1 is not None:
+                        # A full reset, not merely a broken chain: the move is a discrete jump to
+                        # a different region of `p`-space, across a kink in `F`, so the curvature
+                        # accumulated on the way in describes the wrong side of it.
+                        H1.reset()
+                        Hmu.reset()
+                        cluster_seen = None
+                        n_replans_seen = int(getattr(evaluator, 'n_replans', 0))
                 else:
                     degeneracy_moves = False       # it was offered and refused; do not re-pay
                     evaluator._last = (p.copy(), np.asarray(lams).copy())
@@ -671,6 +1031,11 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                           n_cluster_steps=n_cluster_steps, n_interior_steps=n_interior_steps,
                           n_infeasible=n_infeasible,
                           n_degeneracy_moves=n_degeneracy_moves,
+                          n_qn_steps=n_qn_steps, resolution=float(resolution),
+                          n_curv_updates=((0, 0) if H1 is None
+                                          else (H1.n_updates, Hmu.n_updates)),
+                          n_curv_skipped=((0, 0) if H1 is None
+                                          else (H1.n_skipped, Hmu.n_skipped)),
                           # THE BASIS HEALTH GOES IN THE RESULT, always. A run that reports a
                           # ratio without saying how well its basis was resolving is exactly what
                           # produced 3.0717 for a problem whose answer is above 3.18: the frozen

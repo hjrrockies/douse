@@ -133,7 +133,10 @@ differencing the solver.
 | `douse/evaluate.py` | `SpectrumEvaluator` — frozen plan, tracked-and-verified eigenvalues — and `ObjectiveFunction` |
 | `douse/optimize.py` | `descend`, a backtracking method that respects the parametrization's boundary |
 | `douse/certify.py` | cluster analysis at a degenerate optimum: `first_order_report`, `second_order_probe` |
-| `douse/cluster_opt.py` | `maximize_ratio` — trust-region ascent valid through a degeneracy |
+| `douse/cluster_opt.py` | `maximize_ratio` — trust-region ascent valid through a degeneracy; `model_gain` (first-order, and the stopping certificate) and `model_gain2` (second-order) |
+| `douse/quasi_newton.py` | `SR1`, `BFGS`, and an exact Moré–Sorensen `tr_subproblem` — the curvature the second-order model carries |
+| `douse/constraints.py` | `MinEdgeLength`, `ClosingBudget`, `ConstraintSet` — linearized into the trust-region subproblem |
+| `douse/degeneracy.py` | turning angles, effective vertices, flatten/collapse candidates — how a shape loses a vertex |
 | `douse/opt.py` | **superseded**, kept only until its loss functions are confirmed to have no remaining use. Does not import. |
 
 ## Three things to know before using it
@@ -166,19 +169,30 @@ optimizer consumes them, not a patch.
 
 ## Next
 
-`docs/todo.md` has the full list. The critical path:
+`docs/todo.md` has the full list. Done since this list was written: the constraints
+(`douse/constraints.py`, linearized into the trust-region subproblem rather than used as a
+barrier), whole-set tracking (`lappy.Eigenproblem.track_set`), the multi-start harness
+(`benchmarks/ratio_multistart.py`), and a second-order model under the optimizer
+(`douse/quasi_newton.py`). The critical path now:
 
-1. **A real constraint, not an `inf` barrier.** Nothing currently prevents a self-intersecting
-   polygon that is admissible to the perimeter arithmetic. A smooth non-crossing constraint plus
-   one for the closing budget would let a properly constrained method run.
-2. **Multi-start.** Every statement here is local, including that the regular N-gon is optimal.
-   Globality is what a paper needs.
-3. **Track the whole set, not one value at a time.** `SpectrumEvaluator` tracks each eigenvalue
-   independently and then repairs the result. At general `k` the spectrum is mostly near-
-   degenerate clusters, so the repair path becomes the common one. One scan over the union window
-   is cheaper and cannot collapse.
-4. **k=4 end to end.** The static structure is pinned against exact spectra for k = 2..6; no k=4
-   optimization has been run.
+1. **Globality.** The multi-start harness exists and fingerprints its endpoints by a congruence
+   invariant, but the runs are still accumulating. Every statement here about the regular N-gon
+   is local until they land.
+2. **The exact rectangle oracle should be used as an invariant, not just a benchmark.**
+   `benchmarks/rectangle_exact.py` gives `max lam_k/lam_1` over rectangles in closed form for
+   every `k`, and rectangles are a subfamily of quadrilaterals, so it is a rigorous lower bound
+   on the N=4 answer at every `k` — the only independent check that exists beyond k=3.
+3. **`N` up to 16 is not solver-limited.** `benchmarks/ngon_basis_probe.py` resolves the regular
+   N-gon to 10.0–11.7 digits at N = 5, 8, 12 and 16, so the scope decision to run to N = 12–16 is
+   not blocked by the forward solver. It also shows `lappy`'s `n_cap` is completely inert there —
+   the Fourier–Bessel budget alone exceeds every cap and the sources sit at their per-arc floor,
+   so exactly one basis size is reachable per `(N, target)`. **Pass `prec` when measuring any of
+   this:** at the solver default the same square basis reads 8.84 digits where `prec=1e-13` reads
+   13.28, against an exactly known spectrum. An earlier version of that probe omitted it and
+   concluded the whole N range was out of reach.
+4. **The high-`k` conjecture.** `max lam_k/lam_1` is the regular polygon at k=2, provably not at
+   k=3, and — on the exactly solvable rectangle subfamily — returns toward it as `k` grows while
+   oscillating forever. Whether that survives on the full N-gon family is open and testable.
 
 Deferred deliberately: the inverse problem, which is implemented and FD-verified but has never
 been run end to end.

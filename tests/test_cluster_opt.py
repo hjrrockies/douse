@@ -346,3 +346,129 @@ def test_the_returned_ratio_is_cold_solved_not_tracked():
     assert res.fun <= 2.5, f'{res.fun:.12f} is above 5/2, which no quadrilateral reaches'
     assert abs(res.fun - 2.5) < 1e-7, res.fun
     assert abs(res.fun - res.lams[1]/res.lams[0]) < 1e-12, 'fun must be the ratio OF lams'
+
+
+@pytest.mark.slow
+def test_the_second_order_model_reaches_the_same_square():
+    """`quasi_newton` must change the PATH and not the ANSWER.
+
+    The second-order model is a better local model of the same objective, so the endpoint is a
+    property of the problem and must survive turning it on. Run against the same start as
+    `test_the_square_is_reached_through_the_degeneracy`, which is the acceptance test the
+    first-order method is held to.
+    """
+    fam = VertexPolygon(4, perim=PERIM)
+    ev = SpectrumEvaluator(fam, n_eigs=3, warn_gap=0.0, degenerate_tol=0.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = maximize_ratio(ev, param_vector(_perturbed(4, 0.06), PERIM), k=1, max_iter=120,
+                             quasi_newton=True)
+
+    assert abs(res.fun - 2.5) < 1e-6, (res.fun, res.message)
+    assert res.fun <= PPW + 1e-9, f'{res.fun} exceeds the PPW bound {PPW}'
+    assert res.gap < 1e-5, f'should finish AT the degeneracy, gap = {res.gap:.2e}'
+    assert res.n_qn_steps > 0, 'the second-order step was never taken'
+
+
+@pytest.mark.slow
+def test_the_second_order_model_does_not_cost_iterations():
+    """It is allowed to help or to do nothing; it is not allowed to make the run longer.
+
+    Stated as an inequality with slack rather than as a speed-up, because the size of the gain is
+    a property of the landscape -- measured at 106 -> 79 iterations on `max lam_3/lam_1` over
+    quadrilaterals, and much smaller on runs that spend all their time in cluster mode, where the
+    only second-order content is the quotient's own curvature.
+    """
+    fam = VertexPolygon(4, perim=PERIM)
+    out = {}
+    for qn in (False, True):
+        ev = SpectrumEvaluator(fam, n_eigs=3, warn_gap=0.0, degenerate_tol=0.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            out[qn] = maximize_ratio(ev, param_vector(_perturbed(4, 0.06), PERIM), k=1,
+                                     max_iter=200, quasi_newton=qn)
+    assert abs(out[True].fun - out[False].fun) < 1e-6, (out[True].fun, out[False].fun)
+    assert out[True].nit <= out[False].nit + 5, (out[True].nit, out[False].nit)
+
+
+def test_the_stopping_certificate_stays_first_order():
+    """The stop is measured against `model_gain`, never against `model_gain2`.
+
+    If it were measured against the quadratic model, a run near a maximum would stop early: the
+    Newton step goes interior there, so its predicted gain falls like `|grad|^2` while `delta`
+    stays at `delta_max`, and `gain/delta` would clear `gain_tol` at `|grad| ~ 3e-04`. This pins
+    the property that makes that impossible -- the two models agree to first order, so the
+    criticality measure is the same number either way as the radius shrinks.
+    """
+    rng = np.random.default_rng(0)
+    n_p = 6
+    g1, gk = rng.normal(size=n_p), rng.normal(size=n_p)
+    lam_1, lam_k = 20.3, 64.1
+    model = dict(mode='smooth', lam_1=lam_1, lam_k=lam_k, g1=g1, gk=gk, m=1, j=0,
+                 cluster=(1, 2), grad=(gk*lam_1 - lam_k*g1)/lam_1**2)
+    grad_norm = float(np.linalg.norm(model['grad']))
+    for delta in (1e-2, 1e-4, 1e-6):
+        d, gain = trust_region_step(model, delta)
+        assert gain/delta == pytest.approx(grad_norm, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------------------------
+# The resolution floor on the eps-active set, and the criticality plateau.
+
+def test_the_active_set_never_shrinks_below_the_resolution_floor():
+    """The bug this fixes ended 8 of the first 10 multi-start runs, including every run that found
+    the BEST answer.
+
+    `eps_abs = Delta*scale` is right on the way in and wrong at the end. At the N=4
+    `max lam_4/lam_1` optimum the top pair is split by 1.14e-10 RELATIVE -- numerically identical
+    against a basis resolving to ~1e-10 -- and `scale` is 123, so below `Delta = 9.4e-11` the
+    cluster stopped being seen. The model then reverted to `m = 1` and returned the
+    simple-eigenvalue gradient at a degenerate point, which is a DIFFERENT QUANTITY (see
+    `DegenerateSpectrum`), reporting criticality 1.35 where the truth is 1.1e-06. Every step then
+    failed and the radius ground to 5.68e-15.
+    """
+    from douse.cluster_opt import _eps_width
+
+    lam_k = 101.2178122523
+    # what the trust radius asks for, at the radii a converged run actually reaches
+    assert _eps_width(lam_k, 1e-3, 1e-10*123, 0.0) == pytest.approx(1.23e-08)
+    # ... and with the floor, it cannot go below it
+    assert _eps_width(lam_k, 1e-3, 1e-12*123, 1e-9) == pytest.approx(1e-9*lam_k)
+    assert _eps_width(lam_k, 1e-3, 0.0, 1e-9) == pytest.approx(1e-9*lam_k)
+    # the floor must not INFLATE a legitimately wide request
+    assert _eps_width(lam_k, 1e-3, 5.0, 1e-9) == pytest.approx(5.0)
+
+
+def test_the_floor_keeps_a_numerically_degenerate_pair_clustered_at_any_radius():
+    """The property that matters, stated on the actual endpoint spectrum."""
+    from douse.cluster_opt import _active_cluster, _eps_width
+
+    lams = np.array([23.6302578136, 55.3495724946, 57.3573811503,
+                     101.2178122523, 101.2178122638])
+    k, scale = 3, 123.0
+    for delta in (1e-2, 1e-6, 1e-10, 1e-12, 5.68e-15):
+        lo, hi = _active_cluster(lams, k, _eps_width(lams[k], 1e-3, delta*scale, 1e-9))
+        assert hi - lo == 2, f'cluster lost at delta={delta:.1e}'
+    # with no floor it IS lost, which is the bug
+    lo, hi = _active_cluster(lams, k, _eps_width(lams[k], 1e-3, 1e-12*scale, 0.0))
+    assert hi - lo == 1
+
+
+def test_the_floor_admits_exactly_the_neighbours_closer_than_itself():
+    """The floor is a resolution statement, so it must pull in the neighbours that are
+    numerically coincident and no others -- a safety net, not a widening.
+
+    The asymmetry that justifies having one at all is not testable here: it is that `Lam` carries
+    a real splitting exactly, so a too-wide active set costs work and not accuracy, while a
+    too-narrow one substitutes a different quantity for the gradient (see `DegenerateSpectrum`).
+    What is testable is that the floor does only what it says.
+    """
+    from douse.cluster_opt import _active_cluster, _eps_width
+
+    lams = np.array([20.0, 60.0, 60.0 + 1e-7, 60.0 + 3e-3])
+    # 1e-8 relative is 6e-07 absolute: reaches the 1e-07 neighbour, not the 3e-03 one
+    assert _active_cluster(lams, 1, _eps_width(lams[1], 0.0, 0.0, 1e-8)) == (1, 3)
+    # 1e-9 relative is 6e-08: reaches neither
+    assert _active_cluster(lams, 1, _eps_width(lams[1], 0.0, 0.0, 1e-9)) == (1, 2)
+    # and an ordinary eps_rel request still reaches everything within 1e-3 of lam_k
+    assert _active_cluster(lams, 1, _eps_width(lams[1], 1e-3, None, 1e-9)) == (1, 4)

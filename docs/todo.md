@@ -19,10 +19,10 @@ ceiling is a deliverable, and it has now been measured -- see `lappy/docs/todo.m
 `n_cap` rather than `k` that binds); `N` up to 12-16; symmetric families as a complementary study
 rather than a restriction.
 
-**The next thing to build is a quasi-Newton step on the smooth stretches**, with the cluster trust
-region kept as the fallback near degeneracies. N=5 k=3 needed more than 250 iterations at
-`n_p = 6` and did not converge; N=16 is `n_p = 28`. The optimizer's iteration count, not the
-forward solver, is now the binding constraint.
+**A SECOND-ORDER MODEL IS NOW UNDER THE OPTIMIZER** (`douse/quasi_newton.py`,
+`cluster_opt.model_gain2`). What was planned was a quasi-Newton step on the SMOOTH stretches with
+the cluster trust region as the fallback. A mode census said that plan was aimed at the wrong
+place, so it was built differently -- see the two entries below.
 
 ## Where things stand
 
@@ -43,6 +43,197 @@ since been generalized to any m, and §6.1's LMI form is superseded (see below).
 | `max lam_k/lam_1`, any k | answered — every cluster position has a subproblem solver |
 
 ## Spectral ratios — the critical path
+
+- [x] **THE RADIUS COLLAPSE WAS THE ACTIVE SET BEING LOST, and it ended 8 of the first 10
+      multi-start runs -- including every run that found the BEST answer.** `eps_abs = Delta*scale`
+      is right on the way in and wrong at the end. Measured at the N=4 `max lam_4/lam_1` optimum,
+      where `lam_4` and `lam_5` are split by 1.16e-08 absolute (1.14e-10 relative, i.e.
+      numerically identical against a basis resolving to ~1e-10) and `scale = 123`:
+
+      | delta | eps_abs | m | criticality |
+      |---|---|---|---|
+      | 1e-06 | 1.23e-04 | 2 | 1.11e-06 |
+      | 1e-10 | 1.23e-08 | 2 | 1.10e-06 |
+      | 1e-12 | 1.23e-10 | **1** | **1.35e+00** |
+      | 5.7e-15 | 6.98e-13 | **1** | **1.35e+00** |
+
+      Below `Delta = split/scale = 9.4e-11` the model reverts to `m = 1` and reports the
+      simple-eigenvalue gradient at a degenerate point -- a DIFFERENT QUANTITY, not an
+      approximation (`DegenerateSpectrum`). The optimizer is handed a confident O(1) ascent
+      direction where the truth is 1e-06, every step fails, and the radius grinds to 5.68e-15.
+
+      Fixed by `local_model(eps_floor_rel=1e-9)`: the active set never narrows below eigenvalue
+      resolution. The asymmetry justifies it -- over-clustering is benign because `Lam` carries a
+      real splitting exactly, under-clustering is catastrophic. **When in doubt, cluster.**
+
+- [x] **`gain_tol` CERTIFIED ACCORDING TO WHERE EACH SHAPE'S NOISE FLOOR HAPPENED TO FALL.**
+      Criticality does not go to zero at these optima; it plateaus, flat across six decades of
+      `Delta`, at the accuracy floor of the shape derivatives. Measured at five converged N=4
+      endpoints: **8.9e-08, 1.6e-07, 4.2e-07, 8.2e-07, 1.1e-06**. With `gain_tol=1e-7` the first
+      two certified and the other three collapsed their radius -- same optimizer, same quality,
+      opposite verdicts, and *the two it certified were the worse local maximum*.
+
+      Replaced by plateau detection: when criticality is already small, re-solve the first-order
+      model at `Delta*1e-3` and stop if the two agree. `res.resolution` reports the criticality
+      actually achieved and **should be quoted with `F`** -- "first-order optimal" with no
+      resolution attached is the claim this exists to stop making.
+
+      Verified against the recorded endpoints: the N=4 `lam_4/lam_1` optimum that previously ended
+      `trust radius collapsed to 5.68e-15` after 149 iterations now stops at **nit=1** with
+      `resolution = 1.112e-06`, matching the plateau measured independently beforehand.
+
+      It also triages for free. The same number separated a junk shape (6.2e+04), an unconverged
+      run (2.1e-03) and four converged ones (<= 5.5e-06) with no other information.
+
+- [x] **The multi-start harness runs its starts on a process pool** (`--workers`). Cells are
+      independent, so this is near-linear until the cores run out. Per-worker thread counts are
+      throttled to match -- `lappy` takes `mps.n_workers_default` threads per solve (8 by default)
+      and scipy's BLAS takes its own, so five unthrottled workers on ten cores is a 4x
+      oversubscription contending for the memory bandwidth the per-sigma LAPACK calls are already
+      limited by. `benchmarks/run_grid.py` drives a `(N, k)` grid over it, resumable at both cell
+      and start granularity.
+
+
+- [x] **`max lam_k/lam_1` OVER RECTANGLES IS EXACTLY SOLVABLE FOR EVERY `k`, AND THE ANSWER IS
+      ALWAYS RATIONAL.** `benchmarks/rectangle_exact.py`. On `L x H` the spectrum is
+      `pi^2(m^2/L^2 + n^2/H^2)` in closed form, so the maximization is a scalar problem solvable to
+      machine precision in milliseconds with no discretization anywhere.
+
+      | k | 2 | 3 | 4 | 6 | 8 | 11 | 13 | 17 | 25 | 28 |
+      |---|---|---|---|---|---|---|---|---|---|---|
+      | max | 5/2 | **35/11** | 4 | 77/13 | 7 | 28/3 | 11 | 69/5 | 221/11 | 43/2 |
+
+      Rational at all 29 indices k=2..30, and it is not a coincidence: the maximum sits at a
+      CROSSING `lam_{m,n} = lam_{m',n'}`, which pins `L^2/H^2 = (m'^2-m^2)/(n^2-n'^2)` rational,
+      and then every eigenvalue is `pi^2/L^2` times a rational so the factor cancels out of the
+      ratio. The aspect ratio is the square root of a rational; the VALUE is rational outright.
+      **35/11 is the first entry of a family, not a special case.**
+
+      The square is optimal at 11 of the 29 -- k = 2, 4, 5, 7, 9, 14, 16, 20, 21, 23, 29 -- and not
+      at the others. Which pair `(m, n)` competes for the k-th slot is an arithmetic question about
+      the lattice, so the answer never settles down.
+
+      **USE IT AS AN ORACLE.** Rectangles are a subfamily of quadrilaterals, so this is a rigorous
+      LOWER bound for the N=4 answer at every `k` -- the only independent check that exists beyond
+      k=3, where until now the acceptance tests stopped. Wired into `benchmarks/ratio_multistart.py`
+      and pinned in `tests/test_rectangle_oracle.py` against closed forms.
+
+- [x] **The high-`k` question in the handoff has a candidate answer.** `lam_k/lam_1` grows like `k`
+      by Weyl, so what is the claim at k=12? With the perimeter fixed,
+      `lam_k/lam_1 ~ 4 pi k/(|Omega| lam_1)` -- and the shape-dependence at leading order is
+      ENTIRELY in the scale-invariant Faber--Krahn functional `|Omega| lam_1`. So maximizing the
+      ratio tends to MINIMIZING it, whose answer among N-gons is the regular N-gon (a theorem for
+      N = 3, 4). Prediction: the maximizer returns to the regular N-gon as `k` grows.
+
+      Measured on rectangles, in the predicted direction and slowly: mean `|L/H - 1|` is 0.1370 for
+      k<8 against 0.0773 for k>=15, and `ratio/k` falls to 0.78 at k=30 against the limit
+      `2/pi = 0.6366`. **A heuristic, not a theorem** -- Weyl's `O(sqrt(lam))` error is not uniform
+      over a family, so this is an interchange of limits that has not been justified. Write it up
+      as a numerically supported conjecture with the exact small-`k` table underneath.
+
+      The structure that makes it interesting: at k=2 the answer IS the regular polygon, at k=3 it
+      provably is not, and as k grows it comes back to it in the mean while oscillating forever.
+      Still to do: test this on the full N-gon family rather than only on rectangles.
+
+
+- [x] **THE SMOOTH STRETCHES ARE NOT WHERE THE ITERATIONS GO, on the problem that motivated
+      looking. Measured, per-iteration mode census over the first 80 iterations:**
+
+      | run | smooth | cluster | accepted |
+      |---|---|---|---|
+      | N=4 `max lam_3/lam_1` | 3 (4%) | 77 | 53 (66%) |
+      | N=5 `max lam_3/lam_1` | 55 (69%) | 25 | 33 (41%) |
+
+      N=4 is 96 per cent cluster mode, so a quasi-Newton step confined to the smooth branch would
+      have touched three iterations out of eighty. N=5 spends its first ~52 iterations smooth and
+      then goes to cluster and STAYS there, so the smooth branch is the approach and the cluster
+      branch is the endgame. `|grad|` on N=5's smooth steps runs 2.53 -> 1.05 and never falls
+      below 1.01 -- the signature of a steepest-ascent grind, which is what that branch was
+      (`d = Delta*g/||g||`, ignoring curvature and always pinned to the trust boundary).
+
+      The conclusion that mattered: curvature had to reach the CLUSTER branch too, or it would
+      not touch the endgame of either run. Which required a model that carries curvature through
+      a point where `F` has no gradient.
+
+- [x] **`model_gain2`: a quotient of quadratics, replacing the linearization of a quotient.**
+
+          num(d) = lam_k + sigma_j(Lam + M(d)) + (1/2) d^T Hmu d
+          den(d) = lam_1 + g1.d                + (1/2) d^T H1  d
+          dF(d)  = num/den - lam_k/lam_1
+
+      Two independent improvements, and the first is free. THE QUOTIENT IS EXACT: even with both
+      Hessians zero this beats `model_gain`, using no information the first-order branch did not
+      already have. At `Delta = 0.5` with `lam_1 ~ 20`, `g1.d` is O(1), so the linearized quotient
+      is wrong in the third figure of its own gain.
+
+      THE CURVATURE RIDES ON THE TWO SMOOTH SCALARS AND NOTHING ELSE. `sigma_j` of an affine
+      matrix function stays first-order on purpose -- it is the nonsmooth part, the reason
+      `cluster_opt` exists, and a second-order model of it would be fiction. What a Hessian can
+      honestly describe is the surface the cluster rides on: `lam_1`, and the CLUSTER MEAN
+      `mu = (1/m) sum_{i in cluster} lam_i`, which is analytic through a crossing where its
+      members are not, with gradient `(1/m) tr M^(i)` read straight off `Ms`. So curvature
+      accumulates in cluster mode as well as smooth mode, which is the whole point. `lam_1`'s
+      secant chain never breaks on a mode switch at all.
+
+      SR1 rather than BFGS, because neither scalar is convex along the path a run takes and BFGS
+      would spend its pairs refusing to learn what it cannot represent; the trust-region
+      subproblem is solved EXACTLY (More--Sorensen, `quasi_newton.tr_subproblem`, verified against
+      brute force on 192 cases including indefinite, negative-definite, singular and the hard
+      case), so an indefinite Hessian needs no taming.
+
+      THE STOPPING CERTIFICATE IS DELIBERATELY LEFT FIRST-ORDER. `maximize_ratio` still measures
+      criticality against `model_gain`. A quadratic `gain/delta` is not a criticality measure:
+      near a maximum the Newton step goes interior and its gain falls like `|grad|^2` while
+      `delta` sits at `delta_max`, so it would certify optimality at `|grad| ~ 3e-04`. The
+      quadratic gain is used for `rho`, where it belongs and where it is what makes `rho -> 1`
+      hold to second order.
+
+      Measured, `max lam_3/lam_1` over quadrilaterals from the near-regular start, same endpoint
+      (35/11 to 6e-10) and same stop (the criticality certificate):
+
+      | | iterations | wall |
+      |---|---|---|
+      | first-order | 106 | 192 s |
+      | second-order | **79** | **143 s** |
+
+      That is the case that is 96 per cent cluster mode, so it is close to the floor of what this
+      buys rather than the ceiling.
+
+- [ ] **AND IT DOES NOTHING AT N=5, WHICH IS THE HONEST HALF.** Same problem, same start,
+      `max_iter=400`:
+
+      | | F | iterations | worst_sigma |
+      |---|---|---|---|
+      | first-order | 3.191288451115 | 400 (no convergence) | 2.6e-04 |
+      | second-order | 3.191256026241 | 400 (no convergence) | 2.5e-04 |
+
+      `qn_steps=400` and `curv=(311, 309)` confirm the second-order path ran and absorbed
+      curvature on nearly every iterate, so it is being used and it is not helping. The two runs
+      agree to 3e-05 and neither reaches the criticality certificate.
+
+      **AND `worst_sigma` IS NOT THE CAUSE, though it looks exactly like it.** N=4 ran at
+      2.4e-10 with no replans and N=5 at 2.5e-04 with four, which is the same order as the
+      1.6e-04 behind the retracted 3.0717 -- so the obvious reading is a noisy objective. The
+      discriminator says otherwise. Instrumented per iterate, the N=5 run has `delta = 1.56e-03`
+      (min over the run 1.9e-10, so nowhere near collapse), `rho` between +0.24 and +0.97 with
+      every value POSITIVE, 130 of 200 steps ACCEPTED, and `F` climbing monotonically to the last
+      iterate. **It is not stalled; it is converging slowly.**
+
+      `rho` settling at 0.62-0.70 just under the 0.75 growth trigger looked like a threshold
+      artifact. `eta_grow=0.6` was tried and **measured worse** -- 3.1907912 against 3.1910526
+      over the same 200 iterations, 94 accepted steps instead of 130 -- because it produces a
+      LIMIT CYCLE: accept at 1.56e-03 with rho +0.86, grow to 3.13e-03, reject with rho -0.3,
+      shrink back, repeat. So 1.56e-03 is the genuine radius of validity of the local model, and
+      `rho` flips from +0.86 to -0.3 on a single doubling -- the sharp breakdown you get when a
+      step crosses out of the region its cluster branch assignment holds in. Full record in
+      `maximize_ratio`'s docstring under `eta_grow`, which stays at 0.75.
+
+      **So the lever for N=5 is a model valid over a LARGER region** -- more second-order content
+      in the cluster branch, or a better parametrization -- and it is neither a threshold tweak
+      nor the basis. That is the next thing to build.
+
+      The wall-clock numbers for N=5 (1319 s and 1222 s) were taken with basis probes running
+      alongside; the iteration counts are what should be compared. The N=4 numbers were clean.
 
 - [x] **The convex branch (k=3, k=5 for N≥5) — DONE, and it generalizes to any m.** Exchanging
       the two maxima in `lam_max(Lam+M(d)) = max_{||u||=1} [u^T Lam u + m(u).d]` makes the
@@ -156,6 +347,79 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
 `lam_2/lam_1` at the regular N-gon: 7/3 (N=3), 5/2 (N=4), then 2.5268387, 2.5340068, 2.5365339,
 2.5375926 — climbing monotonically toward the disk's PPW bound 2.5387340.
 
+## The oracle is a STRICT lower bound, and the reason is a saddle
+
+- [x] **The best rectangle for `lam_4/lam_1` is a SADDLE of the quadrilateral problem, and its one
+      ascending direction is exactly "stop being a rectangle."** The exact oracle
+      (`benchmarks/rectangle_exact.py`) gives `max_rectangles lam_4/lam_1 = 4` at `L/H = 0.775064`.
+      Evaluated there with the full quadrilateral machinery:
+
+      - `F = 4.0000000000`, matching the oracle to every digit printed -- an independent check of
+        the whole forward stack against a closed form, at a `k` nothing else reaches;
+      - `lam_4` is SIMPLE there (`m = 1`), so `F` is smooth and an ordinary Hessian applies;
+      - criticality `3.9e-13`: it IS a stationary point of the quadrilateral problem, not merely a
+        constrained maximum within rectangles;
+      - Hessian eigenvalues `[-3607, -1353, -531, +0.462]` -- **a saddle**, with the ascending
+        direction about 1000x flatter than the descending ones.
+
+      The `+0.462` is not noise (the second-difference floor at `h = 1e-3` is ~1e-4) and was
+      confirmed by walking it: `F` rises in BOTH signs by `+2.31e-07`, `+2.05e-06`, `+1.99e-05` at
+      `t = 1e-3, 3e-3, 1e-2`, against `t^2 * 0.462/2 = 2.31e-07, 2.08e-06, 2.31e-05`. It turns over
+      by `t = 3e-2` and falls by `t = 0.1`. The shape at `t = 0.1` has angles
+      97.4/82.6/83.5/96.5 -- off the rectangle family.
+
+      **So the oracle bound is strict, and it says where to go.** Quadrilaterals beat it at
+      4.2833985583 (an isosceles trapezoid), and the escape route from the rectangle family is
+      this flat ridge. It also explains the basin structure measured in that cell: 8 of 8 starts
+      certified, splitting 4 to the trapezoid at 4.2834 and 4 to the `sqrt(5)` rectangle at
+      exactly 7/2, with NONE landing on the 4.0 saddle -- which is what a 1000:1 curvature ratio
+      predicts.
+
+      Worth repeating at other `k`: the oracle gives an exactly-known rectangle for every one, so
+      "is the rectangle optimum a saddle, and is the escape always out of the family?" is a
+      cheap question with an exact reference at every `k`.
+
+## The parametrization — measured, and NOT the bottleneck
+
+- [x] **`cond(dv/dp)` is 1.7 to 2.3 at every optimum found so far**, which is essentially ideal,
+      so there is no conditioning case for changing the scheme. Measured at the recorded endpoints
+      (N=4 k=2,3,4,8 and N=5 k=3). The pole in `polygon_vertices` -- `vertices[0]` is
+      `(C^2-|v_1|^2)/(2(C-x_1))`, singular at `C = x_1` -- sits 0.75 to 1.9 away on a perimeter of
+      4, i.e. nowhere near.
+
+      **And it is not what caps the trust radius.** At `||d|| = 1.56e-03`, the radius where `rho`
+      flips from +0.86 to -0.3, the map `p -> vertices` is affine to 1.0e-03 RELATIVE. That is two
+      orders below the model error it would have to explain, so the radius limit is the cluster
+      branch structure, as diagnosed, and not the coordinates. Do not re-derive this.
+
+      Relabelling which vertex is 0 changes `cond` by a factor of 1.00 -- `param_vector`
+      canonicalizes on the longest side, so every relabelling maps to the same `p`. That is the
+      branch cut earning its keep in one place and costing in another.
+
+- [ ] **If degeneracy handling ever becomes the bottleneck again, the change to make is
+      (edge length, turning angle) coordinates**, and the payoff is structural rather than
+      numerical. With `l_1..l_N` and `theta_1..theta_N`:
+
+      | today | in (l, theta) |
+      |---|---|
+      | perimeter: an implicit rational solve for `vertices[0]`, with a pole | `sum l_j = P`, LINEAR (a simplex) |
+      | `ClosingBudget`, an artifact of one vertex absorbing the constraint | gone |
+      | `MinEdgeLength`, linearized into the subproblem | `l_j >= l_min`, a BOX constraint |
+      | a flat vertex: a nonlinear condition, `flatten_candidates`, the kink | `theta_j = 0`, a coordinate hyperplane |
+      | a collapsed edge: `collapse_candidates` | `l_j = 0`, another hyperplane |
+      | vertex 0 special (row norms `[2, 1, 1, 0]`) | fully symmetric |
+
+      The cost is that closure becomes two explicit nonlinear constraints
+      (`sum l_j exp(i Phi_j) = 0`) instead of one implicit elimination. That is a good trade for
+      this project *only* because degeneration is routine here -- most of `degeneracy.py` and
+      `constraints.py` exists to express, in vertex coordinates, conditions that are coordinate
+      hyperplanes in these. It buys nothing for the current bottleneck.
+
+- [x] **For a RATIO objective the scale gauge is unnecessary**, since `lam_k/lam_1` is invariant
+      under scaling -- the perimeter constraint fixes a gauge the objective cannot see. It still
+      earns its place because `min lam_1` is not scale-invariant and shares the parametrization.
+      Worth knowing before anyone "simplifies" it away.
+
 ## Optimizer and infrastructure
 
 - [ ] **A real constraint, not an `inf` barrier.** The admissible set has a boundary (the
@@ -263,6 +527,40 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
       was not.
 - [x] Sorting tracked eigenvalues, and collapse detection — see `evaluate.py`'s docstring and the
       PPW regression test.
+
+## Settled this session, methodological
+
+- [x] **`prec` DOMINATES ACHIEVED ACCURACY, AND A MEASUREMENT THAT OMITS IT IS WORTHLESS.**
+      `benchmarks/ngon_basis_probe.py` and `lappy`'s `cap_probe.py` were both first written
+      without passing `prec` to `MPSEigensolver.from_domain`. On the unit square, whose spectrum
+      is `pi^2(m^2+n^2)` exactly, the SAME 108-column basis gives
+
+      | | `check_precision` | true error vs the exact spectrum |
+      |---|---|---|
+      | default `prec` | 8.84 digits | 4.6e-10 (9.34 digits) |
+      | `prec = 1e-13` (what `SpectrumEvaluator` uses) | **13.28** | **3.1e-14 (13.51 digits)** |
+
+      4.4 digits from a parameter that has nothing to do with the basis. The consequence was not
+      a rounding error: the first run of the probe reported ~8.2 digits for the regular N-gon at
+      N = 8, 12 and 16, FLAT against every basis-size lever, and that was written up as "the N
+      range in scope is out of reach and the ceiling is not `n_cap`". Re-measured at `prec=1e-13`
+      the same N-gons give **10.0 to 11.7 digits** and the range is comfortably reachable.
+
+      The tell was available and was not read: the square is the one domain here with a spectrum
+      known in closed form, and checking against it takes seconds. **Any accuracy claim about the
+      forward solver should be validated on the square first**, because it is the only place where
+      "digits" can be measured against truth rather than against a residual estimate.
+
+- [x] **`n_cap` is inert for every regular N-gon at N >= 8** -- a byte-identical plan across
+      `n_cap` in {150 ... 600}, because the Fourier-Bessel budget alone exceeds every cap and the
+      sources are already at `min_src_per_arc`. `plan.capped` reads `True` at 240 and `False` at
+      400 for the same plan, so it cannot be used to decide anything. Detail and the digits table:
+      `../../LAPPY_WISHLIST.md` sections 2 and 2b.
+
+- [x] **`OptimizeResult.__repr__` raised on every `maximize_ratio` result.** It formatted `nfev`
+      and `grad_norm` unconditionally, and `maximize_ratio` sets neither -- it has no line search
+      and no gradient at a cluster. Simply printing a result failed. It now formats whichever of
+      the two producers' fields are present.
 
 ## Invariants that have caught real bugs
 
