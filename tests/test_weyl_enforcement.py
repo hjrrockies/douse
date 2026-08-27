@@ -196,3 +196,58 @@ def test_a_fatal_refusal_still_records_its_shapes():
     body = src[src.index('except UnresolvedSpectrum'):]
     for field in ('refusals=', "ok=False", 'trace='):
         assert field in body, field
+
+
+@pytest.mark.slow
+def test_the_spurious_bar_separates_a_real_eigenvalue_from_a_fake_one():
+    """The constant `spurious_tol` rests on a measurement, and this pins it to the real case.
+
+    The stalled re-run of N6_k1 start 2 carried 58.1948 as its `lam_3`. It is not an eigenvalue
+    of that shape under any basis tried -- including the run's own -- and its tension says so by
+    six orders of magnitude, while `worst_sigma` (measured at `lam_1`) stayed at 1.3e-09 and the
+    Weyl deficit read 0.470 because a dropped mode plus a spurious one preserves the count.
+    """
+    import json
+    import os
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'benchmarks', 'run', 'ratio_multistart', 'rerun', 'N6_k1_start2.jsonl')
+    if not os.path.exists(path):
+        pytest.skip('the stalled re-run row is not on disk')
+    row = json.loads(open(path).read().strip())
+    fam = VertexPolygon(6, perim=PERIM)
+    p = np.array(row['x'], dtype=float)
+    ev = SpectrumEvaluator(fam, n_eigs=row['k'] + 2, warn_gap=0.0, degenerate_tol=0.0,
+                           lam_max_window=max(8, 2*row['k'] + 4), replan_tol=None, plan_at=p)
+    lams, solver = ev.eigenvalues(p)
+    sig = lambda x: float(np.atleast_1d(solver.sigma(float(x)))[0])                # noqa: E731
+    genuine = max(sig(l) for l in lams)
+    spurious = sig(58.1948)
+    assert genuine < ev.spurious_tol < spurious
+    assert spurious/genuine > 1e4                    # six orders in the measured case
+    assert ev.worst_sigma_any >= ev.worst_sigma      # the first value is one of the values
+
+
+@pytest.mark.slow
+def test_worst_sigma_any_is_recorded_and_is_not_worst_sigma():
+    """They answer different questions: `worst_sigma` is lam_1's resolution, which stays perfect
+    while a higher slot holds garbage. Both are kept because the gates are calibrated on the
+    first and only the second can see a spurious value."""
+    fam = VertexPolygon(4, perim=PERIM)
+    p = param_vector(np.array([0, 1.3, 1.3 + 0.7j, 0.7j], dtype=complex), PERIM)
+    ev = SpectrumEvaluator(fam, n_eigs=4, warn_gap=0.0, degenerate_tol=0.0, replan_tol=1e-9)
+    lams, solver = ev.eigenvalues(p)
+    per_value = [float(np.atleast_1d(solver.sigma(float(l)))[0]) for l in lams]
+    assert ev.worst_sigma == pytest.approx(per_value[0], rel=1e-9)
+    assert ev.worst_sigma_any == pytest.approx(max(per_value), rel=1e-9)
+    assert ev.worst_sigma_any >= ev.worst_sigma
+
+
+def test_the_result_and_the_ledger_row_carry_the_plan_shape():
+    """Two of the three candidate explanations for the stalled run needed the shape its plan was
+    built at, and nothing had recorded it."""
+    import inspect
+    from douse import cluster_opt
+    rm = pytest.importorskip('benchmarks.ratio_multistart')
+    assert 'plan_at=' in inspect.getsource(cluster_opt.maximize_ratio)
+    assert 'plan_at=' in inspect.getsource(rm.run_one)
+    assert 'worst_sigma_any=' in inspect.getsource(rm.run_one)

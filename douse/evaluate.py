@@ -115,7 +115,8 @@ class SpectrumEvaluator:
 
     def __init__(self, family, n_eigs=1, target=1e-14, prec=1e-13, plan_at=None,
                  lam_max_window=6, warn_gap=1e-3, degenerate_tol=1e-6,
-                 track_ttol=1e-8, use_track_set=True, replan_tol=1e-9, enforce_weyl=True):
+                 track_ttol=1e-8, use_track_set=True, replan_tol=1e-9, enforce_weyl=True,
+                 spurious_tol=1e-4):
         self.family = family
         self.n_eigs = int(n_eigs)
         self.target = float(target)
@@ -127,9 +128,26 @@ class SpectrumEvaluator:
         self.use_track_set = bool(use_track_set)
         self.replan_tol = None if replan_tol is None else float(replan_tol)
         self.enforce_weyl = bool(enforce_weyl)
+        # `worst_sigma` IS MEASURED AT `lams[0]` ONLY, and a run was lost to that. The stalled
+        # re-run of N6_k1 start 2 carried 58.1948 as its `lam_3` -- a value whose tension is
+        # **0.62**, i.e. not an eigenvalue under any basis tested, including the run's own -- and
+        # reported `worst_sigma = 1.3e-09`, because the first eigenvalue was resolved beautifully
+        # the whole time. Its Weyl deficit read 0.470, under threshold, because a DROPPED mode
+        # plus a SPURIOUS one preserves the count that statistic is built on. Nothing saw it.
+        #
+        # `spurious_tol` is the "this is not an eigenvalue" bar, and it is measured rather than
+        # chosen. Over the best certified row of nine cells, the worst tension at any GENUINE
+        # returned eigenvalue is 3.7e-07 (range 1.7e-14 to 3.7e-07, and it grows with lam --
+        # which is exactly why this cannot be folded into `replan_tol = 1e-9` or the 1e-6
+        # exclusion gate, both of which are calibrated for `lam_1`). 1e-4 sits ~270x above the
+        # worst genuine case and ~6000x below the spurious one.
+        self.spurious_tol = None if spurious_tol is None else float(spurious_tol)
+        self.worst_sigma_any = -np.inf   # over EVERY returned value, not just the first
         self.n_weyl_escalations = 0      # deficit tripped, a full solve was taken
         self.n_weyl_recovered = 0        # ...and the full solve repaired it
         self.n_weyl_refusals = 0         # ...and it did not, so the shape was refused
+        self.n_spurious_escalations = 0  # a returned value was not an eigenvalue at all
+        self.n_spurious_refusals = 0     # ...and a full solve did not repair that either
         # THE REFUSED SHAPES THEMSELVES, so a refusal is reproducible off-line rather than merely
         # counted. `benchmarks/envelope/reentrant_sweep.py` in `lappy` takes exactly this pair --
         # plan on one shape, solve on another -- and the first sweep could only guess at the
@@ -204,6 +222,7 @@ class SpectrumEvaluator:
             seed = self._last[1]
 
         lams = None
+        sig_all = None                   # max tension over ALL returned values, when known
         from_full_solve = False          # a tracked set can be repaired by solving; a solved one
         if self.use_track_set and seed is not None and len(seed) >= self.n_eigs:
             # ONE windowed scan for the whole set. See `lappy.Eigenproblem.track_set`: tracking
@@ -220,6 +239,7 @@ class SpectrumEvaluator:
                     self.n_track_refusals += 1
                 else:
                     lams, self.last_mults = np.asarray(cand, dtype=float), mults
+                    sig_all = worst          # already paid for, on this path
                     self.n_tracks += 1
             except EigensolverFailure:
                 self.n_track_refusals += 1
@@ -298,6 +318,34 @@ class SpectrumEvaluator:
                 self.n_solves += 1
                 self.last_mults = None
                 from_full_solve = True
+
+        # DOES EVERY RETURNED VALUE LOOK LIKE AN EIGENVALUE AT ALL? See `spurious_tol` above:
+        # a counting statistic cannot see a dropped mode paired with a spurious one, and the
+        # tension can -- by six orders of magnitude. Escalated the same way the Weyl audit is,
+        # because a tracked set is the usual source and a full solve is the usual repair.
+        if self.spurious_tol is not None and len(lams):
+            if sig_all is None:
+                sig_all = max(float(np.atleast_1d(solver.sigma(float(l)))[0]) for l in lams)
+            self.worst_sigma_any = max(self.worst_sigma_any, float(sig_all))
+            if sig_all > self.spurious_tol:
+                if not from_full_solve:
+                    self.n_spurious_escalations += 1
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore')
+                        lams = np.asarray(evp.solve(self.n_eigs), dtype=float)[:self.n_eigs]
+                    self.n_solves += 1
+                    self.last_mults = None
+                    from_full_solve = True
+                    sig_all = max(float(np.atleast_1d(solver.sigma(float(l)))[0]) for l in lams)
+                    self.worst_sigma_any = max(self.worst_sigma_any, float(sig_all))
+                if sig_all > self.spurious_tol:
+                    self.n_spurious_refusals += 1
+                    raise UnresolvedSpectrum(
+                        f'a returned value has MPS tension {sig_all:.2e}, above spurious_tol='
+                        f'{self.spurious_tol:.0e}: it is not an eigenvalue of this shape, and a '
+                        f'full solve did not repair it. `worst_sigma` cannot see this -- it is '
+                        f'measured at lam_1, which stays perfectly resolved -- and neither can '
+                        f'the Weyl count, since a dropped mode plus a spurious one preserves it.')
 
         # IS THIS THE CONSECUTIVE SET IT CLAIMS TO BE? Every consumer reads `lams` as
         # `lam_1 .. lam_K`, and nothing checked. `spectral_guard` compares the count Weyl puts in

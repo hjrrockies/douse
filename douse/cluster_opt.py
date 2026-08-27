@@ -1081,6 +1081,15 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                           # The shapes themselves, not just the count -- a refusal is a `lappy`
                           # question and it cannot be asked without the vertices.
                           refusals=list(getattr(evaluator, 'refusals', [])),
+                          # WHERE THE BASIS WAS PLANNED, on every result rather than only on a
+                          # refusal. The stalled N6_k1 start 2 could not be reproduced because
+                          # it replanned once and nothing recorded where; two of the three
+                          # candidate explanations needed exactly that shape to test.
+                          plan_at=(None if getattr(evaluator, '_plan_built_at', None) is None
+                                   else [float(t) for t in evaluator._plan_built_at]),
+                          worst_sigma_any=float(getattr(evaluator, 'worst_sigma_any', np.nan)),
+                          n_spurious_refusals=int(
+                              getattr(evaluator, 'n_spurious_refusals', 0)),
                           n_degeneracy_moves=n_degeneracy_moves,
                           n_qn_steps=n_qn_steps, resolution=float(resolution),
                           n_curv_updates=((0, 0) if H1 is None
