@@ -180,6 +180,12 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False):
                 edges=[float(t) for t in np.sort(dg.edge_lengths(v))],
                 angles=[float(t) for t in np.sort(np.degrees(dg.interior_angles(v)))],
                 worst_sigma=float(res.worst_sigma), n_replans=int(res.n_replans),
+                n_unresolved=int(getattr(res, 'n_unresolved', 0)),
+                # THE REFUSED SHAPES, capped at 4 per row. A refusal is a `lappy` question --
+                # plan on one shape, solve on another -- and it cannot be asked afterwards
+                # without the vertices. Four is enough to characterise a run and keeps a ledger
+                # line from carrying 16 parameter vectors.
+                refusals=list(getattr(res, 'refusals', []))[:4],
                 worst_weyl_deficit=float(getattr(res, 'worst_weyl_deficit', float('nan'))),
                 n_weyl_flags=int(getattr(res, 'n_weyl_flags', 0)),
                 n_qn_steps=int(res.n_qn_steps), n_cluster_steps=int(res.n_cluster_steps),

@@ -94,3 +94,45 @@ def test_the_optimizer_treats_a_refusal_as_an_unreachable_trial_and_keeps_going(
     res = maximize_ratio(ev, p, k=1, max_iter=6, delta0=0.05)
     assert res.n_unresolved == 2               # counted, and separate from n_infeasible
     assert np.isfinite(res.fun) and res.nit >= 3
+
+
+@pytest.mark.slow
+def test_a_refusal_records_BOTH_SHAPES_so_it_can_be_replayed(monkeypatch):
+    """A count is not actionable: re-solving a refusal off-line needs the shape that failed AND
+    the shape its frozen basis was planned on. `benchmarks/replay_refusal.py` consumes exactly
+    this pair, and `lappy`'s reentrant sweep takes the same two ends."""
+    fam, p = square()
+    ev = SpectrumEvaluator(fam, n_eigs=3, degenerate_tol=0.0, warn_gap=0.0)
+    poison(monkeypatch, [9.0, 9.0])
+    with pytest.raises(UnresolvedSpectrum):
+        ev.eigenvalues(p)
+    assert len(ev.refusals) == 1
+    rec = ev.refusals[0]
+    assert np.allclose(rec['p'], p)
+    assert rec['plan_at'] is not None and np.allclose(rec['plan_at'], p)
+    assert len(rec['lams']) == 3 and rec['deficit'] >= 9.0
+    assert isinstance(rec['from_full_solve'], bool)
+
+
+@pytest.mark.slow
+def test_the_kept_refusals_are_BOUNDED(monkeypatch):
+    """A 400-iterate start already has a memory problem; an unbounded list would join it."""
+    fam, p = square()
+    ev = SpectrumEvaluator(fam, n_eigs=3, degenerate_tol=0.0, warn_gap=0.0)
+    ev.max_refusals_kept = 2
+    monkeypatch.setattr('douse.evaluate.weyl_report',
+                        lambda dom, lams, tol=0.5: (9.0, 'deficit 9.0'))
+    for _ in range(5):
+        with pytest.raises(UnresolvedSpectrum):
+            ev.eigenvalues(p)
+    assert ev.n_weyl_refusals == 5 and len(ev.refusals) == 2
+
+
+def test_the_replay_tool_reads_a_row_shaped_like_the_ledger_writes_one():
+    """The two ends of the pair, and the field names, are the contract between douse and lappy."""
+    rr = pytest.importorskip('benchmarks.replay_refusal')
+    import inspect
+    src = inspect.getsource(rr.report)
+    for field in ("'p'", "'plan_at'", "'deficit'"):
+        assert field in src
+    assert 'plan_at' in inspect.signature(rr.solve_at).parameters

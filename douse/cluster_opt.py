@@ -1049,6 +1049,9 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     return OptimizeResult(x=p, fun=F, nit=it, lams=lams, gap=gap, delta=delta,
                           n_cluster_steps=n_cluster_steps, n_interior_steps=n_interior_steps,
                           n_infeasible=n_infeasible, n_unresolved=n_unresolved,
+                          # The shapes themselves, not just the count -- a refusal is a `lappy`
+                          # question and it cannot be asked without the vertices.
+                          refusals=list(getattr(evaluator, 'refusals', [])),
                           n_degeneracy_moves=n_degeneracy_moves,
                           n_qn_steps=n_qn_steps, resolution=float(resolution),
                           n_curv_updates=((0, 0) if H1 is None

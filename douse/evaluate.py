@@ -130,6 +130,13 @@ class SpectrumEvaluator:
         self.n_weyl_escalations = 0      # deficit tripped, a full solve was taken
         self.n_weyl_recovered = 0        # ...and the full solve repaired it
         self.n_weyl_refusals = 0         # ...and it did not, so the shape was refused
+        # THE REFUSED SHAPES THEMSELVES, so a refusal is reproducible off-line rather than merely
+        # counted. `benchmarks/envelope/reentrant_sweep.py` in `lappy` takes exactly this pair --
+        # plan on one shape, solve on another -- and the first sweep could only guess at the
+        # family because the runs recorded no vertices. Bounded, because a 400-iterate start
+        # already carries a memory problem and an unbounded list on the evaluator would join it.
+        self.refusals = []
+        self.max_refusals_kept = 16
         self.n_replans = 0
         self.worst_sigma = 0.0
         # A MISSED MODE IS INVISIBLE TO `worst_sigma`; see `douse.spectral_guard`. Tracked the
@@ -139,6 +146,11 @@ class SpectrumEvaluator:
         self.last_mults = None
         self._plan = None
         self._plan_at = None if plan_at is None else np.array(plan_at, dtype=float)
+        # WHERE THE PLAN WAS ACTUALLY BUILT, which `_plan_at` does not answer: left None it means
+        # "the first `p` seen", and by the time a refusal wants to name that shape the first `p`
+        # is long gone. A refused shape is only re-solvable off-line if BOTH ends are recorded --
+        # the shape that failed and the shape its basis was planned on.
+        self._plan_built_at = None
         self._last = None            # (p, lams) for continuation
         self.n_solves = 0
         self.n_tracks = 0
@@ -159,6 +171,7 @@ class SpectrumEvaluator:
         """
         if self._plan is None:
             at = self._plan_at if self._plan_at is not None else np.asarray(p, dtype=float)
+            self._plan_built_at = np.array(at, dtype=float)
             dom = self.family(at)
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
@@ -330,6 +343,14 @@ class SpectrumEvaluator:
                         self.n_weyl_recovered += 1
                 if deficit > spectral_guard.DEFICIT_TOL:
                     self.n_weyl_refusals += 1
+                    if len(self.refusals) < self.max_refusals_kept:
+                        self.refusals.append(dict(
+                            p=[float(t) for t in np.asarray(p, dtype=float)],
+                            plan_at=(None if self._plan_built_at is None
+                                     else [float(t) for t in self._plan_built_at]),
+                            lams=[float(t) for t in np.asarray(lams, dtype=float)],
+                            deficit=float(deficit), n_replans=int(self.n_replans),
+                            from_full_solve=bool(from_full_solve)))
                     raise UnresolvedSpectrum(
                         f'the {self.n_eigs} values returned at this shape are not consecutive: '
                         f'Weyl counts {deficit:.2f} more eigenvalues below the returned set than '
