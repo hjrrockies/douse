@@ -162,3 +162,25 @@ def test_a_refusal_in_verify_final_does_not_throw_away_the_run():
     assert res.verified is False and res.success is False
     assert 'could not be verified' in res.message
     assert np.isfinite(res.fun) and np.allclose(res.lams, res.lams_tracked)
+
+
+@pytest.mark.slow
+def test_a_RUN_of_refusals_stops_the_search_instead_of_grinding_the_radius():
+    """Shrinking is the right first response and a useless tenth one: if the neighbourhood of
+    this iterate cannot be indexed, no smaller step fixes it."""
+    fam = VertexPolygon(4, perim=PERIM)
+    p = param_vector(np.array([0, 1.3, 1.3 + 0.7j, 0.7j], dtype=complex), PERIM)
+    ev = SpectrumEvaluator(fam, n_eigs=4, degenerate_tol=0.0, warn_gap=0.0)
+    real = ev.eigenvalues
+
+    def always_refuse_trials(q, seed=None):
+        if not np.allclose(q, p):
+            raise UnresolvedSpectrum('synthetic refusal')
+        return real(q, seed=seed)
+
+    ev.eigenvalues = always_refuse_trials
+    res = maximize_ratio(ev, p, k=1, max_iter=200, delta0=0.05, max_unresolved_streak=3,
+                         verify_final=False)
+    assert res.n_unresolved == 3               # stopped on the streak, not at max_iter
+    assert 'could not be indexed' in res.message and res.success is False
+    assert res.delta > 1e-12                   # the radius was NOT ground to nothing

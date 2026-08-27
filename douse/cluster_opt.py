@@ -707,7 +707,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                    max_iter=200, gain_tol=1e-7, eta=0.1, eta_grow=0.75, plateau_rtol=0.05,
                    plateau_shrink=1e-3, plateau_max=1e-3, callback=None, rng=None,
                    verify_final=True, constraints=None, degeneracy_moves=True,
-                   quasi_newton=True):
+                   quasi_newton=True, max_unresolved_streak=5):
     """Trust-region ascent on `lam_k/lam_1`, valid through a degeneracy.
 
     `evaluator` must be a `SpectrumEvaluator` with `degenerate_tol=0` -- the guard that normally
@@ -811,7 +811,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     p = np.array(p0, dtype=float)
     delta, message, success = float(delta0), f'reached max_iter={max_iter}', False
     n_cluster_steps, n_interior_steps, n_infeasible, it = 0, 0, 0, 0
-    n_unresolved = 0
+    n_unresolved, unresolved_streak = 0, 0
     n_degeneracy_moves, n_qn_steps = 0, 0
     resolution = np.nan
     # TWO Hessians, one per smooth scalar in `model_gain2`. SR1 rather than BFGS because neither
@@ -982,11 +982,26 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                 except UnresolvedSpectrum:
                     delta *= 0.5
                     n_unresolved += 1
+                    unresolved_streak += 1
                     evaluator._last = (p.copy(), np.asarray(lams).copy())
                     if callback is not None:
                         callback(p, F, model, delta, -np.inf)
                     it += 1
+                    # SHRINKING IS THE RIGHT FIRST RESPONSE AND A USELESS TENTH ONE. A refusal at
+                    # a large radius may just be an over-long step; a run of them at radii that
+                    # keep halving says the neighbourhood of THIS iterate cannot be indexed, and
+                    # no smaller step will fix that. Measured on N=6 `lam_3/lam_1` start 3: from
+                    # iterate 215 the radius fell 4.88e-05 -> 1.19e-08 over 30 refusals, every
+                    # one a full solve, and the run then ground on to a collapse at 5.68e-15.
+                    # That is 25 minutes of compute spent re-learning the same fact. Stopping
+                    # here reports the same endpoint with the reason attached.
+                    if unresolved_streak >= max_unresolved_streak:
+                        message = (f'the spectrum could not be indexed at '
+                                   f'{unresolved_streak} consecutive trial shapes within '
+                                   f'delta={delta:.3g} of this iterate')
+                        break
                     continue
+                unresolved_streak = 0
                 F_q = float(lams_q[k]/lams_q[0])
                 rho = (F_q - F)/gain if gain > 0 else -np.inf
                 if rho > eta:
