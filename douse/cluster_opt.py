@@ -703,11 +703,38 @@ def _degeneracy_move(evaluator, p, F, k, gain_tol=0.0):
     return best
 
 
+def is_discontinuous(reject_run, delta, halvings=4, ratio=2.0):
+    """Have the last `halvings` rejections stopped improving with the step?
+
+    `rho = dF/gain` with `gain` proportional to `delta`, so `|rho|` doubling on every halving of
+    the radius says `dF` is NOT going to zero with the step. No continuous objective does that:
+    it is the fingerprint of a spectrum carried at the iterate that disagrees with the spectrum
+    found in its neighbourhood.
+
+    Pure arithmetic on the `(delta, dF)` pairs, deliberately: the trigger compares two MEASURED
+    quantities against each other -- has the radius shrunk by 2**(halvings-1) while `|dF|` stayed
+    inside a factor of `ratio`? -- so there is no scale here to calibrate per shape, unlike every
+    other guard in this project.
+
+    Measured on N=5 `lam_4/lam_1` start 5, whose last fourteen iterates run
+    rho = -9.2e7, -1.8e8, ... -7.5e11 with `F` frozen while the radius falls to 5.68e-15.
+    """
+    if len(reject_run) < halvings:
+        return False
+    d0 = reject_run[-halvings][0]
+    window = [abs(df) for _, df in reject_run[-halvings:]]
+    if min(window) <= 0.0:
+        return False
+    return (d0/max(delta, 1e-300) >= 2**(halvings - 1)
+            and max(window)/min(window) <= ratio)
+
+
 def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto',
                    max_iter=200, gain_tol=1e-7, eta=0.1, eta_grow=0.75, plateau_rtol=0.05,
                    plateau_shrink=1e-3, plateau_max=1e-3, callback=None, rng=None,
                    verify_final=True, constraints=None, degeneracy_moves=True,
-                   quasi_newton=True, max_unresolved_streak=5):
+                   quasi_newton=True, max_unresolved_streak=5, discontinuity_halvings=4,
+                   discontinuity_ratio=2.0):
     """Trust-region ascent on `lam_k/lam_1`, valid through a degeneracy.
 
     `evaluator` must be a `SpectrumEvaluator` with `degenerate_tol=0` -- the guard that normally
@@ -812,6 +839,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     delta, message, success = float(delta0), f'reached max_iter={max_iter}', False
     n_cluster_steps, n_interior_steps, n_infeasible, it = 0, 0, 0, 0
     n_unresolved, unresolved_streak = 0, 0
+    n_discontinuity_repairs, reject_run = 0, []
     n_degeneracy_moves, n_qn_steps = 0, 0
     resolution = np.nan
     # TWO Hessians, one per smooth scalar in `model_gain2`. SR1 rather than BFGS because neither
@@ -1005,14 +1033,52 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                 F_q = float(lams_q[k]/lams_q[0])
                 rho = (F_q - F)/gain if gain > 0 else -np.inf
                 if rho > eta:
+                    reject_run = []
                     p, F, lams, solver = q, F_q, lams_q, solver_q
                     if rho > eta_grow:
                         delta = min(2*delta, delta_max)
                 else:
+                    reject_run.append((delta, float(F_q - F)))
                     delta *= 0.5
                     # The tracker's continuation now points at the rejected trial; reseed it from
                     # the accepted iterate so the next evaluation continues from where we are.
                     evaluator._last = (p.copy(), np.asarray(lams).copy())
+
+            # `|rho|` DOUBLING AS `delta` HALVES MEANS `F` IS DISCONTINUOUS HERE, and it is the
+            # one diagnostic in this file that needs no calibrated constant. `rho = dF/gain` with
+            # `gain` proportional to `delta`, so if `|rho|` doubles on every halving then `dF` is
+            # NOT going to zero with the step -- which cannot happen for a continuous objective.
+            # It happens when the spectrum carried at the iterate and the spectrum found in its
+            # neighbourhood are different sets.
+            #
+            # Measured on N=5 `lam_4/lam_1` start 5: the last fourteen iterates run
+            # rho = -9.2e7, -1.8e8, ... -7.5e11 with `F` frozen, and the trace's `F`
+            # (4.441676010) differs from what a fresh solve gives (4.375460168) by 6.6e-02. Three
+            # of the eleven stalled rows in the grid are this, and their Weyl deficits -- 0.13 to
+            # 0.48 -- never reached the 0.5 gate. One of the three has an endpoint `F` gap of
+            # exactly zero, so nothing else fires on it at all.
+            #
+            # THE REPAIR IS TO BELIEVE THE FRESH SOLVE. A tracked `F` that disagrees with one
+            # computed from scratch at the same shape is the thing that is wrong; adopting it and
+            # restoring the radius the run had before the collapse costs one solve.
+            if is_discontinuous(reject_run, delta, discontinuity_halvings,
+                                discontinuity_ratio):
+                d0 = reject_run[-discontinuity_halvings][0]
+                window = [abs(df) for _, df in reject_run[-discontinuity_halvings:]]
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    evaluator.reset_continuation()
+                    lams_fresh, solver_fresh = evaluator.eigenvalues(p)
+                F_fresh = float(lams_fresh[k]/lams_fresh[0])
+                reject_run = []
+                if abs(F_fresh - F) > 0.5*min(window):
+                    # THE FRESH SOLVE IS THE ONE TO BELIEVE. A carried `F` that disagrees with one
+                    # computed from scratch at the same shape is the thing that is wrong.
+                    n_discontinuity_repairs += 1
+                    F, lams, solver = F_fresh, lams_fresh, solver_fresh
+                    delta = min(max(d0, delta), delta_max)
+                    it += 1
+                    continue
 
             # Pinned against the edge floor with the step rejected: the shape wants to degenerate
             # and cannot get there by moving. Offer it the other representation.
@@ -1078,6 +1144,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     return OptimizeResult(x=p, fun=F, nit=it, lams=lams, gap=gap, delta=delta,
                           n_cluster_steps=n_cluster_steps, n_interior_steps=n_interior_steps,
                           n_infeasible=n_infeasible, n_unresolved=n_unresolved,
+                          n_discontinuity_repairs=n_discontinuity_repairs,
                           # The shapes themselves, not just the count -- a refusal is a `lappy`
                           # question and it cannot be asked without the vertices.
                           refusals=list(getattr(evaluator, 'refusals', [])),
