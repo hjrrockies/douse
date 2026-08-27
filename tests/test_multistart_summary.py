@@ -167,3 +167,54 @@ def test_the_upper_bound_that_matters_lives_in_the_optimizer():
     from douse import cluster_opt
     sig = inspect.signature(cluster_opt.maximize_ratio).parameters
     assert 'plateau_max' in sig and sig['plateau_max'].default == 1e-3
+
+
+def test_basins_are_keyed_on_F_then_merged_by_SHAPE():
+    """Neither key works alone, and both failures were measured on real cells.
+
+    Shape alone split N=6 `lam_2/lam_1` in two on values agreeing to 2.6e-07 (one run stopped
+    less sharply and sits 0.28 deg away). `F` alone split N=3 `lam_6/lam_1` in two on the same
+    triangle to 0.04 deg. Shape distance separates the classes by two orders of magnitude:
+    4.1e-04 for the one pair that is the same optimum, 5.0e-02 to 8.0e-01 for the five distinct.
+    """
+    sg = pytest.importorskip('benchmarks.summarize_grid')
+    def row(f, angles, edges):
+        return dict(N=3, k=5, start=0, fun=f, angles=angles, edges=edges, worst_sigma=1e-11,
+                    success=True, resolution=1e-6, ok=True, worst_weyl_deficit=0.0)
+    # the real N3_k6 pair: same triangle, F differing in the fifth figure
+    a = row(5.0212066403, [39.72, 55.33, 84.95], [0.94, 1.28, 1.78])
+    b = row(5.0207101960, [39.72, 55.37, 84.91], [0.94, 1.28, 1.78])
+    assert len(sg.find_basins([a, b])) == 1, 'the same triangle must not read as two basins'
+    # a genuinely different optimum, at a shape distance of 8e-01
+    c = row(3.0794061264, [17.73, 81.14, 81.14], [0.61, 1.69, 1.69])
+    assert len(sg.find_basins([a, c])) == 2
+
+
+def test_a_second_basin_is_reported_not_discarded():
+    """N=4 `lam_4/lam_1` splits 4-4 between a trapezoid and the sqrt(5) rectangle. Reporting only
+    the best threw that away."""
+    sg = pytest.importorskip('benchmarks.summarize_grid')
+    import glob
+    import os
+    path = os.path.join(sg.LEDGERS, 'N4_k3.jsonl')
+    if not os.path.exists(path):
+        pytest.skip('N4_k3 ledger not on disk')
+    s = sg.summarize(sg.load(path), 1e-6, 1e-4)
+    assert len(s['basins']) == 2
+    vals = sorted(b['fun'] for b in s['basins'])
+    assert vals[1] == pytest.approx(4.2833985583, abs=1e-9)
+    assert vals[0] == pytest.approx(3.5, abs=1e-8)
+    assert all(len(b['rows']) == 4 for b in s['basins'])
+
+
+def test_a_start_that_cannot_be_solved_is_redrawn_deterministically():
+    """All nine crashed runs in the grid died at the START shape, before a single iterate -- four
+    shapes, five of them the same N=3 triangle. A start is an arbitrary draw, so it is redrawn
+    and the discard recorded, which keeps the start distribution statable."""
+    rm = pytest.importorskip('benchmarks.ratio_multistart')
+    import inspect
+    src = inspect.getsource(rm.run_one)
+    assert 'max_redraws' in src and 'redraws.append' in src
+    assert 'i + 1000*attempt' in src, 'the redraw must be deterministic'
+    # the probe is an explicit evaluation, not an inspection of a traceback
+    assert 'ev.eigenvalues(p0)' in src and 'traceback' not in src.split('for attempt')[1][:600]

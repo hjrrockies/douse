@@ -131,6 +131,74 @@ def row_deficit(r):
         return float('nan')
 
 
+def _fingerprint(r):
+    """Sorted edges and angles: a congruence invariant, since congruent polygons are isospectral.
+
+    `None` when the row does not carry them -- rows written before those fields existed, and the
+    `pre_plateau_fix` archive. A row without a shape simply does not take part in shape merging;
+    it is keyed on `F` alone rather than crashing the summary that reads it.
+    """
+    if r.get('edges') is None or r.get('angles') is None:
+        return None
+    return np.concatenate([np.asarray(r['edges']), np.asarray(r['angles'])/180.0])
+
+
+def find_basins(good, agree_rtol=1e-6, shape_merge_tol=1e-2):
+    """Distinct certified optima in a cell, keyed on the OBJECTIVE VALUE, best first.
+
+    KEYED ON `F`, NOT ON THE SHAPE, and the measurement says why. Grouping by a congruence
+    fingerprint at a flat tolerance split N=6 `lam_2/lam_1` into two "basins" whose values agree
+    to 2.6e-07: three certified runs at the regular hexagon, one of which stopped less sharply
+    (resolution 9.2e-05) and so sits 0.28 degrees away in angle, past a 0.18-degree tolerance. A
+    resolution-scaled tolerance was the obvious repair and is not defensible either -- the split
+    pair sits at 18 times its resolution and the merged pair at 2.2 times, a factor of 8 apart on
+    three data points, which is a guess with extra steps.
+
+    `F` is the quantity every cell has 145 measurements of, and `agree_rtol` is already
+    calibrated on it. The fingerprint keeps one job: flagging rows that agree in `F` but are NOT
+    the same shape, which is the genuine collision and is reported rather than merged.
+    """
+    basins = []
+    for r in sorted(good, key=lambda r: -r['fun']):
+        for b in basins:
+            if abs(r['fun'] - b['fun']) <= agree_rtol*abs(b['fun']):
+                b['rows'].append(r)
+                break
+        else:
+            basins.append(dict(fun=r['fun'], rows=[r]))
+    # NEITHER KEY WORKS ALONE, and both failures were measured. Keying on the SHAPE split N=6
+    # `lam_2/lam_1` into two, on values agreeing to 2.6e-07, because one run stopped less sharply
+    # and sits 0.28 degrees away. Keying on `F` alone splits N=3 `lam_6/lam_1` into two, on the
+    # same triangle to 0.04 degrees, because the less-sharp run differs in the fifth figure.
+    #
+    # So: key on `F`, then merge what the SHAPE says is one optimum. Measured over every
+    # multi-basin pair in the grid, the two classes separate by two orders of magnitude in shape
+    # distance -- 4.1e-04 for the one pair that is the same optimum, against 5.0e-02 to 8.0e-01
+    # for the five that are genuinely distinct. `shape_merge_tol = 1e-2` sits 24x above the first
+    # and 5x below the nearest of the second.
+    merged = []
+    for b in basins:
+        fb = _fingerprint(b['rows'][0])
+        for m in merged:
+            fm = _fingerprint(m['rows'][0])
+            if fb is None or fm is None or len(fb) != len(fm):
+                continue
+            if float(np.max(np.abs(fb - fm))) < shape_merge_tol:
+                m['rows'].extend(b['rows'])
+                break
+        else:
+            merged.append(b)
+    basins = merged
+    for b in basins:
+        b['fun'] = max(r['fun'] for r in b['rows'])
+        fps = [f for f in (_fingerprint(r) for r in b['rows']) if f is not None]
+        b['shape_spread'] = float(max((np.max(np.abs(f - fps[0])) for f in fps), default=0.0))
+        b['best'] = max(b['rows'], key=lambda r: r['fun'])
+        b['spread'] = (float(np.ptp([r['fun'] for r in b['rows']])) if len(b['rows']) > 1
+                       else float('nan'))
+    return basins
+
+
 def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5):
     """Best certified value in a cell, and how many starts agree with it."""
     crashed = [r for r in rows if not r.get('ok', True)]
@@ -177,7 +245,8 @@ def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5):
     # other. Resolution is about how sharply a point is pinned; agreement is about whether the
     # starts found the SAME point, and conflating them throws away the globality evidence.
     n_near = sum(abs(r['fun'] - best['fun']) <= near_rtol*abs(best['fun']) for r in clean)
-    return dict(best=best, n_total=len(rows), n_crashed=len(crashed), n_clean=len(clean),
+    basins = find_basins(good, agree_rtol)
+    return dict(best=best, basins=basins, n_total=len(rows), n_crashed=len(crashed), n_clean=len(clean),
                 n_skipped_mode=len(skipped), n_sharp=n_sharp,
                 n_drifted=len(drifted), n_certified=len(good), n_agree=len(agreeing),
                 n_near=n_near, spread=spread, best_uncertified=None)
@@ -242,6 +311,30 @@ def main():
         b = s['best']
         print(f"  N={N:2d} k={k+1:2d}{' convex' if conv else ''}: angles {np.array2string(np.asarray(b['angles']), precision=2)}")
         print(f"           edges  {np.array2string(np.asarray(b['edges']), precision=4)}")
+
+    # MORE THAN ONE CERTIFIED OPTIMUM IS A RESULT, not a nuisance, and reporting only the best
+    # threw it away. N=4 `lam_4/lam_1` splits 4-4 between an isosceles trapezoid and the sqrt(5)
+    # rectangle -- both genuine local maxima, and the ~1000:1 curvature ratio in the handoff
+    # predicts the split. Occupancy is evidence about relative basin size and is printed with it.
+    multi = [(N, k, c, s) for N, k, c, s in cells if len(s.get('basins') or []) > 1]
+    if multi:
+        print('\n  cells with more than one certified optimum:')
+        for N, k, conv, s in multi:
+            print(f"  N={N:2d} k={k+1:2d}{' convex' if conv else ''}:")
+            for b in s['basins']:
+                ang = np.array2string(np.asarray(b['best']['angles']), precision=2)
+                print(f"      {b['fun']:15.10f}  {len(b['rows'])} start(s)  angles {ang}")
+            # NEARLY EQUAL F AT GENUINELY DIFFERENT SHAPES is the one case worth a second look --
+            # two distinct maximizers with the same ratio, which is either a symmetry of the
+            # problem or something more interesting. Reported, never merged.
+            for x, y in zip(s['basins'][:-1], s['basins'][1:]):
+                fx, fy = _fingerprint(x['best']), _fingerprint(y['best'])
+                if abs(x['fun'] - y['fun']) <= 1e-5*abs(x['fun']) and fx is not None \
+                        and fy is not None and len(fx) == len(fy):
+                    d = float(np.max(np.abs(fx - fy)))
+                    print(f"      ^ these differ in F by only "
+                          f"{abs(x['fun']-y['fun'])/abs(x['fun']):.1e} at a shape distance of "
+                          f"{d:.1e} -- different shapes, nearly equal ratio")
 
     # PPW is a THEOREM, so a cell above it is wrong no matter what it certified.
     viol = [(N, k, s) for N, k, _c, s in cells

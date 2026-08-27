@@ -59,6 +59,7 @@ from douse.sampling import random_convex
 
 from douse.cluster_opt import maximize_ratio
 from douse.evaluate import UnresolvedSpectrum
+from lappy.core import EigensolverFailure
 
 try:
     from .rectangle_exact import best_rectangle
@@ -159,7 +160,24 @@ def partition(rows, sigma_max):
     return crashed, drifted, skipped, good
 
 
-def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False):
+def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_redraws=3):
+    """One start. A start that cannot be SOLVED AT ALL is redrawn rather than lost.
+
+    Measured over the 18-cell grid: **all nine crashed runs died at the start shape**, before a
+    single iterate -- five of them the same N=3 triangle with an 11.17 degree spike, failing
+    identically at every k, and two the same N=6 start. They are a property of four shapes, not
+    of the cells.
+
+    A start is an arbitrary draw, so insisting on a particular one buys nothing. The redraw is
+    DETERMINISTIC (`i + 1000*attempt`, a fresh stream that cannot collide with another start's)
+    and every discard is recorded with its shape and its error, which is what keeps this from
+    being a silent filter: the start distribution becomes "the sampler conditioned on being
+    solvable", which is a statable measure, rather than "whatever survived".
+
+    The probe is an explicit evaluation of `p0` rather than an inspection of where an exception
+    came from. Only a failure BEFORE the first iterate is redrawn; one that appears later is the
+    optimizer walking somewhere hard and is reported as it always was.
+    """
     fam = VertexPolygon(N, perim=PERIM)
     cons = ConstraintSet(MinEdgeLength(fam), ClosingBudget(fam))
     if convex:
@@ -168,7 +186,23 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False):
         cons = ConstraintSet(MinEdgeLength(fam), ClosingBudget(fam), Convexity(fam))
     ev = SpectrumEvaluator(fam, n_eigs=(n_eigs or k + 2), warn_gap=0.0, degenerate_tol=0.0,
                            lam_max_window=max(8, 2*k + 4), replan_tol=1e-9)
-    p0 = param_vector((convex_start_shape if convex else start_shape)(N, i, seed0), PERIM)
+    draw = convex_start_shape if convex else start_shape
+    redraws = []
+    for attempt in range(max_redraws + 1):
+        idx = i if attempt == 0 else i + 1000*attempt
+        p0 = param_vector(draw(N, idx, seed0), PERIM)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                ev.eigenvalues(p0)
+            break
+        except (UnresolvedSpectrum, EigensolverFailure) as exc:
+            v = fam.vertices(p0)
+            redraws.append(dict(start_index=idx, error=f'{type(exc).__name__}: {str(exc)[:120]}',
+                                angles=[float(t) for t in np.sort(np.degrees(
+                                    dg.interior_angles(v)))],
+                                edges=[float(t) for t in np.sort(dg.edge_lengths(v))]))
+            ev.reset_continuation()
     t0 = time.perf_counter()
     try:
         with warnings.catch_warnings():
@@ -182,7 +216,7 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False):
         # is what identified the `lappy` failure as a scan stepping over a tight cluster rather
         # than anything to do with the reentrant corner it was assumed to be. Measured cost of
         # not doing this: cell N6_k3 start 5, lost.
-        return dict(N=N, k=k, start=i, convex=bool(convex), ok=False,
+        return dict(N=N, k=k, start=i, convex=bool(convex), ok=False, redraws=redraws,
                     error=f'{type(exc).__name__}: {exc}',
                     trace=traceback.format_exc()[-600:],
                     seconds=round(time.perf_counter() - t0, 1),
@@ -192,7 +226,9 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False):
                     n_weyl_refusals=int(getattr(ev, 'n_weyl_refusals', 0)),
                     refusals=list(getattr(ev, 'refusals', []))[:4])
     v = fam.vertices(res.x)
-    return dict(N=N, k=k, start=i, convex=bool(convex), fun=float(res.fun), nit=int(res.nit),
+    return dict(N=N, k=k, start=i, convex=bool(convex), redraws=redraws,
+                start_index=(i if not redraws else i + 1000*len(redraws)),
+                fun=float(res.fun), nit=int(res.nit),
                 seconds=round(time.perf_counter() - t0, 1),
                 x=[float(t) for t in res.x],
                 lams=[float(t) for t in np.asarray(res.lams)],
