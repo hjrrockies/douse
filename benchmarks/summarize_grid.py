@@ -111,6 +111,15 @@ def row_deficit(r):
     worth auditing. `x` and `lams` are stored, so the statistic is recoverable for every row ever
     written -- an audit of the 81 rows on disk found 3 with a deficit above threshold, none of
     which had certified.
+
+    BUT THE RECOMPUTATION IS THE WEAKER STATISTIC AND THE AUDIT INHERITS THAT. The recorded field
+    is the worst deficit over EVERY ITERATE of a run; `x` and `lams` describe the endpoint alone,
+    so what comes back here is a lower bound on it. Measured over the 9 rows that carry both
+    (2026-08-26): N=6 `lam_3/lam_1` start 3 recorded 8.761 and recomputes to 0.186, which is
+    below `DEFICIT_TOL` -- the fallback PASSES a run the live guard failed by a factor of 17.
+    Also 5.103 -> 1.284, 6.711 -> 1.022, 2.008 -> 1.328. 71 of the 80 rows on disk are audited
+    this way, so "the audit found 3" is a floor, not a count. Pinned in
+    `tests/test_multistart_summary.py`.
     """
     d = r.get('worst_weyl_deficit')
     if d is not None and np.isfinite(d):
@@ -178,17 +187,24 @@ def main():
         rows = load(path)
         if not rows:
             continue
+        # A CONVEX CELL IS A DIFFERENT QUESTION, not more rows for the same one. `--convex`
+        # writes `N<N>_k<k>_convex.jsonl`, which this glob picks up, and pooling it with the
+        # unconstrained cell of the same `(N, k)` would silently mix a constrained optimum into
+        # an unconstrained answer. Keyed and labelled separately instead.
         N, k = rows[0]['N'], rows[0]['k']
-        cells.append((N, k, summarize(rows, args.sigma_max, args.res_max)))
-    cells.sort(key=lambda c: (c[0], c[1]))
+        conv = bool(rows[0].get('convex', False)) or path.endswith('_convex.jsonl')
+        cells.append((N, k, conv, summarize(rows, args.sigma_max, args.res_max)))
+    cells.sort(key=lambda c: (c[0], c[1], c[2]))
 
     print(f'{len(cells)} cell(s) from {args.dir}\n')
-    print('   N   k   max lam_k/lam_1     spread   resolution  agree near cert/tot  oracle (N=4)')
-    print('  ' + '-'*85)
-    for N, k, s in cells:
+    print('   N   k  family   max lam_k/lam_1     spread   resolution  agree near cert/tot'
+          '  oracle (N=4)')
+    print('  ' + '-'*94)
+    for N, k, conv, s in cells:
+        fam = 'convex' if conv else 'all   '
         if s['best'] is None:
             got = (f"{s['best_uncertified']:.10f}" if s['best_uncertified'] is not None else '-')
-            print(f"  {N:2d}  {k+1:2d}   {got:>16s}   NONE CERTIFIED    -   "
+            print(f"  {N:2d}  {k+1:2d}  {fam}  {got:>16s}   NONE CERTIFIED    -   "
                   f"0/{s['n_total']-s['n_crashed']-s['n_drifted']}/{s['n_total']}")
             continue
         b = s['best']
@@ -198,21 +214,21 @@ def main():
             delta = b['fun'] - bound
             oracle = (f'  {bound:.6f} ({delta:+.2e})'
                       + ('  BELOW -- not converged' if delta < -1e-7 else ''))
-        print(f"  {N:2d}  {k+1:2d}   {b['fun']:16.10f}  {s['spread']:8.1e}  "
+        print(f"  {N:2d}  {k+1:2d}  {fam}  {b['fun']:16.10f}  {s['spread']:8.1e}  "
               f"{b['resolution']:10.2e}  {s['n_agree']:2d}/{s['n_certified']:<2d} "
               f"{s['n_near']:2d}/{s['n_clean']:<2d} {s['n_certified']}/{s['n_total']}"
               f"{oracle}")
 
     print('\n  shapes of the best certified point in each cell:')
-    for N, k, s in cells:
+    for N, k, conv, s in cells:
         if s['best'] is None:
             continue
         b = s['best']
-        print(f"  N={N:2d} k={k+1:2d}: angles {np.array2string(np.asarray(b['angles']), precision=2)}")
+        print(f"  N={N:2d} k={k+1:2d}{' convex' if conv else ''}: angles {np.array2string(np.asarray(b['angles']), precision=2)}")
         print(f"           edges  {np.array2string(np.asarray(b['edges']), precision=4)}")
 
     # PPW is a THEOREM, so a cell above it is wrong no matter what it certified.
-    viol = [(N, k, s) for N, k, s in cells
+    viol = [(N, k, s) for N, k, _c, s in cells
             if k == 1 and s['best'] is not None and s['best']['fun'] > PPW + 1e-9]
     for N, k, s in viol:
         print(f"\n  *** N={N} k=2 reports {s['best']['fun']:.10f}, ABOVE the "
@@ -221,7 +237,7 @@ def main():
 
     if args.verify:
         print('\n  re-solving each best shape on a fresh plan:')
-        for N, k, s in cells:
+        for N, k, _conv, s in cells:
             if s['best'] is None:
                 continue
             ratio, lams, ok = revalidate(s['best'])
@@ -230,11 +246,11 @@ def main():
             if not ok:
                 print(f"       fresh lams {np.array2string(lams[:k+2], precision=6)}")
 
-    tot = sum(s['n_total'] for _, _, s in cells)
-    cert = sum(s['n_certified'] for _, _, s in cells)
-    crash = sum(s['n_crashed'] for _, _, s in cells)
-    drift = sum(s['n_drifted'] for _, _, s in cells)
-    print(f'\n  {cert} certified of {tot} run(s); {drift} excluded on worst_sigma, {crash} crashed')
+    total = lambda key: sum(s[key] for *_, s in cells)                 # noqa: E731
+    tot, cert = total('n_total'), total('n_certified')
+    crash, drift, missed = total('n_crashed'), total('n_drifted'), total('n_skipped_mode')
+    print(f'\n  {cert} certified of {tot} run(s); {drift} excluded on worst_sigma, '
+          f'{missed} on a missed mode, {crash} crashed')
     print('  agree = certified starts (resolution <= res_max) that found the best value.')
     print('  near  = ALL clean starts within 1e-5 of it -- the same shape found less sharply,')
     print('          which is the globality evidence; resolution is a separate question.')

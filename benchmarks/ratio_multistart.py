@@ -33,6 +33,13 @@ once reported 2.6203171651 -- above the PPW bound, therefore impossible -- at a 
 sigma = 1e-09, because `lam_2` was missing and the run had been optimizing `lam_3/lam_1` for 92
 iterations. A value at or below 0 is clean; at or above ~1 a mode is probably missing. See
 `douse.spectral_guard`.
+
+BOTH GUARDS RUN ON THE CONSOLE SUMMARY, not only in `summarize_grid`. They did not, and the
+summary printed 2.6203171651 as `group 0` -- the leading line of the output, above the true
+answer, with `0 converged` as the only hint that anything was wrong. `summarize_grid` is the tool
+of record and filtered it correctly, but this is the output a person actually watches a sweep
+produce, and it led with a number no planar domain can achieve. The gates here are the same ones,
+imported from `summarize_grid` rather than restated, so the two cannot drift apart.
 """
 import argparse
 import json
@@ -47,6 +54,7 @@ import numpy as np
 from douse import (ClosingBudget, ConstraintSet, MinEdgeLength, SpectrumEvaluator,
                    VertexPolygon, param_vector)
 from douse import degeneracy as dg
+from douse import spectral_guard
 
 from douse.cluster_opt import maximize_ratio
 
@@ -54,6 +62,14 @@ try:
     from .rectangle_exact import best_rectangle
 except ImportError:                                                   # pragma: no cover
     best_rectangle = None
+
+# THE GUARDS ARE IMPORTED, NOT RESTATED, so this summary and `summarize_grid` cannot disagree
+# about what counts as a result. No `except ImportError: None` fallback either -- a guard that can
+# silently vanish is the failure this is fixing, so an import error should be loud.
+try:
+    from .summarize_grid import PPW, row_deficit
+except ImportError:                                                   # pragma: no cover
+    from summarize_grid import PPW, row_deficit
 
 PERIM = 4.0
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run', 'ratio_multistart')
@@ -92,6 +108,34 @@ def fingerprint(v):
     e = np.sort(dg.edge_lengths(v))
     a = np.sort(np.degrees(dg.interior_angles(v)))
     return np.concatenate([e, a])
+
+
+def start_line(row):
+    """The live per-start line. Flags a missed mode, which `sigma` is structurally blind to."""
+    if not row.get('ok', True):
+        return f'  start {row["start"]:3d}: FAILED  {row["error"][:88]}'
+    d = row_deficit(row)
+    flag = '  ** MISSED MODE? **' if d > spectral_guard.DEFICIT_TOL else ''
+    return (f"  start {row['start']:3d}: F={row['fun']:.10f} nit={row['nit']} "
+            f"{row['seconds']:.0f}s sigma={row['worst_sigma']:.1e} "
+            f"res={row.get('resolution', float('nan')):.1e} "
+            f"{'OK ' if row['success'] else '   '}{row['message'][:44]}{flag}")
+
+
+def partition(rows, sigma_max):
+    """`(crashed, drifted, skipped, good)` -- the same two gates `summarize_grid` applies.
+
+    Split out of `main` so it can be tested. A gate that lives only inside a `main` is a gate no
+    test can reach, and this pair went missing here for exactly that reason while
+    `summarize_grid` kept applying them.
+    """
+    crashed = [r for r in rows if not r.get('ok', True)]
+    ok = [r for r in rows if r.get('ok', True)]
+    drifted = [r for r in ok if r['worst_sigma'] > sigma_max]
+    clean = [r for r in ok if r['worst_sigma'] <= sigma_max]
+    skipped = [r for r in clean if row_deficit(r) > spectral_guard.DEFICIT_TOL]
+    good = [r for r in clean if row_deficit(r) <= spectral_guard.DEFICIT_TOL]
+    return crashed, drifted, skipped, good
 
 
 def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None):
@@ -214,13 +258,7 @@ def main():
                 # interleave partial lines into the ledger.
                 with open(path, 'a') as fh:
                     fh.write(json.dumps(row) + '\n')
-                if not row.get('ok', True):
-                    print(f'  start {row["start"]:3d}: FAILED  {row["error"][:88]}', flush=True)
-                else:
-                    print(f"  start {row['start']:3d}: F={row['fun']:.10f} nit={row['nit']} "
-                          f"{row['seconds']:.0f}s sigma={row['worst_sigma']:.1e} "
-                          f"res={row.get('resolution', float('nan')):.1e} "
-                          f"{'OK ' if row['success'] else '   '}{row['message'][:44]}", flush=True)
+                print(start_line(row), flush=True)
         todo = []
 
     for i in todo:
@@ -245,12 +283,9 @@ def main():
             continue
         with open(path, 'a') as fh:
             fh.write(json.dumps(row) + '\n')
-        print(f"  start {i:3d}: F={row['fun']:.10f} nit={row['nit']} {row['seconds']:.0f}s "
-              f"sigma={row['worst_sigma']:.1e} res={row['resolution']:.1e} "
-              f"{'OK ' if row['success'] else '   '}{row['message'][:44]}", flush=True)
+        print(start_line(row), flush=True)
 
     allrows = [json.loads(l) for l in open(path) if l.strip()]
-    failed = [r for r in allrows if not r.get('ok', True)]
     rows = [r for r in allrows if r.get('ok', True)]
 
     # THE RECTANGLE ORACLE, at N=4 only. `max lam_k/lam_1` over rectangles is exactly solvable
@@ -269,14 +304,18 @@ def main():
                 print(f"  start {r['start']:3d} ENDED BELOW THE ORACLE by {short:.3e} "
                       f"({r['fun']:.10f}) -- not converged")
 
-    bad = [r for r in rows if r['worst_sigma'] > args.sigma_max]
-    good = [r for r in rows if r['worst_sigma'] <= args.sigma_max]
+    # THE SAME TWO GATES `summarize_grid` APPLIES, in the same order. A drifted basis is caught
+    # by `worst_sigma`; a SKIPPED mode is not -- the 2.6203 row had sigma = 1.3e-09 and was
+    # optimizing `lam_3/lam_1` under the name `lam_2/lam_1`. Both are excluded from the grouping
+    # and both are reported by name below, so a start that vanishes from the groups says why.
+    failed, bad, skipped, good = partition(allrows, args.sigma_max)
     print(f'\nN={args.N} k={args.k}: {len(good)} usable of {len(allrows)} start(s) '
           f'({len(bad)} excluded on worst_sigma > {args.sigma_max:.0e}, '
-          f'{len(failed)} crashed)')
+          f'{len(skipped)} on a missed mode, {len(failed)} crashed)')
     for r in failed:
         print(f"  CRASHED start {r['start']}: {r.get('error', '?')[:88]}")
-    for gi, g in enumerate(group(good)):
+    groups = group(good)
+    for gi, g in enumerate(groups):
         funs = np.array([r['fun'] for r in g['rows']])
         conv = sum(r['success'] for r in g['rows'])
         print(f'  group {gi}: F = {funs.max():.10f}  (spread {np.ptp(funs):.2e}, '
@@ -285,6 +324,22 @@ def main():
         print(f'      edges  {np.array2string(np.asarray(g["rows"][0]["edges"]), precision=4)}')
     for r in bad:
         print(f"  EXCLUDED start {r['start']}: worst_sigma={r['worst_sigma']:.1e} F={r['fun']:.8f}")
+    for r in skipped:
+        print(f"  MISSED MODE start {r['start']}: weyl_deficit={row_deficit(r):+.3f} "
+              f"F={r['fun']:.8f} -- the tracked set is not consecutive, so this is not "
+              f"lam_{args.k + 1}/lam_1")
+
+    # PPW IS A THEOREM AND IT IS THE BACKSTOP, not the primary gate: `lam_2/lam_1 <= 2.5387340`
+    # for every planar domain, so a k=1 group above it is wrong whatever it certified and
+    # whatever the two gates above concluded. It only speaks at k=1, which is why it cannot
+    # replace the Weyl deficit.
+    if args.k == 1:
+        for gi, g in enumerate(groups):
+            top = max(r['fun'] for r in g['rows'])
+            if top > PPW + 1e-9:
+                print(f'\n  *** group {gi} reports {top:.10f}, ABOVE the Payne-Polya-Weinberger '
+                      f'bound {PPW:.7f}. No planar domain can achieve this; the spectrum is '
+                      f'wrong (usually a MISSED eigenvalue). ***')
 
 
 if __name__ == '__main__':
