@@ -142,8 +142,30 @@ def collect(include_pre_fix, sigma_max=1e-6, res_max=1e-4, convex=False):
             pool = good or clean
             best = max(pool, key=lambda r: r['fun'])
             agree = [r for r in pool if abs(r['fun'] - best['fun']) <= 1e-6*abs(best['fun'])]
+            # A CELL IS CONTESTED WHEN AN EXCLUDED ROW CLAIMS A HIGHER VALUE AND THE REASON
+            # IT WAS EXCLUDED IS ITSELF IN DOUBT. A missing mode INFLATES a ratio -- the lam_k
+            # slot gets filled by a higher eigenvalue -- so "excluded and higher" is both the
+            # signature of that failure and what a genuinely better basin looks like, and only
+            # re-solving separates them.
+            #
+            # THE FIRST VERSION OF THIS FLAGGED THREE CELLS AND TWO WERE SETTLED, so the rule
+            # excludes what is already decided:
+            #   * above the PPW bound at k=1 is IMPOSSIBLE, not contested (N=6 lam_2/lam_1's
+            #     2.6203171651, at a pristine sigma of 1.3e-09 -- the row that motivated the
+            #     whole missed-mode guard);
+            #   * a drifted basis is not a result (N=6 lam_3/lam_1's 3.6372 at sigma 6.3e-04);
+            #   * a deficit far above threshold is a missing mode, not a marginal call. 1.497
+            #     is; 0.534 and 0.558, against a threshold of 0.5 calibrated on N=4..6 at k<=5,
+            #     are exactly where a false positive would sit.
+            excluded = [r for r in rows if r not in clean]
+            contested = sorted(
+                (r['fun'], r['start']) for r in excluded
+                if r['fun'] > best['fun']*(1 + 1e-9)
+                and r.get('worst_sigma', 1.0) <= sigma_max
+                and not (r['k'] == 1 and r['fun'] > PPW + 1e-9)
+                and row_deficit(r) <= 2*spectral_guard.DEFICIT_TOL)
             cells[(N, k)] = dict(best=best, n_agree=len(agree), n_total=attempted,
-                                 n_crashed=attempted - len(rows),
+                                 n_crashed=attempted - len(rows), contested=contested,
                                  certified=bool(good), pre_fix=pre,
                                  spread=(float(np.ptp([r['fun'] for r in agree]))
                                          if len(agree) > 1 else float('nan')))
@@ -201,13 +223,23 @@ def main():
             v = shapes[(N, k)]
             xy = np.column_stack([v.real, v.imag])
             xy = np.vstack([xy, xy[:1]])
-            if c['certified']:
+            contested = c.get('contested') or []
+            if contested:
+                # drawn, but visibly NOT settled
+                ax.fill(xy[:, 0], xy[:, 1], color='#C8791E', alpha=0.22, zorder=1)
+                ax.plot(xy[:, 0], xy[:, 1], color='#8A4B00', lw=1.8, ls=(0, (5, 2)), zorder=2)
+                edge = '#8A4B00'
+            elif c['certified']:
                 ax.fill(xy[:, 0], xy[:, 1], color='#4C72B0', alpha=0.30, zorder=1)
                 ax.plot(xy[:, 0], xy[:, 1], color='#1F3D6B', lw=1.8, zorder=2)
+                edge = '#1F3D6B'
             else:
                 ax.plot(xy[:, 0], xy[:, 1], color='0.45', lw=1.4, ls='--', zorder=2)
-            ax.plot(xy[:-1, 0], xy[:-1, 1], 'o', ms=2.6,
-                    color='#1F3D6B' if c['certified'] else '0.45', zorder=3)
+                edge = '0.45'
+            ax.plot(xy[:-1, 0], xy[:-1, 1], 'o', ms=2.6, color=edge, zorder=3)
+            if contested:
+                for sp in ax.spines.values():
+                    sp.set_color('#C8791E'); sp.set_linewidth(1.6)
 
             spread = ('' if not np.isfinite(c['spread']) else f", spread {c['spread']:.0e}")
             crashed = (f", {c['n_crashed']} crashed" if c.get('n_crashed') else '')
@@ -215,6 +247,9 @@ def main():
                     if c['certified']
                     else (f"lower bound ({c['n_total']} run(s)){crashed}"
                           + (', pre-fix' if c['pre_fix'] else '')))
+            if contested:
+                top = contested[-1][0]
+                note += (f"\nCONTESTED: {len(contested)} excluded run(s) up to {top:.7f}")
             ax.set_title(f"$\\lambda_{{{k+1}}}/\\lambda_1$ = {b['fun']:.7f}\n{note}",
                          fontsize=8.5, pad=4,
                          color='black' if c['certified'] else '0.35')
@@ -228,9 +263,9 @@ def main():
                             rotation=90)
 
     fig.suptitle('Maximizers of $\\lambda_k/\\lambda_1$ over N-gons of perimeter 4\n'
-                 'filled = first-order certificate;  dashed grey = lower bound only;  '
-                 'all panels to the same scale',
-                 fontsize=11, y=0.995)
+                 'blue = first-order certificate;  dashed grey = lower bound only;  '
+                 'amber = contested, an excluded run claims more;  all panels to the same scale',
+                 fontsize=10.5, y=0.995)
     fig.tight_layout(rect=(0.015, 0.0, 1, 0.965))
     fig.savefig(args.out, dpi=args.dpi, bbox_inches='tight')
     print(f'wrote {args.out}  ({len(cells)} cell(s): '
