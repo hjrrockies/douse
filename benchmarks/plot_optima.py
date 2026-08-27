@@ -135,10 +135,13 @@ def collect(include_pre_fix, sigma_max=1e-6, res_max=1e-4, convex=False):
                       f'{PPW:.7f} (max {max(r["fun"] for r in impossible):.7f}) -- a missed mode')
             if not clean:
                 continue
+            # THE CERTIFICATE IS THE STOP, not a threshold on the resolution -- see the note
+            # in `summarize_grid.summarize`. Gating on the plateau height certifies by the
+            # shape's noise floor rather than by optimality, and it was rejecting 20 rows of
+            # which 17 agreed with their cell's best to 1e-6.
             # pre-fix rows have no `resolution` and are never treated as certified
             good = [r for r in clean if (not pre) and r.get('success')
-                    and np.isfinite(r.get('resolution', np.nan))
-                    and r['resolution'] <= res_max]
+                    and np.isfinite(r.get('resolution', np.nan))]
             pool = good or clean
             best = max(pool, key=lambda r: r['fun'])
             agree = [r for r in pool if abs(r['fun'] - best['fun']) <= 1e-6*abs(best['fun'])]

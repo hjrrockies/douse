@@ -142,12 +142,28 @@ def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5):
     # value promoted out of this function is quoted.
     skipped = [r for r in clean if row_deficit(r) > spectral_guard.DEFICIT_TOL]
     clean = [r for r in clean if not (row_deficit(r) > spectral_guard.DEFICIT_TOL)]
-    good = [r for r in clean
-            if r.get('success') and np.isfinite(r.get('resolution', np.nan))
-            and r['resolution'] <= res_max]
+    # A CERTIFICATE IS THE STOP, NOT A THRESHOLD ON THE RESOLUTION -- section 9's lesson, which
+    # this line was repeating one layer up. `gain_tol` was replaced by plateau detection because a
+    # fixed threshold "certified according to where each shape's noise floor happened to fall";
+    # `res_max = 1e-4` was then applied to the PLATEAU VALUE and did the same thing. Measured over
+    # the 20 rows it was rejecting: **17 agree with their cell's best to 1e-6**, most to 1e-8, and
+    # every one of them stopped on the plateau certificate. Of the other three, two sit 2.8e-06
+    # and 3.3e-06 out -- the same optimum, less sharply -- and one is a different basin. None was
+    # junk, and N=3 `lam_5/lam_1` was reported NONE CERTIFIED while six starts agreed on it.
+    #
+    # The upper bound that DOES belong is already in the optimizer, where the measurement is:
+    # `maximize_ratio` only runs the plateau test when criticality is under `plateau_max = 1e-3`,
+    # so a run that plateaued absurdly high never certifies in the first place. Accuracy is the
+    # other guards' job (sigma, the Weyl deficit, the spurious-value bar); resolution is an
+    # OPTIMALITY measure, and gating accuracy on it is what conflates the two.
+    #
+    # `res_max` survives as a reported sharpness, `n_sharp`, not as a gate.
+    good = [r for r in clean if r.get('success')]
+    n_sharp = sum(1 for r in good if np.isfinite(r.get('resolution', np.nan))
+                  and r['resolution'] <= res_max)
     if not good:
         return dict(best=None, n_total=len(rows), n_crashed=len(crashed),
-                    n_skipped_mode=len(skipped),
+                    n_skipped_mode=len(skipped), n_sharp=0,
                     n_drifted=len(drifted), n_certified=0, n_agree=0, n_near=0,
                     n_clean=len(clean),
                     best_uncertified=(max((r['fun'] for r in clean), default=None)))
@@ -162,7 +178,7 @@ def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5):
     # starts found the SAME point, and conflating them throws away the globality evidence.
     n_near = sum(abs(r['fun'] - best['fun']) <= near_rtol*abs(best['fun']) for r in clean)
     return dict(best=best, n_total=len(rows), n_crashed=len(crashed), n_clean=len(clean),
-                n_skipped_mode=len(skipped),
+                n_skipped_mode=len(skipped), n_sharp=n_sharp,
                 n_drifted=len(drifted), n_certified=len(good), n_agree=len(agreeing),
                 n_near=n_near, spread=spread, best_uncertified=None)
 
@@ -198,8 +214,8 @@ def main():
 
     print(f'{len(cells)} cell(s) from {args.dir}\n')
     print('   N   k  family   max lam_k/lam_1     spread   resolution  agree near cert/tot'
-          '  oracle (N=4)')
-    print('  ' + '-'*94)
+          ' sharp  oracle (N=4)')
+    print('  ' + '-'*101)
     for N, k, conv, s in cells:
         fam = 'convex' if conv else 'all   '
         if s['best'] is None:
@@ -217,7 +233,7 @@ def main():
         print(f"  {N:2d}  {k+1:2d}  {fam}  {b['fun']:16.10f}  {s['spread']:8.1e}  "
               f"{b['resolution']:10.2e}  {s['n_agree']:2d}/{s['n_certified']:<2d} "
               f"{s['n_near']:2d}/{s['n_clean']:<2d} {s['n_certified']}/{s['n_total']}"
-              f"{oracle}")
+              f" {s['n_sharp']:2d}/{s['n_certified']:<2d}{oracle}")
 
     print('\n  shapes of the best certified point in each cell:')
     for N, k, conv, s in cells:
@@ -251,7 +267,11 @@ def main():
     crash, drift, missed = total('n_crashed'), total('n_drifted'), total('n_skipped_mode')
     print(f'\n  {cert} certified of {tot} run(s); {drift} excluded on worst_sigma, '
           f'{missed} on a missed mode, {crash} crashed')
-    print('  agree = certified starts (resolution <= res_max) that found the best value.')
+    print('  agree = certified starts that found the best value; CERTIFIED means the run')
+    print('          stopped on a first-order certificate (gain_tol or the plateau test).')
+    print(f'  sharp = of those, how many reached resolution <= {args.res_max:.0e}. A REPORTED')
+    print('          quality, not a gate: the plateau height is set by the shape\'s own noise')
+    print('          floor, so thresholding it certifies by geometry rather than by optimality.')
     print('  near  = ALL clean starts within 1e-5 of it -- the same shape found less sharply,')
     print('          which is the globality evidence; resolution is a separate question.')
     print('  spread = how far apart the agreeing certified starts ended in F (the uncertainty).')

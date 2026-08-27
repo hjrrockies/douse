@@ -134,3 +134,36 @@ def test_a_ledger_row_says_which_guards_produced_it():
     src = inspect.getsource(rm.run_one)
     for field in ('enforce_weyl=', 'deficit_tol=', 'n_weyl_refusals=', 'refusals='):
         assert field in src, field
+
+
+def test_a_certificate_is_the_STOP_not_a_threshold_on_the_resolution():
+    """Section 9's lesson, one layer up. `gain_tol` was replaced by plateau detection because a
+    fixed threshold certified according to where each shape's noise floor happened to fall;
+    `res_max` was then applied to the plateau VALUE and did the same thing. Measured: of the 20
+    rows it rejected, 17 agreed with their cell's best to 1e-6."""
+    sg = pytest.importorskip('benchmarks.summarize_grid')
+    row = dict(N=5, k=2, start=0, fun=3.0, worst_sigma=1e-11, worst_weyl_deficit=0.0,
+               success=True, resolution=6.4e-4, ok=True, nit=10, seconds=1.0, message='plateaued')
+    s = sg.summarize([row], sigma_max=1e-6, res_max=1e-4)
+    assert s['best'] is not None, 'a plateau certificate above res_max must still certify'
+    assert s['n_certified'] == 1
+    assert s['n_sharp'] == 0, 'and must be reported as not sharp'
+
+
+def test_the_sharp_count_still_distinguishes_quality():
+    sg = pytest.importorskip('benchmarks.summarize_grid')
+    mk = lambda res, f: dict(N=5, k=2, start=0, fun=f, worst_sigma=1e-11,               # noqa
+                             worst_weyl_deficit=0.0, success=True, resolution=res,
+                             ok=True, nit=10, seconds=1.0, message='plateaued')
+    s = sg.summarize([mk(6.4e-4, 3.0), mk(1e-6, 3.0)], sigma_max=1e-6, res_max=1e-4)
+    assert s['n_certified'] == 2 and s['n_sharp'] == 1
+
+
+def test_the_upper_bound_that_matters_lives_in_the_optimizer():
+    """Nothing certifies with an absurd plateau, because `maximize_ratio` only runs the plateau
+    test when criticality is already under `plateau_max`. That is the bound, and it sits where
+    the measurement is."""
+    import inspect
+    from douse import cluster_opt
+    sig = inspect.signature(cluster_opt.maximize_ratio).parameters
+    assert 'plateau_max' in sig and sig['plateau_max'].default == 1e-3
