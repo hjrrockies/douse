@@ -620,6 +620,12 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
       treats a refusal at a trial shape as an unreachable trial -- shrink, count `n_unresolved`,
       continue -- and a refusal at the current iterate stays fatal. `enforce_weyl=False`
       reproduces the old behaviour and is pinned by a test.
+- [ ] **`spectral_guard.weyl_deficit` NOW EXISTS IN `lappy` TOO** (`asymp.weyl_deficit`, branch
+      `missed-modes`, unmerged), where it drives `solve`'s own audit. Once that branch lands,
+      import it rather than keeping two copies of a calibrated statistic in two repos -- the
+      threshold is evidence about a measurement, and two of them will drift. Keep `douse`'s
+      DEFICIT_TOL as the douse-side gate; it is the same number today and need not stay so.
+
 - [ ] **`row_deficit`'s FALLBACK IS THE WEAKER STATISTIC, and the retroactive audit inherits it.**
       The recorded field is the worst over every iterate; the recomputation sees only the
       endpoint, so it is a lower bound. Over the 9 rows carrying both: 8.761 -> 0.186 (below
