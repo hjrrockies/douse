@@ -181,6 +181,17 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False):
                 angles=[float(t) for t in np.sort(np.degrees(dg.interior_angles(v)))],
                 worst_sigma=float(res.worst_sigma), n_replans=int(res.n_replans),
                 n_unresolved=int(getattr(res, 'n_unresolved', 0)),
+                # WHICH GUARDS PRODUCED THIS ROW. A cell is not always written by one version of
+                # the code: `run_grid` retries a CRASHED start on resume, so `N6_k1` start 1 will
+                # be re-run with the enforcement while its seven siblings predate it. That is the
+                # mixing the handoff warns about, and the fix is to make a row say what watched
+                # it rather than to forbid the retry.
+                enforce_weyl=bool(getattr(ev, 'enforce_weyl', False)),
+                deficit_tol=float(spectral_guard.DEFICIT_TOL),
+                n_weyl_escalations=int(getattr(ev, 'n_weyl_escalations', 0)),
+                n_weyl_recovered=int(getattr(ev, 'n_weyl_recovered', 0)),
+                n_weyl_refusals=int(getattr(ev, 'n_weyl_refusals', 0)),
+                verified=bool(getattr(res, 'verified', True)),
                 # THE REFUSED SHAPES, capped at 4 per row. A refusal is a `lappy` question --
                 # plan on one shape, solve on another -- and it cannot be asked afterwards
                 # without the vertices. Four is enough to characterise a run and keeps a ledger

@@ -124,3 +124,13 @@ def test_the_gates_have_exactly_one_definition_across_all_three_readers():
     po = pytest.importorskip('benchmarks.plot_optima')
     sg = pytest.importorskip('benchmarks.summarize_grid')
     assert po.row_deficit is sg.row_deficit and po.PPW is sg.PPW
+
+
+def test_a_ledger_row_says_which_guards_produced_it():
+    """A cell is not always written by one version of the code -- `run_grid` retries a crashed
+    start on resume -- so a row has to carry what watched it."""
+    rm = pytest.importorskip('benchmarks.ratio_multistart')
+    import inspect
+    src = inspect.getsource(rm.run_one)
+    for field in ('enforce_weyl=', 'deficit_tol=', 'n_weyl_refusals=', 'refusals='):
+        assert field in src, field
