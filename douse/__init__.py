@@ -28,6 +28,7 @@ from .cluster_opt import (maximize_ratio, local_model, trust_region_step, model_
                           model_gain2)
 from .quasi_newton import SR1, BFGS, tr_subproblem
 from .spectral_guard import weyl_deficit, weyl_report, DEFICIT_TOL
-from .constraints import Constraint, ConstraintSet, MinEdgeLength, ClosingBudget
+from .constraints import (Constraint, ConstraintSet, Convexity, MinEdgeLength,
+                          ClosingBudget)
 from .degeneracy import (effective_vertices, interior_angles, turning_angles,
                          canonicalize)

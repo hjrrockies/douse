@@ -51,10 +51,11 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 
-from douse import (ClosingBudget, ConstraintSet, MinEdgeLength, SpectrumEvaluator,
+from douse import (ClosingBudget, ConstraintSet, Convexity, MinEdgeLength, SpectrumEvaluator,
                    VertexPolygon, param_vector)
 from douse import degeneracy as dg
 from douse import spectral_guard
+from douse.sampling import random_convex
 
 from douse.cluster_opt import maximize_ratio
 
@@ -95,6 +96,25 @@ def start_shape(N, i, seed0=0):
     rad = rng.uniform(0.55, 1.0, N)
     v = rad*np.exp(1j*ang)
     return v*PERIM/np.abs(np.diff(np.concatenate([v, v[:1]]))).sum()
+
+
+def convex_start_shape(N, i, seed0=0, min_interior_deg=15.0):
+    """Start `i` for a CONVEX sweep: 0 is the jittered regular N-gon, the rest are Valtr draws.
+
+    Uniform over convex N-gons rather than convex-by-rejection, so the start distribution is a
+    stated measure instead of whatever survives a filter. Two bands are applied, and both are
+    feasibility rather than taste: `min_edge` matches `MinEdgeLength`'s default floor, so no
+    start is born infeasible (17.3% of raw N=12 convex draws are), and `min_interior_deg` keeps
+    the spike end away from the basis plan's `sharp_ref/alpha` regime, where a corner's block
+    shrinks toward `M = 1`.
+
+    Start 0 stays the jittered regular polygon, as in `start_shape`, so the near-regular basin is
+    always represented -- at k=2 that basin holds the answer.
+    """
+    if i == 0:
+        return start_shape(N, 0, seed0)
+    return random_convex(N, PERIM, np.random.default_rng(seed0 + 1000*i + N),
+                         min_interior_deg=min_interior_deg, min_edge=PERIM/(10.0*N))
 
 
 def fingerprint(v):
@@ -138,18 +158,22 @@ def partition(rows, sigma_max):
     return crashed, drifted, skipped, good
 
 
-def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None):
+def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False):
     fam = VertexPolygon(N, perim=PERIM)
     cons = ConstraintSet(MinEdgeLength(fam), ClosingBudget(fam))
+    if convex:
+        # `Convexity` is a RESTRICTION and it is meant to be: it asks the convex question. The
+        # answer belongs in its own ledger -- see `--convex` in `main`.
+        cons = ConstraintSet(MinEdgeLength(fam), ClosingBudget(fam), Convexity(fam))
     ev = SpectrumEvaluator(fam, n_eigs=(n_eigs or k + 2), warn_gap=0.0, degenerate_tol=0.0,
                            lam_max_window=max(8, 2*k + 4), replan_tol=1e-9)
-    p0 = param_vector(start_shape(N, i, seed0), PERIM)
+    p0 = param_vector((convex_start_shape if convex else start_shape)(N, i, seed0), PERIM)
     t0 = time.perf_counter()
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         res = maximize_ratio(ev, p0, k=k, max_iter=max_iter, constraints=cons, delta0=delta0)
     v = fam.vertices(res.x)
-    return dict(N=N, k=k, start=i, fun=float(res.fun), nit=int(res.nit),
+    return dict(N=N, k=k, start=i, convex=bool(convex), fun=float(res.fun), nit=int(res.nit),
                 seconds=round(time.perf_counter() - t0, 1),
                 x=[float(t) for t in res.x],
                 lams=[float(t) for t in np.asarray(res.lams)],
@@ -176,11 +200,11 @@ def _cell(job):
     since a spawned child re-imports numpy and reads them then; `n_workers_default` is a module
     global read at call time, so it is set here.
     """
-    N, k, i, max_iter, seed0, delta0, n_eigs, threads = job
+    N, k, i, max_iter, seed0, delta0, n_eigs, threads, convex = job
     from lappy import mps as _mps
     _mps.n_workers_default = max(1, int(threads))
     try:
-        return run_one(N, k, i, max_iter, seed0, delta0, n_eigs)
+        return run_one(N, k, i, max_iter, seed0, delta0, n_eigs, convex=convex)
     except Exception as exc:                                          # noqa: BLE001
         return dict(N=N, k=k, start=i, ok=False, error=f'{type(exc).__name__}: {exc}',
                     trace=traceback.format_exc()[-600:])
@@ -211,6 +235,11 @@ def main():
     ap.add_argument('--delta0', type=float, default=0.05)
     ap.add_argument('--n-eigs', type=int, default=None)
     ap.add_argument('--sigma-max', type=float, default=1e-6)
+    ap.add_argument('--convex', action='store_true',
+                    help='search CONVEX N-gons only: adds the `Convexity` constraint and draws '
+                         'starts uniformly from convex N-gons (Valtr) instead of star-shaped '
+                         'ones. Writes a SEPARATE ledger, N<N>_k<k>_convex.jsonl -- the two are '
+                         'answers to different questions and must never be pooled.')
     ap.add_argument('--workers', type=int, default=1,
                     help='run this many starts concurrently. The cells are independent, so this '
                          'is close to linear until the cores run out; per-worker thread counts '
@@ -220,7 +249,7 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(OUT, exist_ok=True)
-    path = os.path.join(OUT, f'N{args.N}_k{args.k}.jsonl')
+    path = os.path.join(OUT, f'N{args.N}_k{args.k}{"_convex" if args.convex else ""}.jsonl')
     done = set()
     if os.path.exists(path):
         for line in open(path):
@@ -240,8 +269,8 @@ def main():
         for var in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
                     'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS'):
             os.environ.setdefault(var, str(threads))
-        jobs = [(args.N, args.k, i, args.max_iter, args.seed0, args.delta0, args.n_eigs, threads)
-                for i in todo]
+        jobs = [(args.N, args.k, i, args.max_iter, args.seed0, args.delta0, args.n_eigs,
+                 threads, args.convex) for i in todo]
         print(f'running {len(jobs)} start(s) on {args.workers} worker(s), '
               f'{threads} thread(s) each', flush=True)
         # ONE START PER PROCESS. Without `max_tasks_per_child` a worker is recycled across many
@@ -272,9 +301,10 @@ def main():
         # would turn "six starts crashed" into "six starts agreed", which is the same class of
         # mistake as the `_degeneracy_move` exception that hid an IndexError through three runs.
         try:
-            row = run_one(args.N, args.k, i, args.max_iter, args.seed0, args.delta0, args.n_eigs)
+            row = run_one(args.N, args.k, i, args.max_iter, args.seed0, args.delta0,
+                          args.n_eigs, convex=args.convex)
         except Exception as exc:
-            row = dict(N=args.N, k=args.k, start=i, ok=False,
+            row = dict(N=args.N, k=args.k, start=i, convex=bool(args.convex), ok=False,
                        error=f'{type(exc).__name__}: {exc}',
                        trace=traceback.format_exc()[-600:])
             print(f'  start {i:3d}: FAILED  {row["error"][:88]}', flush=True)

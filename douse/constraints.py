@@ -45,7 +45,7 @@ are ALREADY flat is exact, and `degeneracy.canonicalize` does that.
 """
 import numpy as np
 
-__all__ = ['Constraint', 'ConstraintSet', 'MinEdgeLength', 'ClosingBudget']
+__all__ = ['Constraint', 'ConstraintSet', 'MinEdgeLength', 'ClosingBudget', 'Convexity']
 
 
 class Constraint:
@@ -116,6 +116,78 @@ class MinEdgeLength(Constraint):
         dc[k, (k - 1) % N] = -u.real                    # d|e_k|/dx_{k-1}
         dc[k, N + (k - 1) % N] = -u.imag
         return lengths - self.l_min, dc
+
+
+class Convexity(Constraint):
+    """`turn_k >= margin` at every vertex: no reentrant corner. A RESTRICTION, not a gauge fixing.
+
+    Unlike `MinEdgeLength`, which forbids one of two representations of the same limiting domain,
+    this one removes domains from the search outright -- which is the point. It exists so that
+    "the maximizer of `lam_k/lam_1` over CONVEX N-gons" can be asked as its own question, with the
+    reentrant part of the family excluded by construction rather than by a start that happens not
+    to go there.
+
+    THE CONSTRAINT IS THE TURNING ANGLE, NOT THE CROSS PRODUCT. `cross(e_k, e_{k+1})` is the
+    cheaper convexity test and it is scale-dependent -- it carries `|e_k||e_{k+1}|`, so a margin
+    means different things at different vertices of the same polygon and different things again
+    as the optimizer moves. The turning angle is scale-free, its gradient is O(1/|e|) rather than
+    O(|e|), and `margin` is readable: `margin = 0.05` is "no interior angle above 177.1 degrees".
+
+    `margin = 0` ADMITS FLAT VERTICES, exactly on the boundary. `turn = 0` is a flat vertex, so
+    every convex M-gon with M < N remains reachable inside the N-gon family written with `N - M`
+    flat vertices -- the same reachability argument the module docstring makes for the edge floor.
+    Those representations sit ON the constraint boundary rather than in the interior, which is
+    where an active-set step wants them anyway. A positive `margin` gives them up in exchange for
+    keeping the corner count honest.
+
+    WHAT IT DOES NOT DO: it does not stop a SPIKE. `turn -> pi` is an interior angle going to
+    zero, and it satisfies convexity all the way down. Sharp corners are the other end of what
+    strains a basis plan, and they need their own floor -- this constraint is about reentrance
+    only, and saying so is cheaper than half-doing both.
+    """
+
+    def __init__(self, family, margin=0.0):
+        super().__init__(family)
+        self.margin = float(margin)
+        if not -np.pi < self.margin < np.pi:
+            raise ValueError(f'margin must lie in (-pi, pi), got {self.margin}')
+        # A convex N-gon's turning angles sum to 2 pi, so n*margin > 2 pi admits nothing.
+        if self.margin*family.n >= 2*np.pi:
+            raise ValueError(
+                f'margin={self.margin:g} times n={family.n} is at least 2 pi, and the turning '
+                f'angles of a simple polygon sum to exactly 2 pi, so no polygon satisfies it')
+
+    def __repr__(self):
+        return f'Convexity(margin={self.margin:g})'
+
+    @property
+    def size(self):
+        return self.family.n
+
+    def _on_vertices(self, vertices):
+        v = np.asarray(vertices, dtype=complex)
+        N = len(v)
+        a = v - np.roll(v, 1)                           # incoming edge at vertex k
+        b = np.roll(v, -1) - v                          # outgoing edge at vertex k
+        if np.any(np.abs(a) == 0):
+            raise ValueError('polygon has a zero-length edge; the turning angle and its gradient '
+                             'are undefined there. `MinEdgeLength` exists to keep you away.')
+        turn = np.angle(b/a)
+
+        # d angle(a)/d v_k = (-a_y, a_x)/|a|^2, and turn = angle(b) - angle(a), so the three
+        # vertices the angle at k depends on pick up the two terms with these signs.
+        ga = np.stack([-a.imag, a.real])/np.abs(a)**2   # (2, N), d angle(a_k)/d v_k
+        gb = np.stack([-b.imag, b.real])/np.abs(b)**2   # (2, N), d angle(b_k)/d v_{k+1}
+
+        dc = np.zeros((N, 2*N))
+        k = np.arange(N)
+        dc[k, (k - 1) % N] = ga[0]                      # -d/dv_{k-1} of -angle(a)
+        dc[k, N + (k - 1) % N] = ga[1]
+        dc[k, k] = -gb[0] - ga[0]
+        dc[k, N + k] = -gb[1] - ga[1]
+        dc[k, (k + 1) % N] = gb[0]
+        dc[k, N + (k + 1) % N] = gb[1]
+        return turn - self.margin, dc
 
 
 class ClosingBudget(Constraint):
