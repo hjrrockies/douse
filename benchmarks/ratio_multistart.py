@@ -58,6 +58,7 @@ from douse import spectral_guard
 from douse.sampling import random_convex
 
 from douse.cluster_opt import maximize_ratio
+from douse.evaluate import UnresolvedSpectrum
 
 try:
     from .rectangle_exact import best_rectangle
@@ -169,9 +170,27 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False):
                            lam_max_window=max(8, 2*k + 4), replan_tol=1e-9)
     p0 = param_vector((convex_start_shape if convex else start_shape)(N, i, seed0), PERIM)
     t0 = time.perf_counter()
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
-        res = maximize_ratio(ev, p0, k=k, max_iter=max_iter, constraints=cons, delta0=delta0)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = maximize_ratio(ev, p0, k=k, max_iter=max_iter, constraints=cons, delta0=delta0)
+    except UnresolvedSpectrum as exc:
+        # A REFUSAL AT THE START SHAPE IS FATAL BY DESIGN -- a run cannot begin from a shape whose
+        # spectrum it cannot index -- but the outer handler builds its crash row from the
+        # exception alone, and the SHAPES would be lost with the evaluator. They are the whole
+        # value of the refusal: `benchmarks/replay_refusal.py` re-solves them, and one such pair
+        # is what identified the `lappy` failure as a scan stepping over a tight cluster rather
+        # than anything to do with the reentrant corner it was assumed to be. Measured cost of
+        # not doing this: cell N6_k3 start 5, lost.
+        return dict(N=N, k=k, start=i, convex=bool(convex), ok=False,
+                    error=f'{type(exc).__name__}: {exc}',
+                    trace=traceback.format_exc()[-600:],
+                    seconds=round(time.perf_counter() - t0, 1),
+                    enforce_weyl=bool(getattr(ev, 'enforce_weyl', False)),
+                    deficit_tol=float(spectral_guard.DEFICIT_TOL),
+                    n_weyl_escalations=int(getattr(ev, 'n_weyl_escalations', 0)),
+                    n_weyl_refusals=int(getattr(ev, 'n_weyl_refusals', 0)),
+                    refusals=list(getattr(ev, 'refusals', []))[:4])
     v = fam.vertices(res.x)
     return dict(N=N, k=k, start=i, convex=bool(convex), fun=float(res.fun), nit=int(res.nit),
                 seconds=round(time.perf_counter() - t0, 1),

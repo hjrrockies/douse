@@ -184,3 +184,15 @@ def test_a_RUN_of_refusals_stops_the_search_instead_of_grinding_the_radius():
     assert res.n_unresolved == 3               # stopped on the streak, not at max_iter
     assert 'could not be indexed' in res.message and res.success is False
     assert res.delta > 1e-12                   # the radius was NOT ground to nothing
+
+
+def test_a_fatal_refusal_still_records_its_shapes():
+    """A refusal at the START shape is fatal by design, but the shapes must survive the crash --
+    they are what `replay_refusal` re-solves, and cell N6_k3 start 5 lost a pair this way."""
+    rm = pytest.importorskip('benchmarks.ratio_multistart')
+    import inspect
+    src = inspect.getsource(rm.run_one)
+    assert 'except UnresolvedSpectrum' in src
+    body = src[src.index('except UnresolvedSpectrum'):]
+    for field in ('refusals=', "ok=False", 'trace='):
+        assert field in body, field
