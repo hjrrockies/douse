@@ -97,3 +97,30 @@ def test_THE_FALLBACK_CAN_FLIP_THE_GATE_and_here_is_the_case_that_does():
     recorded = r.pop('worst_weyl_deficit')
     assert recorded > spectral_guard.DEFICIT_TOL
     assert rm.row_deficit(r) < spectral_guard.DEFICIT_TOL
+
+
+def test_plot_optima_and_summarize_grid_agree_on_the_denominator():
+    """They did not: a crashed row was dropped before `plot_optima` counted, so N=6 `lam_2/lam_1`
+    read 3/7 there and 3/8 in the tool of record. Both count ATTEMPTED starts now."""
+    po = pytest.importorskip('benchmarks.plot_optima')
+    sg = pytest.importorskip('benchmarks.summarize_grid')
+    import glob
+    import os
+    cells = po.collect(False)
+    if not cells:
+        pytest.skip('no ledgers on disk')
+    for path in sorted(glob.glob(os.path.join(sg.LEDGERS, 'N*_k*.jsonl'))):
+        if path.endswith('_convex.jsonl'):
+            continue
+        rows = sg.load(path)
+        if not rows:
+            continue
+        key = (rows[0]['N'], rows[0]['k'])
+        if key in cells:
+            assert cells[key]['n_total'] == sg.summarize(rows, 1e-6, 1e-4)['n_total'], key
+
+
+def test_the_gates_have_exactly_one_definition_across_all_three_readers():
+    po = pytest.importorskip('benchmarks.plot_optima')
+    sg = pytest.importorskip('benchmarks.summarize_grid')
+    assert po.row_deficit is sg.row_deficit and po.PPW is sg.PPW

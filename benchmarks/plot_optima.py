@@ -31,7 +31,12 @@ from douse import VertexPolygon, spectral_guard
 
 PERIM = 4.0
 LEDGERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run', 'ratio_multistart')
-PPW = (3.8317059702/2.4048255577)**2      # Payne--Polya--Weinberger: lam_2/lam_1 <= this
+# THE GATES ARE IMPORTED, NOT RESTATED. Three files now read these ledgers and a guard
+# copied into each is a guard that drifts apart across them.
+try:
+    from .summarize_grid import PPW, row_deficit
+except ImportError:                                                   # pragma: no cover
+    from summarize_grid import PPW, row_deficit
 
 
 def canonical(v):
@@ -59,28 +64,45 @@ def canonical(v):
 
 
 def _load(path, pre_fix=False):
-    rows = []
+    """`(usable rows, starts attempted)`.
+
+    THE DENOMINATOR IS ATTEMPTED STARTS, and it used to be usable ones. A crashed row was
+    dropped here before anything counted it, so this file reported N=6 `lam_2/lam_1` as 3/7
+    where `summarize_grid` reported 3/8 for the same cell -- neither wrong, both defensible, and
+    the same cell reading two ways will cost somebody an hour. A start that crashed was still a
+    start, and hiding it flatters the cell.
+    """
+    rows, attempted = [], 0
     for line in open(path):
         line = line.strip()
         if not line:
             continue
+        attempted += 1
         r = json.loads(line)
         if not r.get('ok', True):
             continue
         r['pre_fix'] = pre_fix
         rows.append(r)
-    return rows
+    return rows, attempted
 
 
-def collect(include_pre_fix, sigma_max=1e-6, res_max=1e-4):
-    """`{(N, k): summary}` -- the best certified run per cell, else the best clean one."""
+def collect(include_pre_fix, sigma_max=1e-6, res_max=1e-4, convex=False):
+    """`{(N, k): summary}` -- the best certified run per cell, else the best clean one.
+
+    ONE FAMILY PER FIGURE. `--convex` cells live in `N<N>_k<k>_convex.jsonl` and answer a
+    different question -- the maximum over CONVEX N-gons -- so they are never mixed into the
+    unconstrained panel grid, which would silently plot a constrained optimum as the answer.
+    """
     cells = {}
-    sources = [(os.path.join(LEDGERS, 'N*_k*.jsonl'), False)]
+    sources = [(os.path.join(LEDGERS, 'N*_k*_convex.jsonl' if convex else 'N*_k*.jsonl'),
+                False)]
     if include_pre_fix:
         sources.append((os.path.join(LEDGERS, 'pre_plateau_fix', 'N*_k*.jsonl'), True))
     for pattern, pre in sources:
         for path in sorted(glob.glob(pattern)):
-            rows = _load(path, pre)
+            if not convex and path.endswith('_convex.jsonl'):
+                continue
+            rows, attempted = _load(path, pre)
             if not rows:
                 continue
             N, k = rows[0]['N'], rows[0]['k']
@@ -101,13 +123,7 @@ def collect(include_pre_fix, sigma_max=1e-6, res_max=1e-4):
             # set that is not consecutive. Recomputed from `x` and `lams` so it applies to rows
             # written before the guard existed. See `douse.spectral_guard`.
             def _skipped(r):
-                d = r.get('worst_weyl_deficit')
-                if d is None or not np.isfinite(d):
-                    try:
-                        dom = VertexPolygon(r['N'], perim=PERIM)(np.asarray(r['x'], dtype=float))
-                        d = spectral_guard.weyl_deficit(dom, r['lams'])
-                    except Exception:                                 # noqa: BLE001
-                        return False
+                d = row_deficit(r)
                 return np.isfinite(d) and d > spectral_guard.DEFICIT_TOL
             n_skipped = sum(_skipped(r) for r in clean)
             clean = [r for r in clean if not _skipped(r)]
@@ -126,7 +142,8 @@ def collect(include_pre_fix, sigma_max=1e-6, res_max=1e-4):
             pool = good or clean
             best = max(pool, key=lambda r: r['fun'])
             agree = [r for r in pool if abs(r['fun'] - best['fun']) <= 1e-6*abs(best['fun'])]
-            cells[(N, k)] = dict(best=best, n_agree=len(agree), n_total=len(rows),
+            cells[(N, k)] = dict(best=best, n_agree=len(agree), n_total=attempted,
+                                 n_crashed=attempted - len(rows),
                                  certified=bool(good), pre_fix=pre,
                                  spread=(float(np.ptp([r['fun'] for r in agree]))
                                          if len(agree) > 1 else float('nan')))
@@ -137,10 +154,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', default='optima.png')
     ap.add_argument('--include-pre-fix', action='store_true')
+    ap.add_argument('--convex', action='store_true',
+                    help='plot the CONVEX cells (N<N>_k<k>_convex.jsonl) instead. The two '
+                         'families are never drawn on the same grid.')
     ap.add_argument('--dpi', type=int, default=150)
     args = ap.parse_args()
 
-    cells = collect(args.include_pre_fix)
+    cells = collect(args.include_pre_fix, convex=args.convex)
     if not cells:
         print('no cells found')
         return
@@ -190,8 +210,10 @@ def main():
                     color='#1F3D6B' if c['certified'] else '0.45', zorder=3)
 
             spread = ('' if not np.isfinite(c['spread']) else f", spread {c['spread']:.0e}")
-            note = (f"{c['n_agree']}/{c['n_total']} certified{spread}" if c['certified']
-                    else (f"lower bound ({c['n_total']} run(s))"
+            crashed = (f", {c['n_crashed']} crashed" if c.get('n_crashed') else '')
+            note = (f"{c['n_agree']}/{c['n_total']} certified{spread}{crashed}"
+                    if c['certified']
+                    else (f"lower bound ({c['n_total']} run(s)){crashed}"
                           + (', pre-fix' if c['pre_fix'] else '')))
             ax.set_title(f"$\\lambda_{{{k+1}}}/\\lambda_1$ = {b['fun']:.7f}\n{note}",
                          fontsize=8.5, pad=4,
