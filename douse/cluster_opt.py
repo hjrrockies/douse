@@ -1037,12 +1037,26 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                 break
 
     lams_tracked, F_tracked = np.asarray(lams).copy(), F
+    verified = bool(verify_final)
     if verify_final:
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            evaluator.reset_continuation()
-            lams, _ = evaluator.eigenvalues(p)
-        F = float(lams[k]/lams[0])
+        # A REFUSAL HERE MUST NOT THROW AWAY THE RUN. `verify_final` re-solves the endpoint on a
+        # fresh continuation, and with `enforce_weyl` on that call can refuse -- which would have
+        # killed a converged run at its last step, losing the trajectory to a check that was
+        # added to protect it. The endpoint keeps its tracked values, the result is marked
+        # unverified and NOT successful, and the message says which of the two happened, because
+        # "the endpoint could not be re-solved" and "the endpoint is optimal" must never read the
+        # same in a ledger.
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                evaluator.reset_continuation()
+                lams, _ = evaluator.eigenvalues(p)
+            F = float(lams[k]/lams[0])
+        except UnresolvedSpectrum as exc:
+            verified, success = False, False
+            message = (f'the endpoint could not be verified: {exc.__class__.__name__} on a fresh '
+                       f'solve -- the tracked values are reported and are NOT confirmed')
+            lams, F = lams_tracked, F_tracked
 
     gap = (float(np.min(np.diff(np.sort(lams))/np.sort(lams)[:-1]))
            if len(lams) > 1 else np.inf)
@@ -1072,4 +1086,4 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                                                            np.nan)),
                           n_weyl_flags=int(getattr(evaluator, 'n_weyl_flags', 0)),
                           lams_tracked=lams_tracked, fun_tracked=F_tracked,
-                          verified=bool(verify_final), success=success, message=message)
+                          verified=verified, success=success, message=message)

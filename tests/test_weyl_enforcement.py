@@ -136,3 +136,29 @@ def test_the_replay_tool_reads_a_row_shaped_like_the_ledger_writes_one():
     for field in ("'p'", "'plan_at'", "'deficit'"):
         assert field in src
     assert 'plan_at' in inspect.signature(rr.solve_at).parameters
+
+
+@pytest.mark.slow
+def test_a_refusal_in_verify_final_does_not_throw_away_the_run():
+    """`verify_final` re-solves the endpoint. With enforcement on, that call can refuse -- and
+    killing a converged run at its last step would lose the trajectory to a check added to
+    protect it. The result comes back unverified and unsuccessful, saying so."""
+    fam = VertexPolygon(4, perim=PERIM)
+    p = param_vector(np.array([0, 1.3, 1.3 + 0.7j, 0.7j], dtype=complex), PERIM)
+    ev = SpectrumEvaluator(fam, n_eigs=4, degenerate_tol=0.0, warn_gap=0.0)
+    real, done = ev.eigenvalues, dict(final=False)
+
+    def flaky(q, seed=None):
+        if done['final']:
+            raise UnresolvedSpectrum('synthetic refusal at the endpoint')
+        return real(q, seed=seed)
+
+    ev.eigenvalues = flaky
+
+    def cb(*a):
+        done['final'] = True                   # every call after the first iterate refuses
+
+    res = maximize_ratio(ev, p, k=1, max_iter=1, delta0=0.05, callback=cb)
+    assert res.verified is False and res.success is False
+    assert 'could not be verified' in res.message
+    assert np.isfinite(res.fun) and np.allclose(res.lams, res.lams_tracked)
