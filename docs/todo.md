@@ -635,6 +635,18 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
       behaviour deliberately unchanged -- re-auditing properly is a compute decision.
 - [ ] **PPW per iterate on the `maximize_ratio` path.** Cheap, it is a theorem, and the invariant
       list claimed it existed for long enough to matter. Only constrains `k=1`.
+- [ ] **`res_max` IS SECTION 9'S MISTAKE ONE LAYER UP.** `gain_tol` was replaced by plateau
+      detection because a fixed threshold "certified according to where each shape's noise floor
+      happened to fall". `summarize_grid`'s `res_max = 1e-4` is now a fixed threshold applied to
+      the PLATEAU VALUE, and it does the same thing. Measured 2026-08-27: N=3 `lam_5/lam_1`
+      reports **NONE CERTIFIED** while three independent starts agree to 1e-6 on 4.3618801,
+      because every clean row plateaued between 6.5e-04 and 1e-03 -- the N=3 shape-derivative
+      noise floor, where sigma is ~1e-07 against ~1e-11 at N=6. The values are right and the
+      verdict is wrong.
+      The fix is not a looser constant: it is to compare each row's resolution against the noise
+      floor MEASURED at that shape, the same move section 9 made, or failing that to report the
+      floor next to the resolution so a reader can see which of the two a cell failed.
+
 - [ ] **Recalibrate `DEFICIT_TOL` beyond N=4..6, k<=5.** The threshold is evidence about the range
       it was measured on. The stored `worst_weyl_deficit` column makes this a query, not a rerun.
 
