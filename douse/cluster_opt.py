@@ -81,6 +81,7 @@ from scipy.optimize import minimize, minimize_scalar
 
 from . import degeneracy as _dg
 from .derivative import cluster_matrices, dlams_dp
+from .evaluate import UnresolvedSpectrum
 from .polygon import gauge_vector
 from .optimize import OptimizeResult
 from .quasi_newton import SR1, tr_subproblem
@@ -810,6 +811,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     p = np.array(p0, dtype=float)
     delta, message, success = float(delta0), f'reached max_iter={max_iter}', False
     n_cluster_steps, n_interior_steps, n_infeasible, it = 0, 0, 0, 0
+    n_unresolved = 0
     n_degeneracy_moves, n_qn_steps = 0, 0
     resolution = np.nan
     # TWO Hessians, one per smooth scalar in `model_gain2`. SR1 rather than BFGS because neither
@@ -967,7 +969,24 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                 delta *= 0.5
                 n_infeasible += 1
             else:
-                lams_q, solver_q = evaluator.eigenvalues(q)
+                # A SHAPE WHOSE SPECTRUM CANNOT BE INDEXED IS AN UNREACHABLE TRIAL, not a fatal
+                # error. `SpectrumEvaluator` refuses a set that Weyl says is missing a mode even
+                # after a full solve, and the honest response here is the one an infeasible step
+                # gets: shrink and try a smaller one. Measured on N=6 `lam_3/lam_1` start 3,
+                # where the alternative was accepting a step at `rho = +1265` computed from a
+                # non-consecutive set and then grinding the radius to 5.68e-15 against a frozen
+                # `F`. Counted separately from `n_infeasible` -- one is a constraint, the other
+                # is the solver reaching its limit, and conflating them would hide the second.
+                try:
+                    lams_q, solver_q = evaluator.eigenvalues(q)
+                except UnresolvedSpectrum:
+                    delta *= 0.5
+                    n_unresolved += 1
+                    evaluator._last = (p.copy(), np.asarray(lams).copy())
+                    if callback is not None:
+                        callback(p, F, model, delta, -np.inf)
+                    it += 1
+                    continue
                 F_q = float(lams_q[k]/lams_q[0])
                 rho = (F_q - F)/gain if gain > 0 else -np.inf
                 if rho > eta:
@@ -1029,7 +1048,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
            if len(lams) > 1 else np.inf)
     return OptimizeResult(x=p, fun=F, nit=it, lams=lams, gap=gap, delta=delta,
                           n_cluster_steps=n_cluster_steps, n_interior_steps=n_interior_steps,
-                          n_infeasible=n_infeasible,
+                          n_infeasible=n_infeasible, n_unresolved=n_unresolved,
                           n_degeneracy_moves=n_degeneracy_moves,
                           n_qn_steps=n_qn_steps, resolution=float(resolution),
                           n_curv_updates=((0, 0) if H1 is None

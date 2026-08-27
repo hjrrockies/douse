@@ -53,6 +53,7 @@ import numpy as np
 from lappy import Eigenproblem, basis_plan as BP
 from lappy.asymp import weyl_est
 
+from . import spectral_guard
 from .spectral_guard import weyl_report
 from lappy.core import EigensolverFailure
 from lappy.mps import MPSEigensolver
@@ -60,6 +61,17 @@ from lappy.mps import MPSEigensolver
 from .derivative import dlams_dp
 
 __all__ = ['SpectrumEvaluator', 'ObjectiveFunction', 'DegenerateSpectrum']
+
+
+class UnresolvedSpectrum(RuntimeError):
+    """The returned set is not `lam_1 .. lam_K`, and a full solve did not repair it.
+
+    Raised rather than returned, because every consumer of `eigenvalues` reads the array as the
+    consecutive spectrum and there is no value of it that is honest here. A caller that can
+    treat a shape as unreachable -- `maximize_ratio` rejects the trial step and shrinks -- should
+    catch this; a caller that cannot should let it propagate and record the traceback, which is
+    what `benchmarks/ratio_multistart` does with `EigensolverFailure`.
+    """
 
 
 class DegenerateSpectrum(RuntimeError):
@@ -103,7 +115,7 @@ class SpectrumEvaluator:
 
     def __init__(self, family, n_eigs=1, target=1e-14, prec=1e-13, plan_at=None,
                  lam_max_window=6, warn_gap=1e-3, degenerate_tol=1e-6,
-                 track_ttol=1e-8, use_track_set=True, replan_tol=1e-9):
+                 track_ttol=1e-8, use_track_set=True, replan_tol=1e-9, enforce_weyl=True):
         self.family = family
         self.n_eigs = int(n_eigs)
         self.target = float(target)
@@ -114,6 +126,10 @@ class SpectrumEvaluator:
         self.track_ttol = float(track_ttol)
         self.use_track_set = bool(use_track_set)
         self.replan_tol = None if replan_tol is None else float(replan_tol)
+        self.enforce_weyl = bool(enforce_weyl)
+        self.n_weyl_escalations = 0      # deficit tripped, a full solve was taken
+        self.n_weyl_recovered = 0        # ...and the full solve repaired it
+        self.n_weyl_refusals = 0         # ...and it did not, so the shape was refused
         self.n_replans = 0
         self.worst_sigma = 0.0
         # A MISSED MODE IS INVISIBLE TO `worst_sigma`; see `douse.spectral_guard`. Tracked the
@@ -175,6 +191,7 @@ class SpectrumEvaluator:
             seed = self._last[1]
 
         lams = None
+        from_full_solve = False          # a tracked set can be repaired by solving; a solved one
         if self.use_track_set and seed is not None and len(seed) >= self.n_eigs:
             # ONE windowed scan for the whole set. See `lappy.Eigenproblem.track_set`: tracking
             # the K values separately succeeded once in 46 steps on a rectangle family walked
@@ -219,6 +236,7 @@ class SpectrumEvaluator:
                 lams = np.asarray(evp.solve(self.n_eigs), dtype=float)[:self.n_eigs]
             self.n_solves += 1
             self.last_mults = None
+            from_full_solve = True
 
         if len(lams) > 1:
             gap = float(np.min(np.diff(np.sort(lams))/np.sort(lams)[:-1]))
@@ -266,6 +284,7 @@ class SpectrumEvaluator:
                     lams = np.asarray(evp.solve(self.n_eigs), dtype=float)[:self.n_eigs]
                 self.n_solves += 1
                 self.last_mults = None
+                from_full_solve = True
 
         # IS THIS THE CONSECUTIVE SET IT CLAIMS TO BE? Every consumer reads `lams` as
         # `lam_1 .. lam_K`, and nothing checked. `spectral_guard` compares the count Weyl puts in
@@ -281,6 +300,43 @@ class SpectrumEvaluator:
                 self.n_weyl_flags += 1
                 if self.n_weyl_flags == 1:
                     warnings.warn(message)
+
+            # ENFORCED, NOT MERELY REPORTED -- and the escalation is what makes that defensible.
+            # Measured on N=6 `lam_3/lam_1` start 3, the run this was written for: at a reentrant
+            # angle of 284 degrees `track_set` returned [56.90, 209.97, 274.11, 286.67] at a
+            # PRISTINE sigma of 4.7e-12, the optimizer accepted a step whose `rho` was +1265
+            # because `F` had leapt to a ratio of non-consecutive values, and the run then sat at
+            # a frozen `F` for forty iterations while `rho` doubled negative and the radius
+            # collapsed. Reporting the deficit caught none of that at the time it happened.
+            #
+            # THE FIRST READING IS NOT ACTED ON. The deficit is a heuristic -- Weyl's
+            # `O(sqrt(lam))` error is not uniform and `DEFICIT_TOL` is calibrated on N=4..6 at
+            # k<=5 -- so a single trip only buys a FULL SOLVE, discarding the tracking seed that
+            # is the usual culprit. Acting on the second reading means acting on a spectrum
+            # computed from scratch, which is a different and much stronger statement.
+            if (self.enforce_weyl and np.isfinite(deficit)
+                    and deficit > spectral_guard.DEFICIT_TOL):
+                if not from_full_solve:
+                    self.n_weyl_escalations += 1
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore')
+                        lams = np.asarray(evp.solve(self.n_eigs), dtype=float)[:self.n_eigs]
+                    self.n_solves += 1
+                    self.last_mults = None
+                    deficit, _ = weyl_report(dom, lams)
+                    if np.isfinite(deficit):
+                        self.worst_weyl_deficit = max(self.worst_weyl_deficit, deficit)
+                    if not (deficit > spectral_guard.DEFICIT_TOL):
+                        self.n_weyl_recovered += 1
+                if deficit > spectral_guard.DEFICIT_TOL:
+                    self.n_weyl_refusals += 1
+                    raise UnresolvedSpectrum(
+                        f'the {self.n_eigs} values returned at this shape are not consecutive: '
+                        f'Weyl counts {deficit:.2f} more eigenvalues below the returned set than '
+                        f'were found, above DEFICIT_TOL={spectral_guard.DEFICIT_TOL}, and a full '
+                        f'solve on a fresh continuation did not repair it. `worst_sigma` cannot '
+                        f'see this -- every value found is a genuine eigenvalue, the INDEX is '
+                        f'wrong. See douse.spectral_guard.')
 
         self._last = (p.copy(), lams.copy())
         return lams, solver
