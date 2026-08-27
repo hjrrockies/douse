@@ -251,3 +251,40 @@ def test_the_result_and_the_ledger_row_carry_the_plan_shape():
     assert 'plan_at=' in inspect.getsource(cluster_opt.maximize_ratio)
     assert 'plan_at=' in inspect.getsource(rm.run_one)
     assert 'worst_sigma_any=' in inspect.getsource(rm.run_one)
+
+
+@pytest.mark.slow
+def test_a_deficit_that_survives_a_solve_gets_a_REBUILT_BASIS_before_being_refused(monkeypatch):
+    """The escalation re-solves on the SAME frozen plan, so a plan that cannot see a mode cannot
+    see it the second time either. Replanning is the last rung: expensive and discontinuous, so
+    it is tried only when a full solve has already failed."""
+    fam, p = square()
+    ev = SpectrumEvaluator(fam, n_eigs=3, degenerate_tol=0.0, warn_gap=0.0, replan_tol=1e-9)
+    # A FRESH evaluator has no continuation, so its first reading already comes from a full
+    # solve and the escalation rung is skipped: the ladder here is [solve bad] -> replan ->
+    # [clean]. That asymmetry is the point of recording `from_full_solve` on a refusal.
+    poison(monkeypatch, [9.0, 0.1])
+    lams, _ = ev.eigenvalues(p)
+    assert ev.n_weyl_replans == 1 and ev.n_weyl_recovered == 1 and ev.n_weyl_refusals == 0
+    assert len(lams) == 3
+
+
+@pytest.mark.slow
+def test_the_recorded_N5_refusals_are_repaired_by_the_rebuild():
+    """The evidence the rung was written from: all four refusals of N=5 `lam_6/lam_1` start 1 are
+    the frozen plan returning ONE copy of a double `lam_1`. Sigma cannot see it -- the copy that
+    is found sits at 5.8e-11 -- so only the count catches it, and only a rebuild repairs it."""
+    import json
+    import os
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'benchmarks',
+                        'run', 'ratio_multistart', 'rerun', 'N5_k5_contested_run3.jsonl')
+    if not os.path.exists(path):
+        pytest.skip('the contested re-run rows are not on disk')
+    rows = [json.loads(l) for l in open(path)]
+    ref = [r for r in rows if r['start'] == 1][0]['refusals'][0]
+    fam = VertexPolygon(5, perim=PERIM)
+    ev = SpectrumEvaluator(fam, n_eigs=7, warn_gap=0.0, degenerate_tol=0.0, lam_max_window=14,
+                           replan_tol=1e-9, plan_at=np.array(ref['plan_at'], dtype=float))
+    lams, _ = ev.eigenvalues(np.array(ref['p'], dtype=float))
+    assert ev.n_weyl_replans == 1 and ev.n_weyl_recovered == 1
+    assert lams[0] == pytest.approx(lams[1], rel=1e-9), 'lam_1 is double there; both copies'

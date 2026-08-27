@@ -146,6 +146,7 @@ class SpectrumEvaluator:
         self.n_weyl_escalations = 0      # deficit tripped, a full solve was taken
         self.n_weyl_recovered = 0        # ...and the full solve repaired it
         self.n_weyl_refusals = 0         # ...and it did not, so the shape was refused
+        self.n_weyl_replans = 0          # ...and the basis was rebuilt before giving up
         self.n_spurious_escalations = 0  # a returned value was not an eigenvalue at all
         self.n_spurious_refusals = 0     # ...and a full solve did not repair that either
         # THE REFUSED SHAPES THEMSELVES, so a refusal is reproducible off-line rather than merely
@@ -389,6 +390,35 @@ class SpectrumEvaluator:
                         self.worst_weyl_deficit = max(self.worst_weyl_deficit, deficit)
                     if not (deficit > spectral_guard.DEFICIT_TOL):
                         self.n_weyl_recovered += 1
+                # AND IF THE FULL SOLVE DID NOT REPAIR IT, REBUILD THE BASIS BEFORE GIVING
+                # UP. The escalation above re-solves on the SAME frozen plan, so a plan that
+                # cannot see the mode cannot see it the second time either -- measured on all
+                # four recorded refusals of N=5 `lam_6/lam_1` start 1, where the frozen plan
+                # returns [20.2672, 42.6339, 59.1257, 77.2296] at deficit +0.51 while a plan
+                # built AT that shape returns [20.2672, 20.2672, 42.6339, 59.1257] at -0.73.
+                # `lam_1` is DOUBLE there and the frozen plan was returning one copy.
+                #
+                # Nothing else can catch this. `sigma` is 5.8e-11 -- the copy that IS found is
+                # beautifully resolved -- so the sigma-triggered replan never fires, and the
+                # count is the only signal that a copy went missing. Replanning is expensive and
+                # discontinuous, which is why it is the LAST rung and not the first.
+                if deficit > spectral_guard.DEFICIT_TOL and self.replan_tol is not None:
+                    self.n_weyl_replans += 1
+                    self.replan(p)
+                    dom, solver = self.solver(p)
+                    evp = Eigenproblem(dom, eval_solver=solver, precision=self.prec)
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore')
+                        lams = np.asarray(evp.solve(self.n_eigs), dtype=float)[:self.n_eigs]
+                    self.n_solves += 1
+                    self.n_replans += 1
+                    self.last_mults = None
+                    deficit, _ = weyl_report(dom, lams)
+                    if np.isfinite(deficit):
+                        self.worst_weyl_deficit = max(self.worst_weyl_deficit, deficit)
+                    if not (deficit > spectral_guard.DEFICIT_TOL):
+                        self.n_weyl_recovered += 1
+
                 if deficit > spectral_guard.DEFICIT_TOL:
                     self.n_weyl_refusals += 1
                     if len(self.refusals) < self.max_refusals_kept:
