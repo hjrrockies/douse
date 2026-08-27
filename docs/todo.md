@@ -334,6 +334,39 @@ since been generalized to any m, and §6.1's LMI form is superseded (see below).
       reduction is stated for m=2 where the implementation does any m. §9's "what is not handled"
       list is largely handled.
 
+## The search space itself — constraints and starts
+
+- [x] **`Convexity(family, margin=0)` and a `--convex` search mode (2026-08-26).** `turn_k >=
+      margin` at every vertex; a RESTRICTION, not a gauge fixing like the edge floor, and meant
+      to be -- it asks "the maximizer over CONVEX N-gons" as its own question. The constraint is
+      the TURNING ANGLE, not the cross product, which carries `|e_k||e_{k+1}|` and so would mean
+      different things at different vertices. `margin = 0` admits flat vertices exactly on the
+      boundary, so every convex M-gon stays reachable. It does NOT stop a spike; that end wants
+      its own floor. Convex cells write `N<N>_k<k>_convex.jsonl` and are never pooled with the
+      unconstrained ones -- `summarize_grid` and `plot_optima` both key on family.
+- [x] **THE START SAMPLER DECIDES HOW MUCH OF A SWEEP SURVIVES ITS OWN GUARDS.** Of the 79 stored
+      rows, **7 of the 13 begun at a reentrant shape were excluded on `worst_sigma`, against 2 of
+      the other 66**, and the excluded rows repeat by start index across k. Measured over 1500
+      draws (`benchmarks/sampler_stats.py`), the star-shaped sampler is reentrant on 1.1% of
+      draws at N=4, 26% at N=6, **77% at N=8 and 99.7% at N=12**. So part of the certification
+      collapse with N is the sampler, not the physics.
+- [x] **The legacy sampler cannot reach N=12 or N=16 at all.** Its fixed 0.25 rad gap floor eats
+      48% of the circle at N=12 and 64% at N=16; the rejection loop essentially never lands.
+      `douse/sampling.py` subtracts the floor first and splits the remainder with a flat
+      Dirichlet -- every draw admissible, floor exact and scaling with N.
+      `ratio_multistart.start_shape` is left BYTE-IDENTICAL: a sweep resumes by start index and a
+      ledger built from two generators is worthless.
+- [x] **`random_convex` is Valtr's algorithm** -- uniform over convex N-gons, exact, no rejection,
+      so the angle distribution is a fact about that measure rather than an artifact of a filter.
+      Two feasibility bands at the start: `min_edge` matched to `MinEdgeLength`'s floor (17.3% of
+      raw N=12 convex draws violate it, i.e. are infeasible before the run begins) and
+      `min_interior_deg = 15`, clear of the `sharp_ref/alpha` regime where a corner's block
+      shrinks toward `M = 1`.
+- [ ] **Reentrant corners are IN SCOPE for `lappy`**, and eventually for the inverse problem, so
+      the convex mode is a second question rather than a retreat from the first. The measured
+      failure is at ~280 degrees; the envelope probe that maps certified digits against reflex
+      angle is the next `lappy`-side step. See `../../LAPPY_WISHLIST.md`.
+
 ## Scope-setting: which k are tractable
 
 Measured at regular N-gons (`lam_1` simple, then alternating doubles). Position within the
@@ -573,6 +606,27 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
       **Known blind spot, pinned by a test:** a mode missing in the TOPMOST gap sits above every
       cut and is not seen. Callers must request more eigenvalues than the objective consumes;
       `ratio_multistart` asks for `k+2` and uses `k+1`. Do not remove that margin.
+- [x] **THE DEFICIT IS ENFORCED, NOT MERELY REPORTED (2026-08-26).** It was computed on every
+      evaluation, warned once, and the bad spectrum was returned anyway. Reproduced on N=6
+      `lam_3/lam_1` start 3 (recorded row matched digit-for-digit): at 284 degrees of reflex
+      angle `track_set` returned `[56.90, 209.97, 274.11, 286.67]` at a sigma of **4.7e-12**, the
+      optimizer accepted a step at `rho = +1265` because `F` had leapt to a ratio of
+      non-consecutive values, and the last forty iterations ground the radius to 5.68e-15 against
+      a frozen `F`. The two sigma spikes in that run are single-iterate excursions at TRIAL
+      points, repaired by a replan on the next call -- so `worst_sigma` catches the row while
+      naming the wrong cause.
+      Now: a trip buys a FULL SOLVE (the tracking seed is the usual culprit); only a deficit that
+      survives a spectrum computed from scratch raises `UnresolvedSpectrum`. `maximize_ratio`
+      treats a refusal at a trial shape as an unreachable trial -- shrink, count `n_unresolved`,
+      continue -- and a refusal at the current iterate stays fatal. `enforce_weyl=False`
+      reproduces the old behaviour and is pinned by a test.
+- [ ] **`row_deficit`'s FALLBACK IS THE WEAKER STATISTIC, and the retroactive audit inherits it.**
+      The recorded field is the worst over every iterate; the recomputation sees only the
+      endpoint, so it is a lower bound. Over the 9 rows carrying both: 8.761 -> 0.186 (below
+      `DEFICIT_TOL`, i.e. the fallback PASSES a run the live guard failed by 17x), 5.103 -> 1.284,
+      6.711 -> 1.022, 2.008 -> 1.328. Only 9 of 80 rows carry the field, so "the audit found 3"
+      is a floor. Documented at `row_deficit`, pinned in `tests/test_multistart_summary.py`,
+      behaviour deliberately unchanged -- re-auditing properly is a compute decision.
 - [ ] **PPW per iterate on the `maximize_ratio` path.** Cheap, it is a theorem, and the invariant
       list claimed it existed for long enough to matter. Only constrains `k=1`.
 - [ ] **Recalibrate `DEFICIT_TOL` beyond N=4..6, k<=5.** The threshold is evidence about the range
