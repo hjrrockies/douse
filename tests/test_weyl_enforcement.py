@@ -288,3 +288,21 @@ def test_the_recorded_N5_refusals_are_repaired_by_the_rebuild():
     lams, _ = ev.eigenvalues(np.array(ref['p'], dtype=float))
     assert ev.n_weyl_replans == 1 and ev.n_weyl_recovered == 1
     assert lams[0] == pytest.approx(lams[1], rel=1e-9), 'lam_1 is double there; both copies'
+
+
+def test_a_redraw_does_not_inherit_the_discarded_start_s_statistics():
+    """`worst_sigma` and friends are running maxima over an evaluator's lifetime, so reusing one
+    across a redraw carries the DISCARDED shape's numbers into the run that replaces it.
+
+    It cost a result: N=6 `lam_4/lam_1` start 5 discarded a reflex start whose tension was
+    5.02e-04, converged from the redraw to 4.5353346506 -- the cell's answer to 5e-10, certified
+    at criticality 6.7e-08 -- and was excluded on `worst_sigma = 5.0e-04`, a number belonging to a
+    shape it never optimized. Its own endpoint tensions are 7.0e-13 to 3.3e-12.
+    """
+    rm = pytest.importorskip('benchmarks.ratio_multistart')
+    import inspect
+    src = inspect.getsource(rm.run_one)
+    body = src[src.index('for attempt in range'):]
+    assert 'SpectrumEvaluator(' in body, 'the evaluator must be built INSIDE the redraw loop'
+    before = src[:src.index('for attempt in range')]
+    assert 'SpectrumEvaluator(' not in before, 'and not carried in from outside it'

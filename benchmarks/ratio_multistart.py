@@ -184,11 +184,18 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
         # `Convexity` is a RESTRICTION and it is meant to be: it asks the convex question. The
         # answer belongs in its own ledger -- see `--convex` in `main`.
         cons = ConstraintSet(MinEdgeLength(fam), ClosingBudget(fam), Convexity(fam))
-    ev = SpectrumEvaluator(fam, n_eigs=(n_eigs or k + 2), warn_gap=0.0, degenerate_tol=0.0,
-                           lam_max_window=max(8, 2*k + 4), replan_tol=1e-9)
     draw = convex_start_shape if convex else start_shape
     redraws = []
     for attempt in range(max_redraws + 1):
+        # A FRESH EVALUATOR PER ATTEMPT. Its statistics are running maxima over its own lifetime,
+        # so reusing one across a redraw carries the DISCARDED shape's numbers into the run that
+        # replaces it. Measured, and it cost a result: N=6 `lam_4/lam_1` start 5 discarded a
+        # reflex start whose tension was 5.02e-04, converged from the redraw to 4.5353346506 --
+        # the cell's answer to 5e-10, with a first-order certificate at criticality 6.7e-08 --
+        # and was then EXCLUDED on `worst_sigma = 5.0e-04`, a number belonging to a shape it never
+        # optimized. Its own endpoint tensions are 7.0e-13 to 3.3e-12.
+        ev = SpectrumEvaluator(fam, n_eigs=(n_eigs or k + 2), warn_gap=0.0, degenerate_tol=0.0,
+                               lam_max_window=max(8, 2*k + 4), replan_tol=1e-9)
         idx = i if attempt == 0 else i + 1000*attempt
         p0 = param_vector(draw(N, idx, seed0), PERIM)
         try:
