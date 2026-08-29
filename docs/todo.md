@@ -701,6 +701,39 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
       floor MEASURED at that shape, the same move section 9 made, or failing that to report the
       floor next to the resolution so a reader can see which of the two a cell failed.
 
+- [ ] **A CHEAP FEM COUNT IS A RIGOROUS COMPLETENESS DETECTOR, and it should probably replace the
+      Weyl one.** `benchmarks/completeness_detectors.py`. Conforming P1 elements on an EXACTLY
+      triangulated polygon span a subspace of `H^1_0`, so `lam_j <= lam_j^h` and the FEM counting
+      function is a LOWER BOUND on the true count: `N^FEM(cut) > #found(cut)` PROVES a mode is
+      missing. No calibrated constant -- the deficit is an integer and the threshold is `> 0`.
+
+      Measured on exact rectangle spectra at k=8 and k=20, mesh `diameter/150`, against the same
+      sets the Weyl statistic sees: **FEM refuses no clean set and catches every coverable
+      deletion (8/8, 20/20 at every aspect ratio), where Weyl refuses clean sets at 1.633:1, 3:1
+      and 5:1.** 4873-7708 dofs, 0.2-0.4 s -- against ~1000 tension evaluations of a 340x340 SVD
+      for one MPS solve, so it is affordable at the START shape, on every refusal, and at
+      `verify_final` without being on the per-iterate path.
+
+      **It also catches the one failure nothing else does.** Counting WITH MULTIPLICITY sees a
+      missing COPY of a degenerate level -- all four such deletions on the square at K=12, each
+      `fem_deficit = +1` -- which no per-index value test can see, because the returned values are
+      unchanged. That is the N=5 `lam_6/lam_1` failure and wishlist section 6.
+
+      Blocked on `LAPPY_WISHLIST.md` 9b (the mesh floor is clamped at 0.05 and `FEMEigensolver`
+      never overrides it, so refinement silently returns the same mesh). Fix that first.
+
+- [ ] **CONTINUITY ACROSS A TRUST STEP IS A FREE SECOND CHECK, and it is decisive.** The optimizer
+      already has `dlams_dp` for every tracked mode and already bounds the step by `delta`, so a
+      mode cannot move more than `max|grad lam_j|*delta` while a SKIP shifts a value by a whole
+      level spacing. Measured at the regular hexagon: spacing/motion = 13.6 at `delta=0.05`
+      (the default `delta0`), 67.9 at 1e-2, 679 at 1e-3 for k=3, and 6.2 / 31 / 312 at k=5. Even
+      at the largest radius the margin is 6x.
+
+      It needs an ANCHOR -- continuity propagates completeness, it cannot establish it, so a set
+      that was already wrong at the start shape stays undetected. That is exactly what one FEM
+      count at the start shape supplies. Anchor with FEM, propagate with continuity, adjudicate a
+      flag with a finer FEM count.
+
 - [ ] **RECALIBRATING `DEFICIT_TOL` IS NOT POSSIBLE: PAST k ~ 6 NO THRESHOLD SEPARATES THE
       CLASSES.** Measured 2026-08-29 in `benchmarks/deficit_calibration.py`, on EXACT rectangle
       spectra so no eigensolver is involved and every "clean" set is exactly the consecutive
