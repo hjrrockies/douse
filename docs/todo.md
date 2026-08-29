@@ -701,8 +701,45 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
       floor MEASURED at that shape, the same move section 9 made, or failing that to report the
       floor next to the resolution so a reader can see which of the two a cell failed.
 
-- [ ] **Recalibrate `DEFICIT_TOL` beyond N=4..6, k<=5.** The threshold is evidence about the range
-      it was measured on. The stored `worst_weyl_deficit` column makes this a query, not a rerun.
+- [ ] **RECALIBRATING `DEFICIT_TOL` IS NOT POSSIBLE: PAST k ~ 6 NO THRESHOLD SEPARATES THE
+      CLASSES.** Measured 2026-08-29 in `benchmarks/deficit_calibration.py`, on EXACT rectangle
+      spectra so no eigensolver is involved and every "clean" set is exactly the consecutive
+      spectrum. Two independent failures:
+
+      **(a) The guard refuses CLEAN spectra, earlier the more elongated the shape.** A complete,
+      exactly-known set scores +0.577 at k=8 on the `sqrt(8/3)` rectangle -- which is the N=4
+      `lam_3` OPTIMUM -- and +1.324 at 5:1. Verified cut by cut: the number of values at or below
+      every cut equals the true count from the full exact spectrum, so it is WEYL'S COUNT that is
+      wrong by up to +1.3, not the set.
+
+      **(b) Clean and missed-mode overlap from k=8 up**, with top-gap deletions excluded:
+
+          k        clean max   deleted min
+          5          +0.572      +0.891      a threshold exists
+          6          +0.635      +0.715      exists, margin 0.08
+          8          +1.324      +0.705      OVERLAP
+          20         +1.324      +1.007      OVERLAP
+
+      So no constant works, and raising 0.5 would only trade false positives for false negatives.
+      A STEP statistic (a missed mode shifts every cut above it by 1, while Weyl's error drifts)
+      was tried and does NOT rescue it: clean steps reach +1.066, deletions fall to +0.148.
+
+      The fix has to calibrate against Weyl's error AT THE SHAPE rather than against a constant --
+      the low end of a returned set is known complete, so the error is measurable there.
+
+- [ ] **THE N=5 `lam_6/lam_1` CELL MAY BE DECIDED BY THAT ARTIFACT, and it is the cell the handoff
+      says not to quote.** All EIGHT stored rows sit in a single band, 0.485 to 0.546, with
+      `DEFICIT_TOL = 0.5` slicing through the middle of it:
+
+          certified   0.485 0.487 0.489 0.491   F = 6.06565408   edge ratio 0.495
+          refused     0.504 0.528 0.542 0.546   F = 5.77 to 6.074, edge ratio 0.22 to 0.82
+
+      The deficit tracks the BASIN, not the health of the spectrum -- the four survivors are one
+      shape and the four refused are others. A clean 3:1 rectangle scores +0.572 at this same k,
+      i.e. squarely inside the refused band. This is consistent with the threshold excluding a
+      whole basin rather than four bad runs, which would change what that cell reports.
+      NOT YET PROVEN: it needs one of the 0.54 rows re-solved on a fresh plan with more
+      eigenvalues, to show directly that no mode is missing.
 
 ## Invariants that have caught real bugs
 
