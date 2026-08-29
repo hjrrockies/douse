@@ -46,14 +46,24 @@ def report(row, index):
     ref = row['refusals'][index]
     fam = VertexPolygon(row['N'], perim=PERIM)
     p, plan_at = np.array(ref['p'], float), ref.get('plan_at')
-    print(f"\nN={row['N']} k={row['k']} start={row['start']} refusal {index}: "
-          f"recorded deficit {ref['deficit']:+.2f}, from_full_solve={ref.get('from_full_solve')}")
+    # TWO KINDS OF REFUSAL LAND IN THIS LIST. A Weyl refusal has a deficit and a spectrum; a
+    # `SolverRefusal` has neither -- `lappy` declined before there was one -- and carries the
+    # exception text instead. Formatting `None` as a float was the crash this guards.
+    what = (f"recorded deficit {ref['deficit']:+.2f}, from_full_solve={ref.get('from_full_solve')}"
+            if ref.get('deficit') is not None else f"solver refusal -- {ref.get('error')}")
+    print(f"\nN={row['N']} k={row['k']} start={row['start']} refusal {index}: {what}")
     for name, q, plan in (('the refused shape, FRESH plan', p, None),
                           ('the refused shape, the FROZEN plan it used', p, plan_at),
                           ("the plan's own shape, fresh", plan_at, None)):
         if q is None:
             continue
-        lams, sigma, deficit = solve_at(fam, row['k'], q, plan)
+        try:
+            lams, sigma, deficit = solve_at(fam, row['k'], q, plan)
+        except Exception as exc:
+            # A shape that made `lappy` refuse can perfectly well refuse again on the replay --
+            # that IS the reproduction, so report it rather than losing the other two rows.
+            print(f'  {name:44s} {type(exc).__name__}: {str(exc)[:70]}')
+            continue
         v = fam.vertices(np.asarray(q, float))
         from douse import degeneracy as dg
         a = np.degrees(dg.interior_angles(v))

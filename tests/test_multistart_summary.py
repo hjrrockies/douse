@@ -5,6 +5,8 @@ reporting path: `benchmarks/ratio_multistart.py`'s own summary, which applied ne
 so printed the impossible 2.6203171651 as `group 0` -- the leading line, above the true answer,
 with `0 converged` as the only hint.
 """
+import json
+
 import numpy as np
 import pytest
 
@@ -218,3 +220,26 @@ def test_a_start_that_cannot_be_solved_is_redrawn_deterministically():
     assert 'i + 1000*attempt' in src, 'the redraw must be deterministic'
     # the probe is an explicit evaluation, not an inspection of a traceback
     assert 'ev.eigenvalues(p0)' in src and 'traceback' not in src.split('for attempt')[1][:600]
+
+
+def test_a_retried_start_is_counted_ONCE_and_the_retry_is_the_one_kept(tmp_path):
+    """`run_grid` retries a crashed start on resume and `ratio_multistart` APPENDS, so a cell can
+    hold more rows than it has starts. `N6_k1` held 9 rows for 8 starts and the table read
+    `n_total = 9`, making every "certified of total" denominator wrong for that cell. No value was
+    ever affected -- the filters run per row and a duplicate crash row certifies nothing -- but a
+    wrong denominator is read as evidence about the basin structure.
+
+    The retry wins: it exists because the earlier attempt failed, and it was written by the newer
+    code, whose guards the row itself records.
+    """
+    from benchmarks import summarize_grid as sg
+
+    path = tmp_path/'N6_k1.jsonl'
+    path.write_text('\n'.join(json.dumps(r) for r in [
+        dict(N=6, k=1, start=0, fun=2.53, ok=True),
+        dict(N=6, k=1, start=1, ok=False, error='first attempt'),
+        dict(N=6, k=1, start=1, ok=False, error='the retry'),
+    ]) + '\n')
+    rows = sg.load(str(path))
+    assert [r['start'] for r in rows] == [0, 1]
+    assert rows[1]['error'] == 'the retry'

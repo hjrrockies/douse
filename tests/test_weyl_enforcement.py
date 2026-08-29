@@ -182,7 +182,7 @@ def test_a_RUN_of_refusals_stops_the_search_instead_of_grinding_the_radius():
     res = maximize_ratio(ev, p, k=1, max_iter=200, delta0=0.05, max_unresolved_streak=3,
                          verify_final=False)
     assert res.n_unresolved == 3               # stopped on the streak, not at max_iter
-    assert 'could not be indexed' in res.message and res.success is False
+    assert 'refused 3 consecutive trial shapes' in res.message and res.success is False
     assert res.delta > 1e-12                   # the radius was NOT ground to nothing
 
 
@@ -192,8 +192,8 @@ def test_a_fatal_refusal_still_records_its_shapes():
     rm = pytest.importorskip('benchmarks.ratio_multistart')
     import inspect
     src = inspect.getsource(rm.run_one)
-    assert 'except UnresolvedSpectrum' in src
-    body = src[src.index('except UnresolvedSpectrum'):]
+    assert 'except ShapeRefusal' in src        # the base class: every kind of refusal
+    body = src[src.index('except ShapeRefusal'):]
     for field in ('refusals=', "ok=False", 'trace='):
         assert field in body, field
 

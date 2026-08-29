@@ -81,7 +81,7 @@ from scipy.optimize import minimize, minimize_scalar
 
 from . import degeneracy as _dg
 from .derivative import cluster_matrices, dlams_dp
-from .evaluate import UnresolvedSpectrum
+from .evaluate import ShapeRefusal, SolverRefusal
 from .polygon import gauge_vector
 from .optimize import OptimizeResult
 from .quasi_newton import SR1, tr_subproblem
@@ -734,7 +734,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                    plateau_shrink=1e-3, plateau_max=1e-3, callback=None, rng=None,
                    verify_final=True, constraints=None, degeneracy_moves=True,
                    quasi_newton=True, max_unresolved_streak=5, discontinuity_halvings=4,
-                   discontinuity_ratio=2.0):
+                   discontinuity_ratio=2.0, sigma_abort=1e-6, sigma_abort_streak=3):
     """Trust-region ascent on `lam_k/lam_1`, valid through a degeneracy.
 
     `evaluator` must be a `SpectrumEvaluator` with `degenerate_tol=0` -- the guard that normally
@@ -752,6 +752,18 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     against the edge floor, which no local step can do -- see `_degeneracy_move`. It costs two
     eigensolves, is tried only when the floor is binding AND the ordinary step was rejected, and
     is accepted only on a measured improvement.
+
+    A SOLVER REFUSAL AT A TRIAL SHAPE IS AN UNREACHABLE TRIAL, of whatever kind: the loop catches
+    `ShapeRefusal`, shrinks, counts (`n_unresolved` for a spectrum that cannot be indexed,
+    `n_solver_refused` for `lappy` declining outright) and stops on a shared streak of
+    `max_unresolved_streak`. A refusal at the CURRENT iterate stays fatal -- a run cannot begin
+    from, or continue at, a shape it cannot evaluate.
+
+    `sigma_abort` stops a run whose basis cannot resolve its own shape, at the same 1e-6 the
+    summaries exclude a row on. It reads `evaluator.last_sigma`, the tension AFTER the replan the
+    drift provokes -- not `worst_sigma`, which is a running max and would kill runs that
+    recovered. `sigma_abort_streak` consecutive iterates above it end the run; any iterate under
+    it resets the count. `sigma_abort=None` disables it.
 
     `eta_grow` is the threshold the radius grows on. **Lowering it was tried and MEASURED WORSE;
     0.75 is right and the reason is worth keeping.**
@@ -838,7 +850,8 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     p = np.array(p0, dtype=float)
     delta, message, success = float(delta0), f'reached max_iter={max_iter}', False
     n_cluster_steps, n_interior_steps, n_infeasible, it = 0, 0, 0, 0
-    n_unresolved, unresolved_streak = 0, 0
+    n_unresolved, n_solver_refused, refusal_streak = 0, 0, 0
+    sigma_streak = 0
     n_discontinuity_repairs, reject_run = 0, []
     n_degeneracy_moves, n_qn_steps = 0, 0
     resolution = np.nan
@@ -867,6 +880,37 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
         F = float(lams[k]/lams[0])
 
         for it in range(1, max_iter + 1):
+            # A ROW THAT CANNOT BE USED SHOULD NOT BE PAID FOR. `worst_sigma` above the reporting
+            # gate (1e-6) excludes a row from every summary, and it is a running max, so a run
+            # that has drifted past it and stays there is producing a row that will be thrown
+            # away whatever it converges to. Measured cost of not stopping: one N=3 row spent 78
+            # minutes earning its own exclusion, and the re-run then spent hours on rows whose
+            # verdict was already fixed.
+            #
+            # THE TEST IS ON THE POST-REPLAN TENSION, NOT ON THE RUNNING MAX -- see
+            # `SpectrumEvaluator.last_sigma`. `replan_tol = 1e-9` is three decades below this
+            # gate, so anything above it has ALREADY provoked a rebuild of the basis at this very
+            # shape; `last_sigma` is what that rebuilt basis achieves. A run of those says the
+            # shape is not resolvable by this method at all, which no smaller step and no further
+            # replan can change. Any single evaluation below the gate resets the streak, so a
+            # transient excursion at a wild trial costs nothing.
+            #
+            # It cannot change a usable result by construction: every run it stops was already
+            # destined for exclusion. Set `sigma_abort=None` to disable.
+            if (sigma_abort is not None and getattr(evaluator, 'replan_tol', None) is not None):
+                sig_now = float(getattr(evaluator, 'last_sigma', np.nan))
+                if np.isfinite(sig_now) and sig_now > sigma_abort:
+                    sigma_streak += 1
+                    if sigma_streak >= sigma_abort_streak:
+                        message = (f'the basis cannot resolve this shape: tension {sig_now:.2e} '
+                                   f'at the last {sigma_streak} iterates, above '
+                                   f'sigma_abort={sigma_abort:.0e} and measured on a basis '
+                                   f'REPLANNED at the shape itself -- the row would be excluded '
+                                   f'on worst_sigma however long it ran')
+                        success = False
+                        break
+                else:
+                    sigma_streak = 0
             eps_abs = None if (not auto or scale is None) else delta*scale
             model = local_model(fam, p, solver, lams, k=k,
                                 eps_rel=(1e-3 if auto else eps_rel), eps_abs=eps_abs)
@@ -997,20 +1041,32 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                 delta *= 0.5
                 n_infeasible += 1
             else:
-                # A SHAPE WHOSE SPECTRUM CANNOT BE INDEXED IS AN UNREACHABLE TRIAL, not a fatal
-                # error. `SpectrumEvaluator` refuses a set that Weyl says is missing a mode even
-                # after a full solve, and the honest response here is the one an infeasible step
-                # gets: shrink and try a smaller one. Measured on N=6 `lam_3/lam_1` start 3,
-                # where the alternative was accepting a step at `rho = +1265` computed from a
-                # non-consecutive set and then grinding the radius to 5.68e-15 against a frozen
-                # `F`. Counted separately from `n_infeasible` -- one is a constraint, the other
-                # is the solver reaching its limit, and conflating them would hide the second.
+                # A SHAPE THE SOLVER WILL NOT SERVE IS AN UNREACHABLE TRIAL, not a fatal
+                # error -- and that is ONE policy covering every way it can refuse, which is why
+                # this catches the `ShapeRefusal` base class. `SpectrumEvaluator` refuses a set
+                # that Weyl says is missing a mode even after a full solve; `lappy` refuses
+                # outright with `EigensolverFailure` at a tension curve it cannot bracket, or
+                # `SourcesInsideDomain` when the wild shape has left the frozen plan's reach.
+                # The honest response to all three is the one an infeasible step gets: shrink
+                # and try a smaller one.
+                #
+                # Measured on N=6 `lam_3/lam_1` start 3, where the alternative was accepting a
+                # step at `rho = +1265` computed from a non-consecutive set and then grinding the
+                # radius to 5.68e-15 against a frozen `F`. And on the 2026-08-28 grid, where the
+                # two `lappy` refusals killed six runs OUTRIGHT -- every one of them mid-run and
+                # making progress, since a shape wild enough to provoke either is only reached
+                # after the run has travelled. Counted separately from `n_infeasible` -- one is a
+                # constraint, the other is the solver reaching its limit -- and the two kinds of
+                # refusal are counted separately from each other for the same reason.
                 try:
                     lams_q, solver_q = evaluator.eigenvalues(q)
-                except UnresolvedSpectrum:
+                except ShapeRefusal as refusal:
                     delta *= 0.5
-                    n_unresolved += 1
-                    unresolved_streak += 1
+                    if isinstance(refusal, SolverRefusal):
+                        n_solver_refused += 1
+                    else:
+                        n_unresolved += 1
+                    refusal_streak += 1
                     evaluator._last = (p.copy(), np.asarray(lams).copy())
                     if callback is not None:
                         callback(p, F, model, delta, -np.inf)
@@ -1023,13 +1079,13 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                     # one a full solve, and the run then ground on to a collapse at 5.68e-15.
                     # That is 25 minutes of compute spent re-learning the same fact. Stopping
                     # here reports the same endpoint with the reason attached.
-                    if unresolved_streak >= max_unresolved_streak:
-                        message = (f'the spectrum could not be indexed at '
-                                   f'{unresolved_streak} consecutive trial shapes within '
-                                   f'delta={delta:.3g} of this iterate')
+                    if refusal_streak >= max_unresolved_streak:
+                        message = (f'the solver refused {refusal_streak} consecutive trial '
+                                   f'shapes within delta={delta:.3g} of this iterate; the last '
+                                   f'was {type(refusal).__name__}: {refusal}')
                         break
                     continue
-                unresolved_streak = 0
+                refusal_streak = 0
                 F_q = float(lams_q[k]/lams_q[0])
                 rho = (F_q - F)/gain if gain > 0 else -np.inf
                 if rho > eta:
@@ -1065,13 +1121,22 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                                 discontinuity_ratio):
                 d0 = reject_run[-discontinuity_halvings][0]
                 window = [abs(df) for _, df in reject_run[-discontinuity_halvings:]]
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore')
-                    evaluator.reset_continuation()
-                    lams_fresh, solver_fresh = evaluator.eigenvalues(p)
-                F_fresh = float(lams_fresh[k]/lams_fresh[0])
-                reject_run = []
-                if abs(F_fresh - F) > 0.5*min(window):
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore')
+                        evaluator.reset_continuation()
+                        lams_fresh, solver_fresh = evaluator.eigenvalues(p)
+                except ShapeRefusal:
+                    # THE REPAIR IS OPTIONAL; THE RUN IS NOT. If the fresh solve refuses there is
+                    # nothing to believe instead, so drop the repair and carry on with the
+                    # tracked state -- the iterate itself is unchanged and still feasible. Not
+                    # counted as a trial refusal: no trial shape was involved.
+                    reject_run = []
+                    lams_fresh = None
+                else:
+                    F_fresh = float(lams_fresh[k]/lams_fresh[0])
+                    reject_run = []
+                if lams_fresh is not None and abs(F_fresh - F) > 0.5*min(window):
                     # THE FRESH SOLVE IS THE ONE TO BELIEVE. A carried `F` that disagrees with one
                     # computed from scratch at the same shape is the thing that is wrong.
                     n_discontinuity_repairs += 1
@@ -1133,7 +1198,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                 evaluator.reset_continuation()
                 lams, _ = evaluator.eigenvalues(p)
             F = float(lams[k]/lams[0])
-        except UnresolvedSpectrum as exc:
+        except ShapeRefusal as exc:
             verified, success = False, False
             message = (f'the endpoint could not be verified: {exc.__class__.__name__} on a fresh '
                        f'solve -- the tracked values are reported and are NOT confirmed')
@@ -1144,6 +1209,11 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     return OptimizeResult(x=p, fun=F, nit=it, lams=lams, gap=gap, delta=delta,
                           n_cluster_steps=n_cluster_steps, n_interior_steps=n_interior_steps,
                           n_infeasible=n_infeasible, n_unresolved=n_unresolved,
+                          # A REFUSAL BY `lappy` IS COUNTED SEPARATELY FROM AN
+                          # UNINDEXABLE SPECTRUM: one says no spectrum came back,
+                          # the other that the one that did cannot be trusted to
+                          # be the first k. Same policy, different diagnosis.
+                          n_solver_refused=n_solver_refused,
                           n_discontinuity_repairs=n_discontinuity_repairs,
                           # The shapes themselves, not just the count -- a refusal is a `lappy`
                           # question and it cannot be asked without the vertices.

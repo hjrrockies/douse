@@ -96,12 +96,31 @@ PERIM = 4.0
 
 
 def load(path):
+    """The rows of one ledger, DEDUPED BY START, keeping the last attempt at each.
+
+    `ratio_multistart` resumes by start index and appends, and `run_grid` retries a CRASHED start
+    on resume -- so a cell can hold more rows than it has starts. `N6_k1` holds 9 for 8 (start 1
+    crashed twice) and this function used to report `n_total = 9`, which makes every "certified of
+    total" denominator in the table wrong for that cell. No VALUE was ever affected; the filters
+    run per row and a duplicate crash row certifies nothing.
+
+    Keeping the LAST is the resume semantics: a retry exists because the earlier attempt failed,
+    and the guards a row ran under are recorded on the row, so the newest is the one written by
+    the most recent code. Rows with no `start` field (none on disk today) are kept as they are
+    rather than collapsed onto each other.
+    """
     rows = []
     for line in open(path):
         line = line.strip()
         if line:
             rows.append(json.loads(line))
-    return rows
+    last = {}
+    for i, r in enumerate(rows):
+        if r.get('start') is not None:
+            last[r['start']] = i
+    keep = set(last.values())
+    return [r for i, r in enumerate(rows)
+            if r.get('start') is None or i in keep]
 
 
 def row_deficit(r):

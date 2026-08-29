@@ -618,8 +618,62 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
       Now: a trip buys a FULL SOLVE (the tracking seed is the usual culprit); only a deficit that
       survives a spectrum computed from scratch raises `UnresolvedSpectrum`. `maximize_ratio`
       treats a refusal at a trial shape as an unreachable trial -- shrink, count `n_unresolved`,
-      continue -- and a refusal at the current iterate stays fatal. `enforce_weyl=False`
-      reproduces the old behaviour and is pinned by a test.
+      continue -- and a refusal at the current iterate stays fatal. (Since 2026-08-29 that policy
+      covers every kind of refusal, not only this one; see `ShapeRefusal` below.)
+      `enforce_weyl=False` reproduces the old behaviour and is pinned by a test.
+- [x] **EVERY SOLVER REFUSAL AT A WILD SHAPE IS NOW AN UNREACHABLE TRIAL, not just the Weyl one.**
+      `EigensolverFailure: f has too many local minima` (five instances by 2026-08-29) and
+      `ValueError: N of M sources landed inside the domain` from the `FundamentalBasis` guard
+      (one) had become the dominant failure, and both killed runs OUTRIGHT -- every one of them
+      MID-RUN, since a shape wild enough to provoke either is only reached after a run has
+      travelled, i.e. they killed exactly the runs that were making progress.
+
+      One base class, `douse.evaluate.ShapeRefusal`, with `UnresolvedSpectrum` and the new
+      `SolverRefusal` under it, translated in `SpectrumEvaluator.eigenvalues` -- the one place
+      that knows which `p` was being asked for -- rather than at the five call sites in
+      `cluster_opt` that were leaking them. `maximize_ratio` catches the base class, shrinks the
+      radius, counts, and stops on a shared streak; the counts stay separate
+      (`n_unresolved`, `n_solver_refused`) because the two say different things about a cell.
+
+      `lappy.core.SourcesInsideDomain` (new, a `ValueError` SUBCLASS so no existing caller
+      changes) is what makes the catch narrow. `except ValueError` around a solve would turn
+      every shape bug in the family code into a silently-shrunk trust radius, and a test pins
+      that an ordinary `ValueError` still propagates.
+
+      Two call sites that could still lose a run were closed with it: the discontinuity repair's
+      fresh re-solve (refusing there now drops the repair, not the run -- the iterate never
+      moved) and `verify_final`, which already handled `UnresolvedSpectrum` and now handles both.
+
+- [x] **A RUN WHOSE BASIS CANNOT RESOLVE ITS SHAPE STOPS INSTEAD OF EARNING ITS EXCLUSION.**
+      `worst_sigma > 1e-6` excludes a row from every summary and is a running max, so a drifted
+      run is buying a row that will be discarded whatever it converges to. Measured cost of not
+      having this: one N=3 row spent 78 minutes doing exactly that, and the re-run then spent
+      hours on rows whose verdict was already fixed.
+
+      The test is NOT on `worst_sigma`. `SpectrumEvaluator.last_sigma` (new) is the tension AFTER
+      the replan the drift itself provokes -- `replan_tol = 1e-9` is three decades below the
+      gate, so anything above it has already forced a basis rebuilt AT that shape, and
+      `last_sigma` is what the rebuild achieved. `maximize_ratio(sigma_abort=1e-6,
+      sigma_abort_streak=3)` stops on three consecutive iterates above it; any evaluation back
+      under the gate resets the streak, so a transient excursion at a wild trial costs nothing.
+      Cannot change a usable result by construction. `sigma_abort=None` disables it.
+
+- [x] **`run_grid` can drive the CONVEX family** (`--convex`, passed through to
+      `ratio_multistart`, which has had it since 2026-08-26 and writes its own
+      `N<N>_k<k>_convex.jsonl`). The certification RATE is the interesting part, not the values:
+      if the convex family certifies much better, that is a result about the search space rather
+      than about the solver.
+
+- [x] **A RETRIED START WAS COUNTED TWICE IN EVERY DENOMINATOR.** `run_grid` retries a crashed
+      start on resume and `ratio_multistart` APPENDS, so `N6_k1` holds 9 rows for 8 starts and
+      `summarize_grid` read `n_total = 9`. Reporting only -- no value was affected, since the
+      filters run per row and a duplicate crash row certifies nothing -- but a wrong denominator
+      is read as evidence about the basin structure. `summarize_grid.load` now dedupes by start
+      keeping the LAST attempt (the resume semantics: a retry exists because the earlier one
+      failed, and the newer row records the guards it ran under), and `plot_optima` imports that
+      loader rather than keeping its own, which is the same fix its own docstring already
+      records for the same file.
+
 - [ ] **`spectral_guard.weyl_deficit` NOW EXISTS IN `lappy` TOO** (`asymp.weyl_deficit`, branch
       `missed-modes`, unmerged), where it drives `solve`'s own audit. Once that branch lands,
       import it rather than keeping two copies of a calibrated statistic in two repos -- the

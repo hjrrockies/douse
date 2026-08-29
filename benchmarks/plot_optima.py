@@ -19,7 +19,6 @@ nobody quotes them as results.
 """
 import argparse
 import glob
-import json
 import os
 
 import matplotlib
@@ -35,8 +34,10 @@ LEDGERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run', 'ratio
 # copied into each is a guard that drifts apart across them.
 try:
     from .summarize_grid import PPW, row_deficit
+    from .summarize_grid import load as _sg_load
 except ImportError:                                                   # pragma: no cover
     from summarize_grid import PPW, row_deficit
+    from summarize_grid import load as _sg_load
 
 
 def canonical(v):
@@ -73,12 +74,12 @@ def _load(path, pre_fix=False):
     start, and hiding it flatters the cell.
     """
     rows, attempted = [], 0
-    for line in open(path):
-        line = line.strip()
-        if not line:
-            continue
+    # DEDUPED BY START, through `summarize_grid.load`, so the denominator counts STARTS and not
+    # lines: `run_grid` retries a crashed start on resume and the runner appends, so `N6_k1` holds
+    # 9 lines for 8 starts. Imported rather than repeated -- this file and the tool of record
+    # disagreeing about a denominator is the exact bug this function's docstring already records.
+    for r in _sg_load(path):
         attempted += 1
-        r = json.loads(line)
         if not r.get('ok', True):
             continue
         r['pre_fix'] = pre_fix

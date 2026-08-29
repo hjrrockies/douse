@@ -55,22 +55,52 @@ from lappy.asymp import weyl_est
 
 from . import spectral_guard
 from .spectral_guard import weyl_report
-from lappy.core import EigensolverFailure
+from lappy.core import EigensolverFailure, SourcesInsideDomain
 from lappy.mps import MPSEigensolver
 
 from .derivative import dlams_dp
 
-__all__ = ['SpectrumEvaluator', 'ObjectiveFunction', 'DegenerateSpectrum']
+__all__ = ['SpectrumEvaluator', 'ObjectiveFunction', 'DegenerateSpectrum',
+           'ShapeRefusal', 'SolverRefusal', 'UnresolvedSpectrum']
 
 
-class UnresolvedSpectrum(RuntimeError):
+class ShapeRefusal(RuntimeError):
+    """The solver could not produce a usable spectrum at this shape.
+
+    ONE class for every way a wild shape can defeat the forward solver, because the caller's
+    response is the same for all of them: `maximize_ratio` treats the trial as UNREACHABLE --
+    shrink the radius, count it, try a smaller step, stop on a streak -- exactly as it already
+    treated `UnresolvedSpectrum`. Measured cost of not having it: five runs killed MID-RUN by
+    `EigensolverFailure` and one by the `FundamentalBasis` interior-source guard, every one of
+    them making progress at the time.
+
+    The distinction the two subclasses keep is diagnostic, not procedural. `UnresolvedSpectrum`
+    means a spectrum was computed and cannot be trusted to be `lam_1 .. lam_K`;
+    `SolverRefusal` means no spectrum came back at all.
+    """
+
+
+class SolverRefusal(ShapeRefusal):
+    """`lappy` declined to solve at this shape, and the shape is the reason.
+
+    Wraps `EigensolverFailure` (`bracket_mins`: "f has too many local minima" -- a tension curve
+    with no usable structure) and `SourcesInsideDomain` (the frozen plan's sources are no longer
+    exterior, i.e. the shape has moved out of the plan's reach). The original is kept as
+    `__cause__`, so a ledger row still records which one it was.
+
+    Deliberately raised only from `eigenvalues`, where `p` names a specific trial shape. The same
+    exception out of a fixed-shape call is a bug and should propagate.
+    """
+
+
+class UnresolvedSpectrum(ShapeRefusal):
     """The returned set is not `lam_1 .. lam_K`, and a full solve did not repair it.
 
     Raised rather than returned, because every consumer of `eigenvalues` reads the array as the
     consecutive spectrum and there is no value of it that is honest here. A caller that can
     treat a shape as unreachable -- `maximize_ratio` rejects the trial step and shrinks -- should
-    catch this; a caller that cannot should let it propagate and record the traceback, which is
-    what `benchmarks/ratio_multistart` does with `EigensolverFailure`.
+    catch this; a caller that cannot should let it propagate and record the traceback. Catch
+    `ShapeRefusal` to cover this and `SolverRefusal` together, which is what both callers want.
     """
 
 
@@ -158,6 +188,9 @@ class SpectrumEvaluator:
         self.max_refusals_kept = 16
         self.n_replans = 0
         self.worst_sigma = 0.0
+        # The tension at the LAST shape evaluated, AFTER any replan it triggered --
+        # not a running max. See the replan block in `_eigenvalues`.
+        self.last_sigma = np.nan
         # A MISSED MODE IS INVISIBLE TO `worst_sigma`; see `douse.spectral_guard`. Tracked the
         # same way -- worst over the run, so a caller filters on one number.
         self.worst_weyl_deficit = -np.inf
@@ -175,6 +208,7 @@ class SpectrumEvaluator:
         self.n_tracks = 0
         self.n_track_refusals = 0
         self.n_collapses = 0
+        self.n_solver_refusals = 0   # `lappy` declined outright; see SolverRefusal
         self.min_gap = np.inf
 
     def __repr__(self):
@@ -214,7 +248,31 @@ class SpectrumEvaluator:
         window edge or a point where the tension is too large. A refusal means the shape moved
         further than the scan window, so the honest response is to pay for a global scan, not to
         widen the window until something is found.
+
+        RAISES `ShapeRefusal` AND NOTHING ELSE when the shape is the problem. A caller that can
+        move -- an optimizer trialling a step -- catches that one class and shrinks; see
+        `SolverRefusal` for why `lappy`'s own exceptions are translated here rather than at each
+        of the five call sites in `cluster_opt`, which is where the previous version leaked them.
         """
+        try:
+            return self._eigenvalues(p, seed=seed)
+        except (EigensolverFailure, SourcesInsideDomain) as exc:
+            # NARROW ON PURPOSE. `SourcesInsideDomain` is a `ValueError` subclass precisely so
+            # this does not have to be `except ValueError`, which would turn every shape bug in
+            # the family code into a silently-shrunk trust radius.
+            self.n_solver_refusals += 1
+            if len(self.refusals) < self.max_refusals_kept:
+                self.refusals.append(dict(
+                    p=[float(t) for t in np.asarray(p, dtype=float)],
+                    plan_at=(None if self._plan_built_at is None
+                             else [float(t) for t in self._plan_built_at]),
+                    lams=None, deficit=None, n_replans=int(self.n_replans),
+                    error=f'{type(exc).__name__}: {exc}'))
+            raise SolverRefusal(
+                f'the solver declined this shape with '
+                f'{type(exc).__name__}: {exc}') from exc
+
+    def _eigenvalues(self, p, seed=None):
         p = np.asarray(p, dtype=float)
         dom, solver = self.solver(p)
         evp = Eigenproblem(dom, eval_solver=solver, precision=self.prec)
@@ -308,6 +366,7 @@ class SpectrumEvaluator:
         if self.replan_tol is not None and len(lams):
             sig = float(np.atleast_1d(solver.sigma(float(lams[0])))[0])
             self.worst_sigma = max(self.worst_sigma, sig)
+            self.last_sigma = sig
             if sig > self.replan_tol:
                 self.replan(p)
                 self.n_replans += 1
@@ -319,6 +378,17 @@ class SpectrumEvaluator:
                 self.n_solves += 1
                 self.last_mults = None
                 from_full_solve = True
+                # WHAT THE TENSION IS *AFTER* THE REPLAN, which is a different question from the
+                # one `worst_sigma` answers and the only one that says a shape is hopeless. The
+                # running max is a DRIFT statistic -- it is meant to stay high once the frozen
+                # plan has been caught out, so a caller can exclude the row afterwards. A basis
+                # rebuilt AT this shape that still cannot resolve `lam_1` is a different claim:
+                # nothing further is going to help, and `maximize_ratio` stops on a run of them
+                # rather than spending an hour earning an exclusion (measured: 78 minutes on one
+                # N=3 row). Costs one extra tension evaluation, and only on a replan.
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    self.last_sigma = float(np.atleast_1d(solver.sigma(float(lams[0])))[0])
 
         # DOES EVERY RETURNED VALUE LOOK LIKE AN EIGENVALUE AT ALL? See `spurious_tol` above:
         # a counting statistic cannot see a dropped mode paired with a spurious one, and the

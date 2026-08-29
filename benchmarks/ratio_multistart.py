@@ -58,7 +58,7 @@ from douse import spectral_guard
 from douse.sampling import random_convex
 
 from douse.cluster_opt import maximize_ratio
-from douse.evaluate import UnresolvedSpectrum
+from douse.evaluate import ShapeRefusal
 from lappy.core import EigensolverFailure
 
 try:
@@ -203,7 +203,7 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
                 warnings.simplefilter('ignore')
                 ev.eigenvalues(p0)
             break
-        except (UnresolvedSpectrum, EigensolverFailure) as exc:
+        except (ShapeRefusal, EigensolverFailure) as exc:
             v = fam.vertices(p0)
             redraws.append(dict(start_index=idx, error=f'{type(exc).__name__}: {str(exc)[:120]}',
                                 angles=[float(t) for t in np.sort(np.degrees(
@@ -215,7 +215,7 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             res = maximize_ratio(ev, p0, k=k, max_iter=max_iter, constraints=cons, delta0=delta0)
-    except UnresolvedSpectrum as exc:
+    except ShapeRefusal as exc:
         # A REFUSAL AT THE START SHAPE IS FATAL BY DESIGN -- a run cannot begin from a shape whose
         # spectrum it cannot index -- but the outer handler builds its crash row from the
         # exception alone, and the SHAPES would be lost with the evaluator. They are the whole
@@ -249,6 +249,9 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
                 n_spurious_refusals=int(getattr(res, 'n_spurious_refusals', 0)),
                 plan_at=getattr(res, 'plan_at', None),
                 n_unresolved=int(getattr(res, 'n_unresolved', 0)),
+                # `lappy` declining outright, as against a spectrum that came back
+                # unindexable. Both are survivable trials now; the split says which.
+                n_solver_refused=int(getattr(res, 'n_solver_refused', 0)),
                 # WHICH GUARDS PRODUCED THIS ROW. A cell is not always written by one version of
                 # the code: `run_grid` retries a CRASHED start on resume, so `N6_k1` start 1 will
                 # be re-run with the enforcement while its seven siblings predate it. That is the

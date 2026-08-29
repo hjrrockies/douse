@@ -1,6 +1,7 @@
 """The bulk sweep: `max lam_k/lam_1` over N-gons, for a grid of `(N, k)`.
 
     uv run python -m benchmarks.run_grid [--N 4 5 6] [--k 1 2 3 4 5] [--starts 8] [--workers 5]
+                                        [--convex]
 
 Each cell is `benchmarks.ratio_multistart` for one `(N, k)`, which runs its starts on a process
 pool and appends to its own resumable ledger in `run/ratio_multistart/N<N>_k<k>.jsonl`. So this
@@ -45,6 +46,12 @@ def main():
                          'The cell in flight is allowed to finish, so the ledgers are never left '
                          'mid-write; everything is resumable, so the next run picks up exactly '
                          'where this one stopped.')
+    ap.add_argument('--convex', action='store_true',
+                    help='run the CONVEX family in every cell (passed through to '
+                         'ratio_multistart, which writes its own N<N>_k<k>_convex.jsonl). The '
+                         'certification rate is the interesting part: if the convex family '
+                         'certifies much better, that is a result about the search space rather '
+                         'than about the solver.')
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args()
 
@@ -70,8 +77,9 @@ def main():
                '--max-iter', str(args.max_iter), '--workers', str(args.workers),
                # the window and the eigenvalue count both have to grow with k, or the solver is
                # asked for lam_k out of a window that does not contain it
-               '--n-eigs', str(k + 2)]
-        print(f'=== [{i}/{len(cells)}] N={N} lam_{k+1}/lam_1   ({time.perf_counter()-t0:.0f}s in)',
+               '--n-eigs', str(k + 2)] + (['--convex'] if args.convex else [])
+        print(f'=== [{i}/{len(cells)}] N={N} lam_{k+1}/lam_1'
+              f'{" CONVEX" if args.convex else ""}   ({time.perf_counter()-t0:.0f}s in)',
               flush=True)
         if args.dry_run:
             print('    ' + ' '.join(cmd[3:]))
