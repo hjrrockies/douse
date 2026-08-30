@@ -768,6 +768,39 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
       than earlier ones. The console line that prints "the tracked set is not consecutive, so this
       is not lam_4/lam_1" about a correct, recovered endpoint is part of the same fix.
 
+- [ ] **A SPURIOUS DUPLICATE PASSES EVERY GUARD, and it is a 42% error in `F`.** Isolated
+      2026-08-29 on the `pre_plateau_fix/N5_k2` shape. A full solve on a plan frozen at the
+      REGULAR PENTAGON returns `[21.5752, 21.5752, 39.4871, 68.8537]` -- `lam_1` reported DOUBLE
+      where a plan built at the shape says it is simple. Every index above it shifts up, so
+      `F = lams[2]/lams[0] = 1.8302` against a true 3.1913.
+
+      | guard | reading | flags? |
+      |---|---|---|
+      | worst tension over all values | 2.9e-08 | no (`spurious_tol = 1e-4`) |
+      | `weyl_deficit` | **-0.791** | no (flags only `> +0.5`) |
+      | `fem_deficit` | 0 | no (flags only `> 0`) |
+
+      **Every completeness check in the stack is one-sided in the MISSING direction.** An extra
+      copy of a genuine eigenvalue has a low tension by construction -- it IS an eigenvalue -- so
+      `spurious_tol` cannot see it either, and both count statistics go NEGATIVE rather than
+      positive. What catches it is multiplicity verification (`_verify_multiplicity` covers the
+      per-mode `track` path but NOT `track_set`, which is the default), or the other side of the
+      FEM bound: nonconforming elements give guaranteed LOWER bounds on eigenvalues, hence an
+      UPPER bound on the count, which is exactly the missing half.
+
+      Note the optimizer may still survive it -- `F` collapsing by 42% makes the step fail, and
+      the discontinuity repair re-solves fresh and adopts that -- but no SPECTRAL guard sees it,
+      and a run that starts at such a shape has no earlier state to fall back on.
+
+- [ ] **TRACKING PERPETUATES A BAD SET RATHER THAN ORIGINATING IT.** Same shape, same basis size
+      (n=157), only the path varied: `track_set` seeded with the WRONG set reproduces it exactly;
+      seeded with the CORRECT set it returns both copies of the double level, even on a stale
+      basis; a full solve on a plan built AT the shape is correct. So a single bad iterate
+      contaminates every iterate after it, and `verify_final` on the same frozen plan cannot clear
+      it -- which is why the escalation ladder's REPLAN rung is the one that actually repairs
+      (measured: both flagged convex rows recovered via replan, `n_weyl_escalations = 0`,
+      `n_weyl_recovered = 1`).
+
 - [ ] **A CHEAP FEM COUNT IS A RIGOROUS COMPLETENESS DETECTOR, and it should probably replace the
       Weyl one.** `benchmarks/completeness_detectors.py`. Conforming P1 elements on an EXACTLY
       triangulated polygon span a subspace of `H^1_0`, so `lam_j <= lam_j^h` and the FEM counting
