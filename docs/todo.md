@@ -701,6 +701,26 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
       floor MEASURED at that shape, the same move section 9 made, or failing that to report the
       floor next to the resolution so a reader can see which of the two a cell failed.
 
+- [x] **THE FEM COUNT SETTLED A STANDING QUESTION ON ITS FIRST REAL USE, and the answer was not
+      the one either side expected.** HANDOFF section 13 flagged
+      `pre_plateau_fix/N5_k2` start 0 (F = 3.1913293884, deficit +0.683, `worst_sigma` 1.6e-10)
+      and guessed it might be a FALSE positive, asking that it not be quoted as corroboration
+      until re-solved. It is a TRUE positive: `fem_deficit = +1` at diameter/60, /150 and /300
+      (1984 to 49842 dofs), the first three values matching as `O(h^2)` while the recorded fourth
+      sits 22% ABOVE the FEM's. The pentagon has a DOUBLE eigenvalue at 68.8536 and the run
+      returned one copy, then jumped to `lam_5 = 88.46`. The certified row shows the pair
+      outright: `[21.575211, 39.487156, 68.853605, 68.853605]`, gap 8.9e-10.
+
+      **But the value it produced is fine**, because the missing copy is ABOVE the index the
+      objective consumes -- `F = lams[2]/lams[0]` uses `lam_3` -- so the `n_eigs = k+2` margin did
+      its job. The SET is wrong and the VALUE is not, which is a distinction no gate currently
+      draws: `summarize_grid` drops the row on the set. Worth drawing, since the objective only
+      ever reads indices 0 and k.
+
+      This is also the certified reproduction `LAPPY_WISHLIST` section 6
+      (`estimate_multiplicity`) has been missing, and the first demonstration of the counting
+      form catching what the per-index form provably cannot.
+
 - [ ] **`worst_weyl_deficit` IS MEASURED OVER EVERY SHAPE EVER TRIALLED, INCLUDING REJECTED ONES,
       AND IT IS USED TO JUDGE THE ENDPOINT. Caught live, 2026-08-29, in the convex sweep.**
 
