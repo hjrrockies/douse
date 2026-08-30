@@ -701,6 +701,40 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
       floor MEASURED at that shape, the same move section 9 made, or failing that to report the
       floor next to the resolution so a reader can see which of the two a cell failed.
 
+- [ ] **`worst_weyl_deficit` IS MEASURED OVER EVERY SHAPE EVER TRIALLED, INCLUDING REJECTED ONES,
+      AND IT IS USED TO JUDGE THE ENDPOINT. Caught live, 2026-08-29, in the convex sweep.**
+
+      `N4_k3_convex` starts 3 and 6 reached the IDENTICAL endpoint -- same rectangle
+      (0.618 x 1.382, aspect 2.236087), the same five eigenvalues to the digit, both certified,
+      both `F = 3.4999999995`, the known `sqrt(5)` local maximum at exactly 7/2. Start 3 records a
+      worst deficit of +0.370 and is kept; start 6 records +1.367 and is DROPPED as a missed mode
+      (`n_skipped_mode = 1`, cell reads 7 certified of 8). The only difference between them is
+      trajectory length -- 46 iterations against 212 -- so start 6 passed through a wild shape
+      that scored +1.367 on the way.
+
+      **The endpoint is provably clean**, and being a rectangle it can be settled in closed form:
+      the recorded values match `pi^2(m^2/L^2 + n^2/H^2)` for that exact shape to 8.5e-06 relative,
+      against consecutive gaps of ~50%, so the identification is unambiguous. Endpoint
+      `weyl_deficit` is +0.370 (passes) and endpoint `fem_deficit` is 0 at 9583 dofs.
+
+      **This is the same disease already fixed once for `worst_sigma`** -- "a start that was
+      REDRAWN and was then EXCLUDED on `worst_sigma = 5.0e-04`, a number belonging to a shape it
+      never optimized". `evaluate.py` updates `worst_weyl_deficit` on EVERY `eigenvalues` call,
+      and most of those are TRIAL shapes the optimizer looked at and REJECTED. A rejected trial is
+      not part of the trajectory; judging the answer by the worst shape ever trialled is not a
+      conservative gate, it is the wrong measurement.
+
+      **The fix is not simply to swap in the endpoint value** -- section 13 chose worst-over-run
+      deliberately, because recomputing from `x` and `lams` alone is the WEAKER statistic. The two
+      answer different questions and should be recorded and used separately: gate the reported
+      VALUE on the endpoint (recomputed, or better `--verify`'s fresh re-solve, or a FEM count),
+      and use worst-over-run to TRIGGER that verification rather than to discard the row.
+
+      **NOT DONE MID-SWEEP ON PURPOSE**: `ratio_multistart` imports `summarize_grid` for its
+      gates, so an edit there while the queue runs would have later cells running different code
+      than earlier ones. The console line that prints "the tracked set is not consecutive, so this
+      is not lam_4/lam_1" about a correct endpoint is part of the same fix and waits with it.
+
 - [ ] **A CHEAP FEM COUNT IS A RIGOROUS COMPLETENESS DETECTOR, and it should probably replace the
       Weyl one.** `benchmarks/completeness_detectors.py`. Conforming P1 elements on an EXACTLY
       triangulated polygon span a subspace of `H^1_0`, so `lam_j <= lam_j^h` and the FEM counting
