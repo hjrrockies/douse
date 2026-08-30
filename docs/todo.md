@@ -721,39 +721,52 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
       (`estimate_multiplicity`) has been missing, and the first demonstration of the counting
       form catching what the per-index form provably cannot.
 
-- [ ] **`worst_weyl_deficit` IS MEASURED OVER EVERY SHAPE EVER TRIALLED, INCLUDING REJECTED ONES,
-      AND IT IS USED TO JUDGE THE ENDPOINT. Caught live, 2026-08-29, in the convex sweep.**
+- [ ] **A ROW THAT DETECTED A PROBLEM AND FIXED IT IS GATED AS THOUGH IT STILL HAD ONE.**
+      Caught live, 2026-08-29, in the convex sweep, and the first reading of it here was WRONG --
+      recorded because the wrong reading is the tempting one.
 
-      `N4_k3_convex` starts 3 and 6 reached the IDENTICAL endpoint -- same rectangle
+      `N4_k3_convex` starts 3 and 6 reached the IDENTICAL endpoint: same rectangle
       (0.618 x 1.382, aspect 2.236087), the same five eigenvalues to the digit, both certified,
-      both `F = 3.4999999995`, the known `sqrt(5)` local maximum at exactly 7/2. Start 3 records a
-      worst deficit of +0.370 and is kept; start 6 records +1.367 and is DROPPED as a missed mode
-      (`n_skipped_mode = 1`, cell reads 7 certified of 8). The only difference between them is
-      trajectory length -- 46 iterations against 212 -- so start 6 passed through a wild shape
-      that scored +1.367 on the way.
+      both `F = 3.4999999995`, the known `sqrt(5)` local maximum at exactly 7/2. Start 3 is kept.
+      Start 6 is DROPPED as a missed mode (`n_skipped_mode = 1`, the cell reads 7 certified of 8).
+      The only difference is trajectory length, 46 iterations against 212.
 
-      **The endpoint is provably clean**, and being a rectangle it can be settled in closed form:
-      the recorded values match `pi^2(m^2/L^2 + n^2/H^2)` for that exact shape to 8.5e-06 relative,
-      against consecutive gaps of ~50%, so the identification is unambiguous. Endpoint
-      `weyl_deficit` is +0.370 (passes) and endpoint `fem_deficit` is 0 at 9583 dofs.
+      **The endpoints are provably clean.** `N4_k3_convex` start 6 is a rectangle, so closed form
+      settles it -- the values match `pi^2(m^2/L^2 + n^2/H^2)` to 8.5e-06 relative against
+      consecutive gaps of ~50% -- and `fem_deficit = 0` at 9583 dofs. `N5_k2_convex` start 0 has
+      `fem_deficit = 0` at 1987, 12466 and 49840 dofs, with all four per-index errors positive and
+      falling as `O(h^2)`; its endpoint carries BOTH copies of the double level at 68.854006.
 
-      **This is the same disease already fixed once for `worst_sigma`** -- "a start that was
-      REDRAWN and was then EXCLUDED on `worst_sigma = 5.0e-04`, a number belonging to a shape it
-      never optimized". `evaluate.py` updates `worst_weyl_deficit` on EVERY `eigenvalues` call,
-      and most of those are TRIAL shapes the optimizer looked at and REJECTED. A rejected trial is
-      not part of the trajectory; judging the answer by the worst shape ever trialled is not a
-      conservative gate, it is the wrong measurement.
+      **What the flag actually was, which is NOT what it first looked like.** The first draft of
+      this entry read the mid-run deficit as a Weyl false positive from a wild intermediate shape,
+      by analogy with `deficit_calibration.py`. The row's own counters say otherwise: both rows
+      have `n_weyl_flags = 1`, `n_weyl_recovered = 1` and `n_replans >= 1`. The guard fired on a
+      REAL indexing failure mid-run, rebuilt the basis at that shape, and REPAIRED it. Note the
+      `N5_k2` value: +0.683, the same score the `pre_plateau_fix` row gets for genuinely losing one
+      copy of that cell's double eigenvalue -- so it is the signature of the true failure, not of
+      elongation.
+
+      **So the guard is working and the GATE is wrong.** `worst_weyl_deficit` is a high-water mark
+      that survives a successful recovery, and `summarize_grid` discards the row on it -- treating
+      "had a problem, detected it, fixed it" identically to "has a problem". `n_weyl_recovered` is
+      already recorded on the row and no gate reads it.
+
+      Related and still true in general: `evaluate.py` updates `worst_weyl_deficit` on EVERY
+      `eigenvalues` call, including TRIAL shapes the optimizer rejected, which is the same disease
+      already fixed once for `worst_sigma` ("a number belonging to a shape it never optimized").
+      That is not what happened in these two rows.
 
       **The fix is not simply to swap in the endpoint value** -- section 13 chose worst-over-run
-      deliberately, because recomputing from `x` and `lams` alone is the WEAKER statistic. The two
-      answer different questions and should be recorded and used separately: gate the reported
-      VALUE on the endpoint (recomputed, or better `--verify`'s fresh re-solve, or a FEM count),
-      and use worst-over-run to TRIGGER that verification rather than to discard the row.
+      deliberately, because recomputing from `x` and `lams` alone is the WEAKER statistic, and the
+      `pre_plateau_fix` row proves the endpoint number can itself sit under threshold while a mode
+      really is missing. Gate the reported VALUE on the endpoint verified independently (a fresh
+      re-solve, or a FEM count), and use worst-over-run, `n_weyl_flags` and `n_weyl_recovered` to
+      say what the TRAJECTORY did.
 
       **NOT DONE MID-SWEEP ON PURPOSE**: `ratio_multistart` imports `summarize_grid` for its
       gates, so an edit there while the queue runs would have later cells running different code
       than earlier ones. The console line that prints "the tracked set is not consecutive, so this
-      is not lam_4/lam_1" about a correct endpoint is part of the same fix and waits with it.
+      is not lam_4/lam_1" about a correct, recovered endpoint is part of the same fix.
 
 - [ ] **A CHEAP FEM COUNT IS A RIGOROUS COMPLETENESS DETECTOR, and it should probably replace the
       Weyl one.** `benchmarks/completeness_detectors.py`. Conforming P1 elements on an EXACTLY
