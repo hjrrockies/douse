@@ -117,3 +117,20 @@ def test_cluster_matrices_near_a_double_carry_the_members_own_gradients():
     Jl = dlams_dp(fam, p, solver_l, lams_l[1:3])
     np.testing.assert_allclose(np.stack([Mc[:, 0, 0], Mc[:, 1, 1]]), Jl, rtol=1e-8,
                                atol=1e-9 * np.abs(Jl).max())
+
+
+@pytest.mark.slow
+def test_the_acceptance_test_passes_on_chladni():
+    """`tests/test_cluster_opt.py`'s acceptance test, on this backend: maximize lam_2/lam_1 over
+    quadrilaterals from a perturbed square, through the lam_2 = lam_3 degeneracy, to the square's
+    2.5. Measured 2026-10-12: 2.4999999991, gap 7.2e-10, 9 cluster steps, 30 s, no refusals."""
+    from douse.cluster_opt import maximize_ratio
+    perim, N = 4.0, 4
+    rng = np.random.default_rng(0)
+    v = perim / N / (2 * np.sin(np.pi / N)) * np.exp(2j * np.pi * np.arange(N) / N)
+    v = v + 0.06 * (rng.normal(size=N) + 1j * rng.normal(size=N)) * np.abs(v).mean()
+    fam = VertexPolygon(N, perim=perim)
+    ev = ChladniEvaluator(fam, n_eigs=3, prec=PREC, degenerate_tol=0.0)
+    res = maximize_ratio(ev, param_vector(v, perim), k=1, max_iter=120)
+    assert abs(res.fun - 2.5) < 1e-6, (res.fun, res.message)
+    assert res.gap < 1e-5 and res.n_cluster_steps > 0
