@@ -7,12 +7,19 @@ ones `tests/test_cluster_opt.py` uses (degenerate_tol 0, warn_gap 0 for lappy), 
 k + 2. Each run's optimum, gap to the degeneracy, iterations, cluster steps, refusals and wall
 time go to one JSONL row, written as it finishes.
 
-    .venv/bin/python benchmarks/chladni_vs_lappy.py [WORKERS]       # writes the JSONL and a table
+    .venv/bin/python benchmarks/chladni_vs_lappy.py [WORKERS]       # default 4; JSONL and a table
+
+Each job runs in a fresh process, and its row records its peak memory (`peak_mb`) and a trace
+sampled every 30 s; a job past MEM_CAP is stopped and recorded as an error. Run ONE instance at a
+time.
     .venv/bin/python benchmarks/chladni_vs_lappy.py report
 """
+import _thread
 import json
 import os
+import resource
 import sys
+import threading
 import time
 import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -26,6 +33,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 OUT = os.path.join(HERE, "run", "chladni_vs_lappy.jsonl")
 PERIM = 4.0
+MEM_CAP = 4 * 2**30   # per job; past it the job is stopped and recorded (2026-10-13: an 8+8-worker
+                      # run exhausted 16 GB and the kernel panicked)
 CASES = [(N, k, seed) for N in (4, 5, 6) for k in (1, 2) for seed in (0, 1, 2)]
 
 
@@ -33,6 +42,21 @@ def _perturbed(N, jitter, seed):
     rng = np.random.default_rng(seed)
     v = PERIM / N / (2 * np.sin(np.pi / N)) * np.exp(2j * np.pi * np.arange(N) / N)
     return v + jitter * (rng.normal(size=N) + 1j * rng.normal(size=N)) * np.abs(v).mean()
+
+
+def _peak():
+    """Peak resident memory of this process, bytes (macOS reports ru_maxrss in bytes)."""
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
+
+def _watch(trace, stop, every=30.0):
+    """Sample the peak every `every` seconds into `trace`; interrupt the job past MEM_CAP."""
+    t0 = time.perf_counter()
+    while not stop.wait(every):
+        trace.append((round(time.perf_counter() - t0), round(_peak() / 2**20)))
+        if _peak() > MEM_CAP:
+            _thread.interrupt_main()
+            return
 
 
 def run_one(args):
@@ -49,6 +73,8 @@ def run_one(args):
         ev = SpectrumEvaluator(fam, n_eigs=k + 2, warn_gap=0.0, degenerate_tol=0.0)
     t0 = time.perf_counter()
     row = dict(backend=backend, N=N, k=k, seed=seed)
+    trace, stop = [], threading.Event()
+    threading.Thread(target=_watch, args=(trace, stop), daemon=True).start()
     try:
         res = maximize_ratio(ev, param_vector(_perturbed(N, 0.08, seed), PERIM), k=k,
                              max_iter=80)
@@ -59,11 +85,16 @@ def run_one(args):
                    message=str(res.message)[:200], x=[float(t) for t in res.x])
     except Exception as e:  # noqa: BLE001 -- a crash is a result
         row.update(error=f"{type(e).__name__}: {str(e)[:300]}")
+    except KeyboardInterrupt:
+        row.update(error=f"MemoryCap: peak {_peak() / 2**30:.1f} GB > {MEM_CAP / 2**30:.0f} GB")
+    stop.set()
     row["wall"] = time.perf_counter() - t0
+    row["peak_mb"] = round(_peak() / 2**20)
+    row["mem_trace"] = trace
     return row
 
 
-def main(workers=8):
+def main(workers=4):
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     done = set()
     if os.path.exists(OUT):
@@ -72,14 +103,14 @@ def main(workers=8):
             done.add((r["backend"], r["N"], r["k"], r["seed"]))
     jobs = [(b, N, k, s) for (N, k, s) in CASES for b in ("chladni", "lappy")
             if (b, N, k, s) not in done]
-    with ProcessPoolExecutor(workers) as ex, open(OUT, "a") as fh:
+    with ProcessPoolExecutor(workers, max_tasks_per_child=1) as ex, open(OUT, "a") as fh:
         futs = [ex.submit(run_one, j) for j in jobs]
         for f in as_completed(futs):
             row = f.result()
             fh.write(json.dumps(row) + "\n")
             fh.flush()
             print(f"{row['backend']:8s} N={row['N']} k={row['k']} seed={row['seed']} "
-                  f"{row.get('fun', 'ERR')} {row['wall']:.0f}s", flush=True)
+                  f"{row.get('fun', 'ERR')} {row['wall']:.0f}s {row['peak_mb']} MB", flush=True)
     report()
 
 
@@ -105,4 +136,4 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "report":
         report()
     else:
-        main(int(sys.argv[1]) if len(sys.argv) > 1 else 8)
+        main(int(sys.argv[1]) if len(sys.argv) > 1 else 4)
