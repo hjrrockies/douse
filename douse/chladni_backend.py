@@ -217,27 +217,21 @@ class ChladniEvaluator:
 
     def eigenvalues(self, p, seed=None):
         """`(lams, solver)`; raises `ShapeRefusal` (and nothing else) when the shape is the
-        problem, as `SpectrumEvaluator.eigenvalues` does."""
-        from chladni.eigenproblem import Eigenproblem
+        problem, as `SpectrumEvaluator.eigenvalues` does.
+
+        **Plan drift is re-planned, not refused.** A plan frozen at an earlier shape can stop
+        meeting `prec` as the shape moves: a level goes unmet, the audit reads short or excess,
+        or the search declines with a basis sized for the old shape's wavenumbers. That is
+        routine over an optimization run (`lappy`'s backend re-plans on it through `replan_tol`).
+        So any refusal on a plan that was NOT made at this shape triggers one re-plan here and a
+        second solve, and only a refusal on a plan made AT this shape is passed on (2026-10-13:
+        without this, 4 of the first 5 comparison runs stopped short of the optimum)."""
         dom, verts = self._domain(p)
-        plan = self.plan(p)
-        try:
-            try:
-                with _quiet():
-                    spec = Eigenproblem(dom).solve(self.n_eigs, prec=self.prec, plan=plan)
-            except ValueError as exc:
-                if "corner" not in str(exc):
-                    raise
-                self.replan(p)                  # a different corner structure: re-plan here
-                self.n_replans += 1
-                with _quiet():
-                    spec = Eigenproblem(dom).solve(self.n_eigs, prec=self.prec,
-                                                   plan=self.plan(p))
-        except (RuntimeError, ValueError) as exc:
-            self.n_solver_refusals += 1
-            self._record(p, f"{type(exc).__name__}: {exc}")
-            raise SolverRefusal(f"chladni could not solve this shape: {exc}") from exc
-        exc = refusal_for(spec)
+        spec, exc = self._solve(dom, self.plan(p), p)
+        if exc is not None and not self._planned_here(p):
+            self.replan(p)
+            self.n_replans += 1
+            spec, exc = self._solve(dom, self.plan(p), p)
         if exc is not None:
             self._record(p, str(exc))
             raise exc
@@ -245,6 +239,33 @@ class ChladniEvaluator:
             self.last_sigma = float(np.nanmax(spec.bound / spec.lam)) if spec.lam.size else np.nan
         self._last = spec
         return spec.unfolded[:self.n_eigs], ChladniSolver(spec, verts, self.degenerate_tol)
+
+    def _planned_here(self, p):
+        return (self._plan_built_at is not None
+                and np.array_equal(self._plan_built_at, np.asarray(p, dtype=float)))
+
+    def _solve(self, dom, plan, p):
+        """`(spec, refusal_or_None)` for `dom` on `plan`. A plan that cannot be realized here (a
+        different corner count) is re-planned at `p` immediately."""
+        from chladni.eigenproblem import Eigenproblem
+        try:
+            try:
+                with _quiet():
+                    spec = Eigenproblem(dom).solve(self.n_eigs, prec=self.prec, plan=plan)
+            except ValueError as e:
+                if "corner" not in str(e):
+                    raise
+                self.replan(p)                  # a different corner structure: re-plan here
+                self.n_replans += 1
+                with _quiet():
+                    spec = Eigenproblem(dom).solve(self.n_eigs, prec=self.prec,
+                                                   plan=self.plan(p))
+        except (RuntimeError, ValueError) as e:
+            self.n_solver_refusals += 1
+            exc = SolverRefusal(f"chladni could not solve this shape: {e}")
+            exc.__cause__ = e
+            return None, exc
+        return spec, refusal_for(spec)
 
     def _record(self, p, error):
         if len(self.refusals) < self.max_refusals_kept:

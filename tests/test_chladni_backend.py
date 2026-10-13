@@ -166,3 +166,21 @@ def test_the_model_switches_to_the_cluster_as_the_gap_closes():
                    callback=lambda p, F, model, delta, rho: modes.append(model["mode"]))
     assert "smooth" in modes and "cluster" in modes, set(modes)
     assert modes.index("cluster") > modes.index("smooth")
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("L", [1.4, 1.6])
+def test_a_frozen_plan_that_drifts_out_of_reach_is_replanned_not_refused(L):
+    """A plan made on the square, realized on a 1.4 x 0.6 or 1.6 x 0.4 rectangle, no longer
+    meets 1e-10 there (the audit reads excess; at 1.6 the search declines). That is plan DRIFT,
+    routine over an optimization run -- `lappy`'s backend re-plans on it (`replan_tol`) -- not a
+    shape the solver cannot handle. Re-plan at the shape and solve again; refuse only if that
+    fails too. (Without this, 4 of the first 5 comparison runs stopped short, 2026-10-13.)"""
+    from benchmarks.rectangle_exact import spectrum
+    fam = VertexPolygon(4, perim=4.0)
+    square = _p([0, 1, 1 + 1j, 1j], 4.0)
+    H = 2.0 - L
+    ev = ChladniEvaluator(fam, n_eigs=3, prec=PREC, degenerate_tol=0.0, plan_at=square)
+    lams, _ = ev.eigenvalues(_p([0, L, L + 1j * H, 1j * H], 4.0))
+    np.testing.assert_allclose(lams, spectrum(L, H, 8)[:3], rtol=1e-9)
+    assert ev.n_replans >= 1
