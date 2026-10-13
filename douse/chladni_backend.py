@@ -184,8 +184,14 @@ class ChladniEvaluator:
         self._plan = None
         self._plan_at = None if plan_at is None else np.asarray(plan_at, dtype=float)
         self._plan_built_at = None
-        self._last = None
+        self._last = None                   # (p, lams): the continuation seed, as cluster_opt sets it
+        self._specs = {}                    # p.tobytes() -> Spectrum, the last two shapes solved
+        self._last_spec = None
         self.last_sigma = np.nan            # worst attained relative bound at the last shape
+        self.n_solves = 0                   # cold solves
+        self.n_tracks = 0                   # warm solves accepted
+        self.n_track_refusals = 0           # warm solves asked for and refused (then solved cold)
+        self.last_warm_note = None
         self.n_replans = 0
         self.n_solver_refusals = 0
         self.refusals = []
@@ -225,9 +231,15 @@ class ChladniEvaluator:
         routine over an optimization run (`lappy`'s backend re-plans on it through `replan_tol`).
         So any refusal on a plan that was NOT made at this shape triggers one re-plan here and a
         second solve, and only a refusal on a plan made AT this shape is passed on (2026-10-13:
-        without this, 4 of the first 5 comparison runs stopped short of the optimum)."""
+        without this, 4 of the first 5 comparison runs stopped short of the optimum).
+
+        **Tracked from the previous shape** when `_last` names one solved here: chladni's warm
+        start (`Eigenproblem.solve(..., near=prev)`), which checks continuity and solves cold on
+        any failure, and every 10 warm solves. `seed` is accepted for interface parity and not
+        used: a warm start needs the previous SPECTRUM (its plan and levels), not just values."""
+        p = np.asarray(p, dtype=float)
         dom, verts = self._domain(p)
-        spec, exc = self._solve(dom, self.plan(p), p)
+        spec, exc = self._solve(dom, self.plan(p), p, near=self._near())
         if exc is not None and not self._planned_here(p):
             self.replan(p)
             self.n_replans += 1
@@ -237,21 +249,43 @@ class ChladniEvaluator:
             raise exc
         with np.errstate(invalid="ignore", divide="ignore"):
             self.last_sigma = float(np.nanmax(spec.bound / spec.lam)) if spec.lam.size else np.nan
-        self._last = spec
-        return spec.unfolded[:self.n_eigs], ChladniSolver(spec, verts, self.degenerate_tol)
+        lams = spec.unfolded[:self.n_eigs]
+        self._remember(p, spec, lams)
+        return lams, ChladniSolver(spec, verts, self.degenerate_tol)
+
+    def _near(self):
+        """The Spectrum behind the continuation seed `_last = (p, lams)`, or None."""
+        if self._last is None:
+            return None
+        return self._specs.get(np.asarray(self._last[0], dtype=float).tobytes())
+
+    def _remember(self, p, spec, lams):
+        """Keep this shape's spectrum (and the one before it: the accepted point, when this was
+        a trial) and make it the seed."""
+        key = p.tobytes()
+        self._specs.pop(key, None)
+        self._specs[key] = spec
+        while len(self._specs) > 2:
+            self._specs.pop(next(iter(self._specs)))
+        self._last_spec = spec
+        self._last = (p.copy(), np.array(lams, dtype=float))
 
     def _planned_here(self, p):
         return (self._plan_built_at is not None
                 and np.array_equal(self._plan_built_at, np.asarray(p, dtype=float)))
 
-    def _solve(self, dom, plan, p):
-        """`(spec, refusal_or_None)` for `dom` on `plan`. A plan that cannot be realized here (a
-        different corner count) is re-planned at `p` immediately."""
+    def _solve(self, dom, plan, p, near=None):
+        """`(spec, refusal_or_None)` for `dom` on `plan`, warm from `near` when it was solved on
+        the same plan. A plan that cannot be realized here (a different corner count) is
+        re-planned at `p` immediately."""
         from chladni.eigenproblem import Eigenproblem
+        if near is not None and near.plan is not plan:
+            near = None
         try:
             try:
                 with _quiet():
-                    spec = Eigenproblem(dom).solve(self.n_eigs, prec=self.prec, plan=plan)
+                    spec = Eigenproblem(dom).solve(self.n_eigs, prec=self.prec, plan=plan,
+                                                   near=near)
             except ValueError as e:
                 if "corner" not in str(e):
                     raise
@@ -265,6 +299,13 @@ class ChladniEvaluator:
             exc = SolverRefusal(f"chladni could not solve this shape: {e}")
             exc.__cause__ = e
             return None, exc
+        if spec.warm:
+            self.n_tracks += 1
+        else:
+            self.n_solves += 1
+            if near is not None:
+                self.n_track_refusals += 1
+        self.last_warm_note = spec.warm_note
         return spec, refusal_for(spec)
 
     def _record(self, p, error):
@@ -288,5 +329,6 @@ class ChladniEvaluator:
         self.reset_continuation()
 
     def reset_continuation(self):
-        """No warm start on this backend; kept for interface parity."""
+        """Forget the previous shape, so the next call solves cold. Use after a jump."""
         self._last = None
+        self._specs = {}

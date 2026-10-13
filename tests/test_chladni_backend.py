@@ -184,3 +184,63 @@ def test_a_frozen_plan_that_drifts_out_of_reach_is_replanned_not_refused(L):
     lams, _ = ev.eigenvalues(_p([0, L, L + 1j * H, 1j * H], 4.0))
     np.testing.assert_allclose(lams, spectrum(L, H, 8)[:3], rtol=1e-9)
     assert ev.n_replans >= 1
+
+
+# --- warm start (chladni `solve(..., near=prev)`), 2026-10-13 ---------------------------------
+# The contract of `SpectrumEvaluator`'s tracking (`douse/evaluate.py`): seed from `_last`, a
+# `(p, lams)` pair that `cluster_opt` also writes to reseed from the accepted point; count
+# `n_solves`, `n_tracks`, `n_track_refusals`; `reset_continuation` forces a cold solve.
+
+def _rect_family():
+    L, H = 1.2, 0.8
+    fam = VertexPolygon(4, perim=2 * (L + H))
+    return fam, _p([0, L, L + 1j * H, 1j * H], fam.perim)
+
+
+@pytest.mark.slow
+def test_nearby_shapes_are_tracked_after_one_cold_solve():
+    fam, p = _rect_family()
+    ev = ChladniEvaluator(fam, n_eigs=3, prec=PREC)
+    rng = np.random.default_rng(0)
+    for _ in range(4):
+        lams, _ = ev.eigenvalues(p)
+        assert np.all(np.diff(lams) >= 0)
+        p = p + 1e-4 * rng.normal(size=p.size)
+    assert (ev.n_solves, ev.n_tracks, ev.n_track_refusals) == (1, 3, 0)
+    assert isinstance(ev._last, tuple) and len(ev._last) == 2
+
+
+@pytest.mark.slow
+def test_reset_continuation_forces_a_cold_solve():
+    fam, p = _rect_family()
+    ev = ChladniEvaluator(fam, n_eigs=3, prec=PREC)
+    ev.eigenvalues(p)
+    ev.reset_continuation()
+    assert ev._last is None
+    ev.eigenvalues(p + 1e-4)
+    assert (ev.n_solves, ev.n_tracks) == (2, 0)
+
+
+@pytest.mark.slow
+def test_a_cluster_opt_reseed_tracks_from_the_accepted_point():
+    """`cluster_opt` rejects a trial and writes `_last = (p, lams)` for the accepted p; the next
+    trial must track from p's spectrum, not from the rejected trial's."""
+    fam, p = _rect_family()
+    ev = ChladniEvaluator(fam, n_eigs=3, prec=PREC)
+    lams_p, _ = ev.eigenvalues(p)
+    ev.eigenvalues(p + 3e-4)                         # a trial, then rejected
+    ev._last = (p.copy(), lams_p.copy())
+    lams, _ = ev.eigenvalues(p - 1e-4)
+    assert (ev.n_solves, ev.n_tracks) == (1, 2)
+    assert ev._last_spec.warm
+
+
+@pytest.mark.slow
+def test_a_seed_with_no_spectrum_behind_it_solves_cold():
+    """A `_last` written by hand for a p never solved here has no spectrum to warm from."""
+    fam, p = _rect_family()
+    ev = ChladniEvaluator(fam, n_eigs=3, prec=PREC)
+    lams, _ = ev.eigenvalues(p)
+    ev._last = (p + 1e-3, lams)
+    ev.eigenvalues(p + 1e-3)
+    assert (ev.n_solves, ev.n_tracks) == (2, 0)
