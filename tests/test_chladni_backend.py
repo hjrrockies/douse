@@ -134,3 +134,35 @@ def test_the_acceptance_test_passes_on_chladni():
     res = maximize_ratio(ev, param_vector(v, perim), k=1, max_iter=120)
     assert abs(res.fun - 2.5) < 1e-6, (res.fun, res.message)
     assert res.gap < 1e-5 and res.n_cluster_steps > 0
+
+
+def _perturbed(N, jitter, perim=4.0, seed=0):
+    rng = np.random.default_rng(seed)
+    v = perim / N / (2 * np.sin(np.pi / N)) * np.exp(2j * np.pi * np.arange(N) / N)
+    return v + jitter * (rng.normal(size=N) + 1j * rng.normal(size=N)) * np.abs(v).mean()
+
+
+@pytest.mark.slow
+def test_a_pentagon_run_never_reports_above_the_ppw_bound():
+    """`test_cluster_opt.py`'s PPW check on this backend: every reported lam_2/lam_1 on a
+    5-gon run stays at or below the Payne-Polya-Weinberger bound (j_11/j_01)^2."""
+    from douse.cluster_opt import maximize_ratio
+    PPW = (3.8317059702 / 2.4048255577) ** 2
+    fam = VertexPolygon(5, perim=4.0)
+    ev = ChladniEvaluator(fam, n_eigs=3, prec=PREC, degenerate_tol=0.0)
+    seen = []
+    res = maximize_ratio(ev, param_vector(_perturbed(5, 0.06), 4.0), k=1, max_iter=40,
+                         callback=lambda p, F, model, delta, rho: seen.append(F))
+    assert seen and max(seen + [res.fun]) <= PPW + 1e-9
+
+
+@pytest.mark.slow
+def test_the_model_switches_to_the_cluster_as_the_gap_closes():
+    from douse.cluster_opt import maximize_ratio
+    fam = VertexPolygon(4, perim=4.0)
+    ev = ChladniEvaluator(fam, n_eigs=3, prec=PREC, degenerate_tol=0.0)
+    modes = []
+    maximize_ratio(ev, param_vector(_perturbed(4, 0.10), 4.0), k=1, max_iter=60,
+                   callback=lambda p, F, model, delta, rho: modes.append(model["mode"]))
+    assert "smooth" in modes and "cluster" in modes, set(modes)
+    assert modes.index("cluster") > modes.index("smooth")

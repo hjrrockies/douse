@@ -36,11 +36,25 @@ rule. A multiple level refuses the simple-eigenvalue gradient (`DegenerateSpectr
 """
 from __future__ import annotations
 
+import warnings
+from contextlib import contextmanager
+
 import numpy as np
 
 from .evaluate import DegenerateSpectrum, SolverRefusal, UnresolvedSpectrum
 
 __all__ = ["ChladniEvaluator", "ChladniSolver", "refusal_for"]
+
+
+@contextmanager
+def _quiet():
+    """Silence ONE warning: Fourier-Bessel's per-column accuracy bound ("FourierBessel can
+    deliver about 1e-9 ..."). Measured against 30-digit mpmath it is ~1e5x pessimistic
+    (`chladni/notes/hard_cases.md`, part 3), so in a long run it is noise. Every other
+    `chladni` warning still reaches the caller; shortfalls arrive as flags and refusals."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="FourierBessel can deliver")
+        yield
 
 
 def refusal_for(spec):
@@ -105,7 +119,8 @@ class ChladniSolver:
     def hadamard_vertices(self, i):
         """`(2N, m, m)` for level `i`, cached."""
         if i not in self._H:
-            self._H[i] = self.spec.hadamard(i, self._velocity())
+            with _quiet():
+                self._H[i] = self.spec.hadamard(i, self._velocity())
         return self._H[i]
 
     def chladni_dlams_dvertices(self, lams, n_vert):
@@ -148,7 +163,9 @@ class ChladniSolver:
         idx = self._cluster_levels(lam, mult, lams)
         key = tuple(idx)
         if key not in self._H:
-            self._H[key] = self.spec.hadamard(idx[0] if len(idx) == 1 else idx, self._velocity())
+            with _quiet():
+                self._H[key] = self.spec.hadamard(idx[0] if len(idx) == 1 else idx,
+                                                  self._velocity())
         H = self._H[key]                                        # (2N, m, m)
         Jv = family.d_vertices_dp(p)                            # (2N, n_p)
         return np.einsum("fij,fp->pij", H, Jv)
@@ -193,8 +210,9 @@ class ChladniEvaluator:
             at = self._plan_at if self._plan_at is not None else np.asarray(p, dtype=float)
             self._plan_built_at = np.array(at, dtype=float)
             dom, _ = self._domain(at)
-            self._plan = Eigenproblem(dom).plan(self.n_eigs, prec=self.prec,
-                                                confirm=self.confirm)
+            with _quiet():
+                self._plan = Eigenproblem(dom).plan(self.n_eigs, prec=self.prec,
+                                                    confirm=self.confirm)
         return self._plan
 
     def eigenvalues(self, p, seed=None):
@@ -205,13 +223,16 @@ class ChladniEvaluator:
         plan = self.plan(p)
         try:
             try:
-                spec = Eigenproblem(dom).solve(self.n_eigs, prec=self.prec, plan=plan)
+                with _quiet():
+                    spec = Eigenproblem(dom).solve(self.n_eigs, prec=self.prec, plan=plan)
             except ValueError as exc:
                 if "corner" not in str(exc):
                     raise
                 self.replan(p)                  # a different corner structure: re-plan here
                 self.n_replans += 1
-                spec = Eigenproblem(dom).solve(self.n_eigs, prec=self.prec, plan=self.plan(p))
+                with _quiet():
+                    spec = Eigenproblem(dom).solve(self.n_eigs, prec=self.prec,
+                                                   plan=self.plan(p))
         except (RuntimeError, ValueError) as exc:
             self.n_solver_refusals += 1
             self._record(p, f"{type(exc).__name__}: {exc}")
