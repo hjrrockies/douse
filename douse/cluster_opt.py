@@ -76,6 +76,8 @@ genuinely degenerate.
 """
 import warnings
 from contextlib import contextmanager
+from dataclasses import dataclass, field
+from enum import Enum
 
 import numpy as np
 from scipy.optimize import minimize, minimize_scalar
@@ -753,6 +755,445 @@ def is_discontinuous(reject_run, delta, halvings=4, ratio=2.0):
             and max(window)/min(window) <= ratio)
 
 
+
+# --- the trust-region loop, in stages ---------------------------------------------------------
+#
+# `maximize_ratio` ran as one 520-line loop body. It is now a driver over nine STAGES, each a
+# function of `(st, o, ev, tally)` returning an `Outcome`, with the loop state explicit in
+# `_State` and the options frozen in `_Opts` (2026-10-14). Behaviour is byte-identical to the
+# loop it replaces: `tests/test_cluster_opt_trace.py` replays a recorded run. The measurements
+# and the reasons behind each stage are kept with it.
+
+
+class Outcome(Enum):
+    """What a stage decided: carry on to the next stage, start the next iteration (the loop's
+    `continue`), or end the run (`break`)."""
+    CONTINUE = 0
+    NEXT_ITER = 1
+    STOP = 2
+
+
+@dataclass(frozen=True)
+class _Opts:
+    """Every keyword of `maximize_ratio`, plus the family and `auto = eps_rel == 'auto'`."""
+    k: int
+    delta0: float
+    delta_max: float
+    eps_rel: object
+    auto: bool
+    max_iter: int
+    gain_tol: float
+    eta: float
+    eta_grow: float
+    plateau_rtol: object
+    plateau_shrink: float
+    plateau_max: float
+    callback: object
+    rng: object
+    verify_final: bool
+    constraints: object
+    degeneracy_moves: bool
+    quasi_newton: bool
+    max_unresolved_streak: int
+    discontinuity_halvings: int
+    discontinuity_ratio: float
+    sigma_abort: object
+    sigma_abort_streak: int
+    fam: object
+
+
+@dataclass
+class _State:
+    """The loop state. `(p, F, lams, solver)` is ONE consistent iterate, replaced together or
+    not at all: an earlier version re-evaluated `lams` at the top of each iteration without
+    recomputing `F`, continued from whatever the last REJECTED trial had left in the tracker,
+    and reported 2.5400 for a pentagon whose true ratio was 2.5124, above the PPW bound."""
+    p: np.ndarray
+    F: float
+    lams: np.ndarray
+    solver: object
+    delta: float
+    scale: object = None
+    it: int = 0
+    sigma_streak: int = 0
+    refusal_streak: int = 0
+    reject_run: list = field(default_factory=list)
+    H1: object = None
+    Hmu: object = None
+    cluster_seen: object = None
+    n_replans_seen: int = 0
+    degeneracy_moves: bool = True
+    n_cluster_steps: int = 0
+    n_interior_steps: int = 0
+    n_infeasible: int = 0
+    n_unresolved: int = 0
+    n_solver_refused: int = 0
+    n_discontinuity_repairs: int = 0
+    n_degeneracy_moves: int = 0
+    n_qn_steps: int = 0
+    message: str = ''
+    success: bool = False
+    resolution: float = np.nan
+    # per-iteration scratch, reset by `begin_iteration`
+    model: object = None
+    lin: object = None
+    d: object = None
+    gain: float = 0.0
+    crit: float = 0.0
+    rho: float = -np.inf
+
+    def begin_iteration(self, it):
+        self.it = it
+        self.model, self.lin, self.d = None, None, None
+        self.gain, self.crit, self.rho = 0.0, 0.0, -np.inf
+
+    def adopt(self, p, F, lams, solver):
+        self.p, self.F, self.lams, self.solver = p, F, lams, solver
+
+    def reseed(self, ev):
+        """Point the tracker's continuation back at the accepted iterate, so the next
+        evaluation continues from where we are rather than from a rejected trial."""
+        ev._last = (self.p.copy(), np.asarray(self.lams).copy())
+
+
+def _ratio(lams, k):
+    return float(lams[k]/lams[0])
+
+
+def _sigma_abort(st, o, ev, tally):
+    """A ROW THAT CANNOT BE USED SHOULD NOT BE PAID FOR. `worst_sigma` above the reporting gate
+    (1e-6) excludes a row from every summary, and it is a running max, so a run that has drifted
+    past it and stays there is producing a row that will be thrown away whatever it converges
+    to. Measured cost of not stopping: one N=3 row spent 78 minutes earning its own exclusion.
+
+    The test is on the POST-REPLAN statistic, not on the running max: `last_sigma` is what the
+    basis rebuilt at this very shape achieves, so a run of them says the shape is not resolvable
+    by this method at all. Any single evaluation below the gate resets the streak. On the chladni
+    backend `last_sigma` is the worst certified relative bound at the last shape (near `prec`
+    when healthy); gated on the statistic existing, not on the lappy-only `replan_tol`."""
+    sig_now = float(getattr(ev, 'last_sigma', np.nan))
+    if o.sigma_abort is None or not np.isfinite(sig_now):
+        return Outcome.CONTINUE
+    if sig_now > o.sigma_abort:
+        st.sigma_streak += 1
+        if st.sigma_streak >= o.sigma_abort_streak:
+            st.message = (f'the basis cannot resolve this shape: tension {sig_now:.2e} '
+                          f'at the last {st.sigma_streak} iterates, above '
+                          f'sigma_abort={o.sigma_abort:.0e} and measured on a basis '
+                          f'REPLANNED at the shape itself -- the row would be excluded '
+                          f'on worst_sigma however long it ran')
+            st.success = False
+            return Outcome.STOP
+    else:
+        st.sigma_streak = 0
+    return Outcome.CONTINUE
+
+
+def _build_model(st, o, ev, tally):
+    """The first-order model at the iterate, with the eps-active cluster tied to the trust
+    radius under `eps_rel='auto'` (module docstring), and the constraints linearized."""
+    eps_abs = None if (not o.auto or st.scale is None) else st.delta*st.scale
+    st.model = local_model(o.fam, st.p, st.solver, st.lams, k=o.k,
+                           eps_rel=(1e-3 if o.auto else o.eps_rel), eps_abs=eps_abs)
+    st.scale = st.model['scale']
+    if st.model['mode'] == 'cluster':
+        st.n_cluster_steps += 1
+        if 0 < st.model['j'] < st.model['m'] - 1:
+            st.n_interior_steps += 1
+    st.lin = None if o.constraints is None else o.constraints(st.p)
+    return Outcome.CONTINUE
+
+
+def _update_curvature(st, o, ev, tally):
+    """SECANT PAIRS, FOR THE TWO SMOOTH SCALARS `model_gain2` CARRIES CURVATURE ON. Neither is
+    `F` itself, which has no gradient at a cluster; `lam_1` and the cluster mean `mu` both have
+    honest gradients at every iterate a run visits. A replan moves `F` by a small discrete jump
+    and a secant pair straddling one reads that jump as curvature, so both chains break on a
+    replan; `mu` changes identity whenever the active set does, so its chain breaks then too."""
+    if st.H1 is None:
+        return Outcome.CONTINUE
+    if int(getattr(ev, 'n_replans', 0)) != st.n_replans_seen:
+        st.n_replans_seen = int(getattr(ev, 'n_replans', 0))
+        st.H1.chain_broken()
+        st.Hmu.chain_broken()
+    st.H1.observe(st.p, st.model['g1'])
+    if st.cluster_seen != st.model['cluster']:
+        st.Hmu.chain_broken()
+        st.cluster_seen = st.model['cluster']
+    st.Hmu.observe(st.p, st.model['gmu'])
+    return Outcome.CONTINUE
+
+
+def _first_order_step(st, o, ev, tally):
+    """The first-order trust-region step, and the two stopping tests measured against it.
+
+    Criticality is gain PER UNIT RADIUS: the raw gain scales with `delta`, so testing it directly
+    declares optimality whenever the radius has shrunk (measured: a stop at gain 6.8e-05 while
+    gain/delta was still 1.4). In smooth mode this is exactly `||grad F||`.
+
+    THE CRITICALITY PLATEAU is the stop that fires in practice. `gain_tol` is an absolute
+    threshold on a quantity with a FLOOR set by the accuracy of the shape derivatives, so it
+    certifies or does not according to where a shape's floor lands (measured at five converged
+    N=4 endpoints: plateaus of 8.9e-08 to 1.1e-06, of which `gain_tol=1e-7` certified the two
+    WORSE ones). What identifies the floor is that criticality stops depending on the radius:
+    re-solve the first-order model at `delta*plateau_shrink` and compare. Two subproblem solves,
+    no eigensolve. `resolution` is the criticality actually achieved and is part of the answer."""
+    st.d, st.gain = trust_region_step(st.model, st.delta, rng=o.rng, lin=st.lin)
+    st.crit = st.gain/st.delta if st.delta > 0 else 0.0
+    if st.crit <= o.gain_tol:
+        st.success = True
+        st.message = (f'criticality {st.crit:.3g} (gain {st.gain:.3g} at radius '
+                      f'{st.delta:.3g}) below gain_tol: first-order optimal')
+        st.resolution = st.crit
+        return Outcome.STOP
+    if o.plateau_rtol is not None and st.crit <= o.plateau_max:
+        d_s, gain_s = trust_region_step(st.model, st.delta*o.plateau_shrink, rng=o.rng,
+                                        lin=st.lin)
+        crit_s = gain_s/(st.delta*o.plateau_shrink)
+        if abs(crit_s - st.crit) <= o.plateau_rtol*max(st.crit, crit_s):
+            st.success = True
+            st.resolution = max(st.crit, crit_s)
+            st.message = (f'criticality plateaued at {st.resolution:.3g} '
+                          f'(radius {st.delta:.3g} -> {st.delta*o.plateau_shrink:.3g} moves it '
+                          f'by {abs(crit_s - st.crit)/max(st.crit, crit_s):.1e}): first-order '
+                          f'optimal to that resolution')
+            return Outcome.STOP
+    return Outcome.CONTINUE
+
+
+def _second_order_step(st, o, ev, tally):
+    """THE SECOND-ORDER STEP REPLACES THE FIRST-ORDER ONE, in every mode. The first-order step
+    stays as the seed -- it is the exact optimum of a model differing only at second order --
+    and `_step_second_order` never returns anything worse than its best seed. `gain` becomes the
+    second-order predicted gain, which is what `rho` must be measured against. It runs from the
+    FIRST iterate: with both Hessians zero, `model_gain2` is the exact quotient of the two linear
+    models, strictly better than their linearized quotient at no cost. When the second-order
+    model says nothing in this ball helps while the first-order one says otherwise, the radius is
+    past where the quadratic is trustworthy: shrink and re-model rather than spend an eigensolve
+    finding that out."""
+    if not o.quasi_newton:
+        return Outcome.CONTINUE
+    use1 = st.H1.B if st.H1.ready else None
+    usemu = st.Hmu.B if st.Hmu.ready else None
+    seeds = [st.d]
+    if st.model['mode'] == 'smooth':
+        # A Newton-like seed from the quadratic Taylor form of the same model, which the SLSQP
+        # polish is unlikely to find on its own starting from `d`.
+        Hq = -(usemu if usemu is not None
+               else np.zeros((len(st.p), len(st.p))))/st.model['lam_1']
+        seeds.append(tr_subproblem(-st.model['grad'], Hq, st.delta)[0])
+    d2 = _step_second_order(st.model, st.delta, use1, usemu, seeds, lin=st.lin, rng=o.rng)
+    g2 = model_gain2(st.model, d2, use1, usemu)
+    if np.isfinite(g2) and g2 > 0:
+        st.d, st.gain = d2, float(g2)
+        st.n_qn_steps += 1
+        return Outcome.CONTINUE
+    st.delta *= 0.5
+    if o.callback is not None:
+        o.callback(st.p, st.F, st.model, st.delta, -np.inf)
+    if st.delta < 1e-14:
+        st.message = f'trust radius collapsed to {st.delta:.3g}'
+        return Outcome.STOP
+    return Outcome.NEXT_ITER
+
+
+def _trial_step(st, o, ev, tally):
+    """The trial point, its evaluation, and the accept/reject decision.
+
+    A step can fail two ways and BOTH have to reach the degeneracy move: an earlier version
+    `continue`d on an infeasible trial, so the move was only ever offered after a
+    feasible-but-unproductive step, and against an active edge floor the linearized step is
+    usually infeasible instead (57 of 83 iterations), so the move never fired.
+
+    A SHAPE THE SOLVER WILL NOT SERVE IS AN UNREACHABLE TRIAL, not a fatal error, and that is ONE
+    policy covering every way it can refuse (`ShapeRefusal`): shrink and try a smaller step,
+    counting `n_unresolved` (a spectrum that cannot be indexed) and `n_solver_refused` (the
+    solver declining outright) separately. SHRINKING IS THE RIGHT FIRST RESPONSE AND A USELESS
+    TENTH ONE: a run of refusals at radii that keep halving says this iterate's neighbourhood
+    cannot be indexed (measured: 30 refusals, 25 minutes, re-learning one fact), so a streak of
+    `max_unresolved_streak` stops the run with the reason attached."""
+    q = st.p + st.d
+    st.rho = -np.inf
+    if not o.fam.is_valid(q) or (o.constraints is not None
+                                 and not o.constraints.is_feasible(q)):
+        st.delta *= 0.5
+        st.n_infeasible += 1
+        return Outcome.CONTINUE
+    try:
+        lams_q, solver_q = ev.eigenvalues(q)
+    except ShapeRefusal as refusal:
+        st.delta *= 0.5
+        if isinstance(refusal, SolverRefusal):
+            st.n_solver_refused += 1
+        else:
+            st.n_unresolved += 1
+        st.refusal_streak += 1
+        st.reseed(ev)
+        if o.callback is not None:
+            o.callback(st.p, st.F, st.model, st.delta, -np.inf)
+        st.it += 1
+        if st.refusal_streak >= o.max_unresolved_streak:
+            st.message = (f'the solver refused {st.refusal_streak} consecutive trial '
+                          f'shapes within delta={st.delta:.3g} of this iterate; the last '
+                          f'was {type(refusal).__name__}: {refusal}')
+            return Outcome.STOP
+        return Outcome.NEXT_ITER
+    st.refusal_streak = 0
+    F_q = _ratio(lams_q, o.k)
+    st.rho = (F_q - st.F)/st.gain if st.gain > 0 else -np.inf
+    if st.rho > o.eta:
+        st.reject_run = []
+        st.adopt(q, F_q, lams_q, solver_q)
+        if st.rho > o.eta_grow:
+            st.delta = min(2*st.delta, o.delta_max)
+    else:
+        st.reject_run.append((st.delta, float(F_q - st.F)))
+        st.delta *= 0.5
+        st.reseed(ev)
+    return Outcome.CONTINUE
+
+
+def _repair_discontinuity(st, o, ev, tally):
+    """`|rho|` DOUBLING AS `delta` HALVES MEANS `F` IS DISCONTINUOUS HERE -- the one diagnostic
+    in this file that needs no calibrated constant (`is_discontinuous`). It happens when the
+    spectrum carried at the iterate and the spectrum found in its neighbourhood are different
+    sets (measured on N=5 `lam_4/lam_1` start 5: rho = -9.2e7 ... -7.5e11 with `F` frozen, the
+    carried `F` 6.6e-02 off a fresh solve). THE REPAIR IS TO BELIEVE THE FRESH SOLVE and restore
+    the radius the run had before the collapse. The repair is optional; the run is not: if the
+    fresh solve refuses, carry on with the tracked state."""
+    if not is_discontinuous(st.reject_run, st.delta, o.discontinuity_halvings,
+                            o.discontinuity_ratio):
+        return Outcome.CONTINUE
+    d0 = st.reject_run[-o.discontinuity_halvings][0]
+    window = [abs(df) for _, df in st.reject_run[-o.discontinuity_halvings:]]
+    lams_fresh, F_fresh, solver_fresh = None, None, None
+    try:
+        with _watch_warnings(tally):
+            ev.reset_continuation()
+            lams_fresh, solver_fresh = ev.eigenvalues(st.p)
+    except ShapeRefusal:
+        st.reject_run = []
+        lams_fresh = None
+    else:
+        F_fresh = _ratio(lams_fresh, o.k)
+        st.reject_run = []
+    if lams_fresh is not None and abs(F_fresh - st.F) > 0.5*min(window):
+        st.n_discontinuity_repairs += 1
+        st.adopt(st.p, F_fresh, lams_fresh, solver_fresh)
+        st.delta = min(max(d0, st.delta), o.delta_max)
+        st.it += 1
+        return Outcome.NEXT_ITER
+    return Outcome.CONTINUE
+
+
+def _degeneracy_stage(st, o, ev, tally):
+    """Pinned against the edge floor with the step rejected: the shape wants to degenerate and
+    cannot get there by moving. Offer it the other representation (`_degeneracy_move`), on
+    EITHER a nearly-flat vertex (a kink to land on) or a binding edge floor (a representation to
+    cross to). A refused move is not re-paid. After a move the curvature is fully reset: it is a
+    discrete jump across a kink in `F`, and the curvature accumulated on the way in describes
+    the wrong side of it."""
+    near_kink = False
+    if st.degeneracy_moves and st.rho <= o.eta and st.delta < 0.05*o.delta0:
+        try:
+            near_kink = bool(len(_dg.report(o.fam.vertices(st.p)).near_flat_idx))
+        except (ValueError, TypeError):
+            near_kink = False
+    pinned = (o.constraints is not None and o.constraints.worst(st.p)[1] < 1e-9)
+    if not (st.rho <= o.eta and st.degeneracy_moves and st.delta < 0.05*o.delta0
+            and (near_kink or pinned)):
+        return Outcome.CONTINUE
+    moved = _degeneracy_move(ev, st.p, st.F, o.k)
+    if moved is not None:
+        st.adopt(*moved)
+        st.delta = float(o.delta0)
+        st.n_degeneracy_moves += 1
+        if st.H1 is not None:
+            st.H1.reset()
+            st.Hmu.reset()
+            st.cluster_seen = None
+            st.n_replans_seen = int(getattr(ev, 'n_replans', 0))
+    else:
+        st.degeneracy_moves = False
+        st.reseed(ev)
+    return Outcome.CONTINUE
+
+
+def _finish_iteration(st, o, ev, tally):
+    if o.callback is not None:
+        o.callback(st.p, st.F, st.model, st.delta, st.rho)
+    if st.delta < 1e-14:
+        st.message = f'trust radius collapsed to {st.delta:.3g}'
+        return Outcome.STOP
+    return Outcome.CONTINUE
+
+
+_STAGES = (_sigma_abort, _build_model, _update_curvature, _first_order_step,
+           _second_order_step, _trial_step, _repair_discontinuity, _degeneracy_stage,
+           _finish_iteration)
+
+
+def _verify_final(st, o, ev, tally):
+    """Re-solve the endpoint from cold. NOT OPTIONAL IN SPIRIT: these runs converge ONTO a
+    degeneracy, the one place tracking is least reliable (measured: a tracked endpoint 5.4e-09
+    ABOVE 5/2 at the square; the cold solve 5.4e-09 below). A refusal here must not throw away
+    the run: the tracked values are reported, marked unverified and not successful, and the
+    message says which happened -- "could not be verified" and "optimal" must never read the
+    same in a ledger."""
+    lams_tracked, F_tracked = np.asarray(st.lams).copy(), st.F
+    verified = bool(o.verify_final)
+    if o.verify_final:
+        try:
+            with _watch_warnings(tally):
+                ev.reset_continuation()
+                lams, _ = ev.eigenvalues(st.p)
+            st.lams, st.F = lams, _ratio(lams, o.k)
+        except ShapeRefusal as exc:
+            verified, st.success = False, False
+            st.message = (f'the endpoint could not be verified: {exc.__class__.__name__} on a '
+                          f'fresh solve -- the tracked values are reported and are NOT confirmed')
+            st.lams, st.F = lams_tracked, F_tracked
+    return lams_tracked, F_tracked, verified
+
+
+def _result(st, o, ev, tally, lams_tracked, F_tracked, verified):
+    lams = st.lams
+    gap = (float(np.min(np.diff(np.sort(lams))/np.sort(lams)[:-1]))
+           if len(lams) > 1 else np.inf)
+    return OptimizeResult(x=st.p, fun=st.F, nit=st.it, lams=lams, gap=gap, delta=st.delta,
+                          n_cluster_steps=st.n_cluster_steps,
+                          n_interior_steps=st.n_interior_steps,
+                          n_infeasible=st.n_infeasible, n_unresolved=st.n_unresolved,
+                          # A refusal by the solver is counted separately from an unindexable
+                          # spectrum: same policy, different diagnosis.
+                          n_solver_refused=st.n_solver_refused,
+                          n_discontinuity_repairs=st.n_discontinuity_repairs,
+                          # The refused shapes themselves, not just the count.
+                          refusals=list(getattr(ev, 'refusals', [])),
+                          # Where the basis was planned, on every result.
+                          plan_at=(None if getattr(ev, '_plan_built_at', None) is None
+                                   else [float(t) for t in ev._plan_built_at]),
+                          # Warnings the run produced (shown once per text, counted in full).
+                          n_warnings=int(tally['n']),
+                          worst_sigma_any=float(getattr(ev, 'worst_sigma_any', np.nan)),
+                          n_spurious_refusals=int(getattr(ev, 'n_spurious_refusals', 0)),
+                          n_degeneracy_moves=st.n_degeneracy_moves,
+                          n_qn_steps=st.n_qn_steps, resolution=float(st.resolution),
+                          n_curv_updates=((0, 0) if st.H1 is None
+                                          else (st.H1.n_updates, st.Hmu.n_updates)),
+                          n_curv_skipped=((0, 0) if st.H1 is None
+                                          else (st.H1.n_skipped, st.Hmu.n_skipped)),
+                          # THE BASIS HEALTH GOES IN THE RESULT, always: a ratio reported without
+                          # saying how well its basis resolved the shape is what produced 3.0717
+                          # for a problem whose answer is above 3.18.
+                          worst_sigma=float(getattr(ev, 'worst_sigma', np.nan)),
+                          n_replans=int(getattr(ev, 'n_replans', 0)),
+                          worst_weyl_deficit=float(getattr(ev, 'worst_weyl_deficit', np.nan)),
+                          n_weyl_flags=int(getattr(ev, 'n_weyl_flags', 0)),
+                          lams_tracked=lams_tracked, fun_tracked=F_tracked,
+                          verified=verified, success=st.success, message=st.message)
+
+
 def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto',
                    max_iter=200, gain_tol=1e-7, eta=0.1, eta_grow=0.75, plateau_rtol=0.05,
                    plateau_shrink=1e-3, plateau_max=1e-3, callback=None, rng=None,
@@ -870,410 +1311,39 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     if evaluator.degenerate_tol > 0:
         raise ValueError('maximize_ratio handles degeneracies itself; construct the evaluator '
                          'with degenerate_tol=0 so it does not refuse them first')
-    fam = evaluator.family
-    p = np.array(p0, dtype=float)
-    delta, message, success = float(delta0), f'reached max_iter={max_iter}', False
-    n_cluster_steps, n_interior_steps, n_infeasible, it = 0, 0, 0, 0
-    n_unresolved, n_solver_refused, refusal_streak = 0, 0, 0
-    sigma_streak = 0
-    n_discontinuity_repairs, reject_run = 0, []
-    n_degeneracy_moves, n_qn_steps = 0, 0
-    resolution = np.nan
-    # TWO Hessians, one per smooth scalar in `model_gain2`. SR1 rather than BFGS because neither
-    # `lam_1` nor the cluster mean is convex along the path a run takes, and `tr_subproblem`
-    # solves the indefinite subproblem exactly, so there is nothing that needs them kept positive.
-    H1 = SR1(len(p)) if quasi_newton else None
-    Hmu = SR1(len(p)) if quasi_newton else None
-    n_replans_seen = int(getattr(evaluator, 'n_replans', 0))
-    cluster_seen = None                # the active (lo, hi); `mu` changes identity when it does
     auto = isinstance(eps_rel, str)
     if auto and eps_rel != 'auto':
         raise ValueError(f"eps_rel must be a float or 'auto', got {eps_rel!r}")
-    scale = None                      # bootstrapped from the first model
+    o = _Opts(k=k, delta0=delta0, delta_max=delta_max, eps_rel=eps_rel, auto=auto,
+              max_iter=max_iter, gain_tol=gain_tol, eta=eta, eta_grow=eta_grow,
+              plateau_rtol=plateau_rtol, plateau_shrink=plateau_shrink, plateau_max=plateau_max,
+              callback=callback, rng=rng, verify_final=verify_final, constraints=constraints,
+              degeneracy_moves=degeneracy_moves, quasi_newton=quasi_newton,
+              max_unresolved_streak=max_unresolved_streak,
+              discontinuity_halvings=discontinuity_halvings,
+              discontinuity_ratio=discontinuity_ratio, sigma_abort=sigma_abort,
+              sigma_abort_streak=sigma_abort_streak, fam=evaluator.family)
+    p = np.array(p0, dtype=float)
     tally = dict(n=0, seen=set())     # warnings seen inside the loop; see `_watch_warnings`
-
     with _watch_warnings(tally):
-        # (p, lams, F, solver) is ONE consistent state, replaced together or not at all. An
-        # earlier version re-evaluated `lams` at the top of each iteration without recomputing
-        # `F`, so the two drifted -- and the re-evaluation continued from whatever the last
-        # REJECTED trial point had left in the tracker. It reported a ratio of 2.5400 for a
-        # pentagon whose true ratio was 2.5124, above the Payne--Polya--Weinberger bound of
-        # 2.5387 that no planar domain can exceed. The stored eigenvalues were right the whole
-        # time; only the reported objective was stale.
         lams, solver = evaluator.eigenvalues(p)
-        F = float(lams[k]/lams[0])
-
+        st = _State(p=p, F=_ratio(lams, k), lams=lams, solver=solver, delta=float(delta0),
+                    message=f'reached max_iter={max_iter}',
+                    # TWO Hessians, one per smooth scalar in `model_gain2`. SR1 rather than
+                    # BFGS: neither `lam_1` nor the cluster mean is convex along the path a run
+                    # takes, and `tr_subproblem` solves the indefinite subproblem exactly.
+                    H1=SR1(len(p)) if quasi_newton else None,
+                    Hmu=SR1(len(p)) if quasi_newton else None,
+                    n_replans_seen=int(getattr(evaluator, 'n_replans', 0)),
+                    degeneracy_moves=bool(degeneracy_moves))
         for it in range(1, max_iter + 1):
-            # A ROW THAT CANNOT BE USED SHOULD NOT BE PAID FOR. `worst_sigma` above the reporting
-            # gate (1e-6) excludes a row from every summary, and it is a running max, so a run
-            # that has drifted past it and stays there is producing a row that will be thrown
-            # away whatever it converges to. Measured cost of not stopping: one N=3 row spent 78
-            # minutes earning its own exclusion, and the re-run then spent hours on rows whose
-            # verdict was already fixed.
-            #
-            # THE TEST IS ON THE POST-REPLAN TENSION, NOT ON THE RUNNING MAX -- see
-            # `SpectrumEvaluator.last_sigma`. `replan_tol = 1e-9` is three decades below this
-            # gate, so anything above it has ALREADY provoked a rebuild of the basis at this very
-            # shape; `last_sigma` is what that rebuilt basis achieves. A run of those says the
-            # shape is not resolvable by this method at all, which no smaller step and no further
-            # replan can change. Any single evaluation below the gate resets the streak, so a
-            # transient excursion at a wild trial costs nothing.
-            #
-            # It cannot change a usable result by construction: every run it stops was already
-            # destined for exclusion. Set `sigma_abort=None` to disable.
-            # On the chladni backend `last_sigma` is the worst certified relative bound at the
-            # last shape (near `prec` when healthy), re-planned already when it was unmet; the
-            # abort then stops a run whose rebuilt basis still cannot certify the shape. Gated on
-            # the statistic existing, not on the lappy-only `replan_tol` (2026-10-14).
-            sig_now = float(getattr(evaluator, 'last_sigma', np.nan))
-            if sigma_abort is not None and np.isfinite(sig_now):
-                if sig_now > sigma_abort:
-                    sigma_streak += 1
-                    if sigma_streak >= sigma_abort_streak:
-                        message = (f'the basis cannot resolve this shape: tension {sig_now:.2e} '
-                                   f'at the last {sigma_streak} iterates, above '
-                                   f'sigma_abort={sigma_abort:.0e} and measured on a basis '
-                                   f'REPLANNED at the shape itself -- the row would be excluded '
-                                   f'on worst_sigma however long it ran')
-                        success = False
-                        break
-                else:
-                    sigma_streak = 0
-            eps_abs = None if (not auto or scale is None) else delta*scale
-            model = local_model(fam, p, solver, lams, k=k,
-                                eps_rel=(1e-3 if auto else eps_rel), eps_abs=eps_abs)
-            scale = model['scale']
-            if model['mode'] == 'cluster':
-                n_cluster_steps += 1
-                if 0 < model['j'] < model['m'] - 1:
-                    n_interior_steps += 1
-
-            lin = None if constraints is None else constraints(p)
-
-            # SECANT PAIRS, FOR THE TWO SMOOTH SCALARS `model_gain2` CARRIES CURVATURE ON.
-            # Neither is `F` itself, which is the point: `F` has no gradient at a cluster, so a
-            # pair differencing two of ITS gradients across one differences two things that are
-            # not comparable. `lam_1` and the cluster mean `mu` both have honest gradients at
-            # every iterate a run visits, in cluster mode as much as in smooth mode.
-            if H1 is not None:
-                # A REPLAN MOVES `F` BY A SMALL DISCRETE JUMP -- that is what it is for -- and a
-                # secant pair straddling one reads that jump as curvature. Break both chains.
-                if int(getattr(evaluator, 'n_replans', 0)) != n_replans_seen:
-                    n_replans_seen = int(getattr(evaluator, 'n_replans', 0))
-                    H1.chain_broken()
-                    Hmu.chain_broken()
-                # `lam_1` is simple and smooth at every iterate these runs visit, in cluster mode
-                # as much as in smooth mode, so ITS chain never breaks on a mode switch.
-                H1.observe(p, model['g1'])
-                # `mu` is the mean of the ACTIVE cluster, so it changes identity whenever the
-                # active set does -- and `eps_rel='auto'` resizes that set every iterate. A pair
-                # spanning a change differences two different functions.
-                if cluster_seen != model['cluster']:
-                    Hmu.chain_broken()
-                    cluster_seen = model['cluster']
-                Hmu.observe(p, model['gmu'])
-
-            d, gain = trust_region_step(model, delta, rng=rng, lin=lin)
-            # Criticality is gain PER UNIT RADIUS. The raw gain scales with `delta`, so testing
-            # it directly declares optimality whenever the radius has shrunk -- measured: a run
-            # stopping at gain 6.8e-05 while gain/delta was still 1.4, i.e. an O(1) directional
-            # derivative and nowhere near optimal.
-            #
-            # Measured against the FIRST-ORDER step even when the quadratic one is taken below.
-            # In smooth mode this is exactly `||grad F||`.
-            crit = gain/delta if delta > 0 else 0.0
-            if crit <= gain_tol:
-                success = True
-                message = (f'criticality {crit:.3g} (gain {gain:.3g} at radius {delta:.3g}) '
-                           f'below gain_tol: first-order optimal')
-                resolution = crit
-                break
-
-            # THE CRITICALITY PLATEAU. `gain_tol` is an absolute threshold on a quantity that has
-            # a FLOOR, so it certifies or does not according to where a given shape's floor
-            # happens to land relative to it -- which is not a property of the shape. Measured at
-            # five converged N=4 endpoints: plateaus of 8.9e-08, 1.6e-07, 4.2e-07, 8.2e-07,
-            # 1.1e-06, of which `gain_tol=1e-7` certified the first two and collapsed the radius
-            # on the other three. Same optimizer, same quality, opposite verdicts; and the two it
-            # certified were the WORSE local maximum.
-            #
-            # What identifies the floor is that criticality stops depending on the radius. At a
-            # genuinely non-critical point the model's gain per unit radius keeps rising as the
-            # radius shrinks toward the true directional derivative; at the floor it is flat. So
-            # re-evaluate the FIRST-ORDER model at a much smaller radius and compare. Two extra
-            # subproblem solves per check, no eigensolve -- `Ms` and `g1` are already in hand.
-            if plateau_rtol is not None and crit <= plateau_max:
-                d_s, gain_s = trust_region_step(model, delta*plateau_shrink, rng=rng, lin=lin)
-                crit_s = gain_s/(delta*plateau_shrink)
-                if abs(crit_s - crit) <= plateau_rtol*max(crit, crit_s):
-                    success = True
-                    resolution = max(crit, crit_s)
-                    message = (f'criticality plateaued at {resolution:.3g} '
-                               f'(radius {delta:.3g} -> {delta*plateau_shrink:.3g} moves it by '
-                               f'{abs(crit_s - crit)/max(crit, crit_s):.1e}): first-order optimal '
-                               f'to that resolution')
+            st.begin_iteration(it)
+            out = Outcome.CONTINUE
+            for stage in _STAGES:
+                out = stage(st, o, evaluator, tally)
+                if out is not Outcome.CONTINUE:
                     break
-
-            # THE SECOND-ORDER STEP REPLACES THE FIRST-ORDER ONE, in every mode. The first-order
-            # step stays as the seed -- it is the exact optimum of a model differing from this
-            # one only at second order -- and `_step_second_order` never returns anything worse
-            # than its best seed, so this cannot lose ground to the branch it supersedes.
-            #
-            # `gain` becomes the SECOND-ORDER predicted gain, which is what `rho` must be
-            # measured against: `rho = (F(p+d) - F(p))/gain` compares a measured improvement with
-            # a predicted one, and predicting with a model other than the one that chose `d` is
-            # how a trust region ends up rejecting good steps. The stopping test above already
-            # ran, against the first-order gain, and is unaffected.
-            if quasi_newton:
-                # Note the second-order step runs from the FIRST iterate, before any curvature
-                # has been absorbed. With both Hessians still zero `model_gain2` is the exact
-                # quotient of the two linear models rather than the linearization of their
-                # quotient, which is a strictly better model at no cost and using no information
-                # the first-order branch did not already have.
-                use1 = H1.B if H1.ready else None
-                usemu = Hmu.B if Hmu.ready else None
-                seeds = [d]
-                if model['mode'] == 'smooth':
-                    # A Newton-like seed from the quadratic Taylor form of the same model, which
-                    # the SLSQP polish is unlikely to find on its own starting from `d`. The
-                    # Hessian of the MINIMIZED `-F` from the numerator's curvature is `-Hmu/lam_1`.
-                    Hq = -(usemu if usemu is not None
-                           else np.zeros((len(p), len(p))))/model['lam_1']
-                    seeds.append(tr_subproblem(-model['grad'], Hq, delta)[0])
-                d2 = _step_second_order(model, delta, use1, usemu, seeds, lin=lin, rng=rng)
-                g2 = model_gain2(model, d2, use1, usemu)
-                if np.isfinite(g2) and g2 > 0:
-                    d, gain = d2, float(g2)
-                    n_qn_steps += 1
-                else:
-                    # The second-order model says nothing in this ball helps while the first-order
-                    # one says otherwise: the radius is past where the quadratic is trustworthy.
-                    # Shrink and re-model rather than spend an eigensolve finding that out.
-                    delta *= 0.5
-                    if callback is not None:
-                        callback(p, F, model, delta, -np.inf)
-                    if delta < 1e-14:
-                        message = f'trust radius collapsed to {delta:.3g}'
-                        break
-                    continue
-
-            q = p + d
-            rho = -np.inf
-            # A step can fail two ways and BOTH have to reach the degeneracy move below. An
-            # earlier version `continue`d on an infeasible trial, so the move was only ever
-            # offered after a feasible-but-unproductive step -- and against an active edge floor
-            # the linearized step is usually infeasible instead (measured: 57 of 83 iterations),
-            # so the move never fired once in either N=5 run.
-            if not fam.is_valid(q) or (constraints is not None
-                                       and not constraints.is_feasible(q)):
-                delta *= 0.5
-                n_infeasible += 1
-            else:
-                # A SHAPE THE SOLVER WILL NOT SERVE IS AN UNREACHABLE TRIAL, not a fatal
-                # error -- and that is ONE policy covering every way it can refuse, which is why
-                # this catches the `ShapeRefusal` base class. `SpectrumEvaluator` refuses a set
-                # that Weyl says is missing a mode even after a full solve; `lappy` refuses
-                # outright with `EigensolverFailure` at a tension curve it cannot bracket, or
-                # `SourcesInsideDomain` when the wild shape has left the frozen plan's reach.
-                # The honest response to all three is the one an infeasible step gets: shrink
-                # and try a smaller one.
-                #
-                # Measured on N=6 `lam_3/lam_1` start 3, where the alternative was accepting a
-                # step at `rho = +1265` computed from a non-consecutive set and then grinding the
-                # radius to 5.68e-15 against a frozen `F`. And on the 2026-08-28 grid, where the
-                # two `lappy` refusals killed six runs OUTRIGHT -- every one of them mid-run and
-                # making progress, since a shape wild enough to provoke either is only reached
-                # after the run has travelled. Counted separately from `n_infeasible` -- one is a
-                # constraint, the other is the solver reaching its limit -- and the two kinds of
-                # refusal are counted separately from each other for the same reason.
-                try:
-                    lams_q, solver_q = evaluator.eigenvalues(q)
-                except ShapeRefusal as refusal:
-                    delta *= 0.5
-                    if isinstance(refusal, SolverRefusal):
-                        n_solver_refused += 1
-                    else:
-                        n_unresolved += 1
-                    refusal_streak += 1
-                    evaluator._last = (p.copy(), np.asarray(lams).copy())
-                    if callback is not None:
-                        callback(p, F, model, delta, -np.inf)
-                    it += 1
-                    # SHRINKING IS THE RIGHT FIRST RESPONSE AND A USELESS TENTH ONE. A refusal at
-                    # a large radius may just be an over-long step; a run of them at radii that
-                    # keep halving says the neighbourhood of THIS iterate cannot be indexed, and
-                    # no smaller step will fix that. Measured on N=6 `lam_3/lam_1` start 3: from
-                    # iterate 215 the radius fell 4.88e-05 -> 1.19e-08 over 30 refusals, every
-                    # one a full solve, and the run then ground on to a collapse at 5.68e-15.
-                    # That is 25 minutes of compute spent re-learning the same fact. Stopping
-                    # here reports the same endpoint with the reason attached.
-                    if refusal_streak >= max_unresolved_streak:
-                        message = (f'the solver refused {refusal_streak} consecutive trial '
-                                   f'shapes within delta={delta:.3g} of this iterate; the last '
-                                   f'was {type(refusal).__name__}: {refusal}')
-                        break
-                    continue
-                refusal_streak = 0
-                F_q = float(lams_q[k]/lams_q[0])
-                rho = (F_q - F)/gain if gain > 0 else -np.inf
-                if rho > eta:
-                    reject_run = []
-                    p, F, lams, solver = q, F_q, lams_q, solver_q
-                    if rho > eta_grow:
-                        delta = min(2*delta, delta_max)
-                else:
-                    reject_run.append((delta, float(F_q - F)))
-                    delta *= 0.5
-                    # The tracker's continuation now points at the rejected trial; reseed it from
-                    # the accepted iterate so the next evaluation continues from where we are.
-                    evaluator._last = (p.copy(), np.asarray(lams).copy())
-
-            # `|rho|` DOUBLING AS `delta` HALVES MEANS `F` IS DISCONTINUOUS HERE, and it is the
-            # one diagnostic in this file that needs no calibrated constant. `rho = dF/gain` with
-            # `gain` proportional to `delta`, so if `|rho|` doubles on every halving then `dF` is
-            # NOT going to zero with the step -- which cannot happen for a continuous objective.
-            # It happens when the spectrum carried at the iterate and the spectrum found in its
-            # neighbourhood are different sets.
-            #
-            # Measured on N=5 `lam_4/lam_1` start 5: the last fourteen iterates run
-            # rho = -9.2e7, -1.8e8, ... -7.5e11 with `F` frozen, and the trace's `F`
-            # (4.441676010) differs from what a fresh solve gives (4.375460168) by 6.6e-02. Three
-            # of the eleven stalled rows in the grid are this, and their Weyl deficits -- 0.13 to
-            # 0.48 -- never reached the 0.5 gate. One of the three has an endpoint `F` gap of
-            # exactly zero, so nothing else fires on it at all.
-            #
-            # THE REPAIR IS TO BELIEVE THE FRESH SOLVE. A tracked `F` that disagrees with one
-            # computed from scratch at the same shape is the thing that is wrong; adopting it and
-            # restoring the radius the run had before the collapse costs one solve.
-            if is_discontinuous(reject_run, delta, discontinuity_halvings,
-                                discontinuity_ratio):
-                d0 = reject_run[-discontinuity_halvings][0]
-                window = [abs(df) for _, df in reject_run[-discontinuity_halvings:]]
-                try:
-                    with _watch_warnings(tally):
-                        evaluator.reset_continuation()
-                        lams_fresh, solver_fresh = evaluator.eigenvalues(p)
-                except ShapeRefusal:
-                    # THE REPAIR IS OPTIONAL; THE RUN IS NOT. If the fresh solve refuses there is
-                    # nothing to believe instead, so drop the repair and carry on with the
-                    # tracked state -- the iterate itself is unchanged and still feasible. Not
-                    # counted as a trial refusal: no trial shape was involved.
-                    reject_run = []
-                    lams_fresh = None
-                else:
-                    F_fresh = float(lams_fresh[k]/lams_fresh[0])
-                    reject_run = []
-                if lams_fresh is not None and abs(F_fresh - F) > 0.5*min(window):
-                    # THE FRESH SOLVE IS THE ONE TO BELIEVE. A carried `F` that disagrees with one
-                    # computed from scratch at the same shape is the thing that is wrong.
-                    n_discontinuity_repairs += 1
-                    F, lams, solver = F_fresh, lams_fresh, solver_fresh
-                    delta = min(max(d0, delta), delta_max)
-                    it += 1
-                    continue
-
-            # Pinned against the edge floor with the step rejected: the shape wants to degenerate
-            # and cannot get there by moving. Offer it the other representation.
-            # Trigger on EITHER a nearly-flat vertex (there is a kink to land on) or a binding
-            # edge floor (there is a representation to cross to). Requiring a binding constraint
-            # for both, as an earlier version did, meant the flatten move could never fire: a
-            # shape approaching a kink is nowhere near the edge floor.
-            near_kink = False
-            if degeneracy_moves and rho <= eta and delta < 0.05*delta0:
-                try:
-                    near_kink = bool(len(_dg.report(fam.vertices(p)).near_flat_idx))
-                except (ValueError, TypeError):
-                    near_kink = False
-            pinned = (constraints is not None and constraints.worst(p)[1] < 1e-9)
-            if (rho <= eta and degeneracy_moves and delta < 0.05*delta0
-                    and (near_kink or pinned)):
-                moved = _degeneracy_move(evaluator, p, F, k)
-                if moved is not None:
-                    p, F, lams, solver = moved
-                    delta = float(delta0)
-                    n_degeneracy_moves += 1
-                    if H1 is not None:
-                        # A full reset, not merely a broken chain: the move is a discrete jump to
-                        # a different region of `p`-space, across a kink in `F`, so the curvature
-                        # accumulated on the way in describes the wrong side of it.
-                        H1.reset()
-                        Hmu.reset()
-                        cluster_seen = None
-                        n_replans_seen = int(getattr(evaluator, 'n_replans', 0))
-                else:
-                    degeneracy_moves = False       # it was offered and refused; do not re-pay
-                    evaluator._last = (p.copy(), np.asarray(lams).copy())
-            if callback is not None:
-                callback(p, F, model, delta, rho)
-            if delta < 1e-14:
-                message = f'trust radius collapsed to {delta:.3g}'
+            if out is Outcome.STOP:
                 break
-
-    lams_tracked, F_tracked = np.asarray(lams).copy(), F
-    verified = bool(verify_final)
-    if verify_final:
-        # A REFUSAL HERE MUST NOT THROW AWAY THE RUN. `verify_final` re-solves the endpoint on a
-        # fresh continuation, and with `enforce_weyl` on that call can refuse -- which would have
-        # killed a converged run at its last step, losing the trajectory to a check that was
-        # added to protect it. The endpoint keeps its tracked values, the result is marked
-        # unverified and NOT successful, and the message says which of the two happened, because
-        # "the endpoint could not be re-solved" and "the endpoint is optimal" must never read the
-        # same in a ledger.
-        try:
-            with _watch_warnings(tally):
-                evaluator.reset_continuation()
-                lams, _ = evaluator.eigenvalues(p)
-            F = float(lams[k]/lams[0])
-        except ShapeRefusal as exc:
-            verified, success = False, False
-            message = (f'the endpoint could not be verified: {exc.__class__.__name__} on a fresh '
-                       f'solve -- the tracked values are reported and are NOT confirmed')
-            lams, F = lams_tracked, F_tracked
-
-    gap = (float(np.min(np.diff(np.sort(lams))/np.sort(lams)[:-1]))
-           if len(lams) > 1 else np.inf)
-    return OptimizeResult(x=p, fun=F, nit=it, lams=lams, gap=gap, delta=delta,
-                          n_cluster_steps=n_cluster_steps, n_interior_steps=n_interior_steps,
-                          n_infeasible=n_infeasible, n_unresolved=n_unresolved,
-                          # A REFUSAL BY `lappy` IS COUNTED SEPARATELY FROM AN
-                          # UNINDEXABLE SPECTRUM: one says no spectrum came back,
-                          # the other that the one that did cannot be trusted to
-                          # be the first k. Same policy, different diagnosis.
-                          n_solver_refused=n_solver_refused,
-                          n_discontinuity_repairs=n_discontinuity_repairs,
-                          # The shapes themselves, not just the count -- a refusal is a `lappy`
-                          # question and it cannot be asked without the vertices.
-                          refusals=list(getattr(evaluator, 'refusals', [])),
-                          # WHERE THE BASIS WAS PLANNED, on every result rather than only on a
-                          # refusal. The stalled N6_k1 start 2 could not be reproduced because
-                          # it replanned once and nothing recorded where; two of the three
-                          # candidate explanations needed exactly that shape to test.
-                          plan_at=(None if getattr(evaluator, '_plan_built_at', None) is None
-                                   else [float(t) for t in evaluator._plan_built_at]),
-                          # Warnings the run produced (shown once per distinct text, counted
-                          # in full); a run that warns on every iterate is worth a look.
-                          n_warnings=int(tally['n']),
-                          worst_sigma_any=float(getattr(evaluator, 'worst_sigma_any', np.nan)),
-                          n_spurious_refusals=int(
-                              getattr(evaluator, 'n_spurious_refusals', 0)),
-                          n_degeneracy_moves=n_degeneracy_moves,
-                          n_qn_steps=n_qn_steps, resolution=float(resolution),
-                          n_curv_updates=((0, 0) if H1 is None
-                                          else (H1.n_updates, Hmu.n_updates)),
-                          n_curv_skipped=((0, 0) if H1 is None
-                                          else (H1.n_skipped, Hmu.n_skipped)),
-                          # THE BASIS HEALTH GOES IN THE RESULT, always. A run that reports a
-                          # ratio without saying how well its basis was resolving is exactly what
-                          # produced 3.0717 for a problem whose answer is above 3.18: the frozen
-                          # plan had drifted to sigma = 1.6e-04 and nothing said so. These two
-                          # numbers make that visible on the first run instead of the fourth.
-                          worst_sigma=float(getattr(evaluator, 'worst_sigma', np.nan)),
-                          n_replans=int(getattr(evaluator, 'n_replans', 0)),
-                          # ...and `worst_sigma` is blind to a mode being SKIPPED rather than
-                          # badly resolved. See `douse.spectral_guard`: N=6 `lam_2/lam_1` once
-                          # reported 2.6203, above the PPW bound, at sigma = 1e-09.
-                          worst_weyl_deficit=float(getattr(evaluator, 'worst_weyl_deficit',
-                                                           np.nan)),
-                          n_weyl_flags=int(getattr(evaluator, 'n_weyl_flags', 0)),
-                          lams_tracked=lams_tracked, fun_tracked=F_tracked,
-                          verified=verified, success=success, message=message)
+    lams_tracked, F_tracked, verified = _verify_final(st, o, evaluator, tally)
+    return _result(st, o, evaluator, tally, lams_tracked, F_tracked, verified)
