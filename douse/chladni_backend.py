@@ -231,6 +231,9 @@ class SpectrumEvaluator:
         self.n_weyl_flags = 0
         self.n_weyl_refusals = 0
         self.n_spurious_refusals = 0
+        #: Tension evaluations summed over every accepted solve (`Spectrum.diagnostics`): what
+        #: the run cost in the solver's own currency, for the ledger.
+        self.n_tension_evals = 0
         self.n_solves = 0                   # cold solves
         self.n_tracks = 0                   # warm solves accepted
         self.n_track_refusals = 0           # warm solves asked for and refused (then solved cold)
@@ -315,6 +318,9 @@ class SpectrumEvaluator:
         if np.isfinite(self.last_sigma):
             self.worst_sigma = max(self.worst_sigma, self.last_sigma)
             self.worst_sigma_any = self.worst_sigma
+        d = getattr(spec, "diagnostics", None)
+        if d is not None:
+            self.n_tension_evals += int(getattr(d, "evaluations", 0) or 0)
         audit = getattr(spec, "count_audit", None)
         if audit is not None:
             if audit.verdict != "ok":

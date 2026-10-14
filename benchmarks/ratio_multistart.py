@@ -274,6 +274,7 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
                 angles=[float(t) for t in np.sort(np.degrees(dg.interior_angles(v)))],
                 worst_sigma=float(res.worst_sigma), n_replans=int(res.n_replans),
                 n_warnings=int(getattr(res, 'n_warnings', 0)),
+                n_tension_evals=int(getattr(ev, 'n_tension_evals', 0)),
                 # `worst_sigma` is measured at lam_1 alone; this one covers every returned value,
                 # which is what a spurious eigenvalue shows up in. Recorded alongside rather than
                 # replacing it: the two have different calibrations and the gates use the first.

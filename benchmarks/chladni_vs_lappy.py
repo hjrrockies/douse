@@ -102,7 +102,8 @@ def run_one(args):
                    n_solver_refused=int(res.n_solver_refused),
                    message=str(res.message)[:200], x=[float(t) for t in res.x])
         row.update({c: int(getattr(ev, c)) for c in ("n_solves", "n_tracks", "n_track_refusals",
-                                                     "n_replans") if hasattr(ev, c)})
+                                                     "n_replans", "n_tension_evals")
+                    if hasattr(ev, c)})
     except Exception as e:  # noqa: BLE001 -- a crash is a result
         row.update(error=f"{type(e).__name__}: {str(e)[:300]}")
     except KeyboardInterrupt:

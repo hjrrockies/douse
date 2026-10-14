@@ -325,3 +325,18 @@ def test_lam3_over_lam1_on_a_hexagon_survives_the_lam4_lam5_pair():
                          constraints=cons)
     assert np.isfinite(res.fun) and res.fun > 1.0, res.message
     assert all(len(l) >= 4 for l in [res.lams])
+
+
+def test_the_evaluator_keeps_the_runs_health_and_cost():
+    """The ledger reads `worst_sigma`, `worst_weyl_deficit`, `n_weyl_flags` and
+    `n_tension_evals` off the evaluator; each must exist and move with the solves."""
+    L, H = 1.2, 0.8
+    fam = VertexPolygon(4, perim=2 * (L + H))
+    ev = ChladniEvaluator(fam, n_eigs=3, prec=PREC)
+    assert ev.worst_sigma == -np.inf and ev.n_tension_evals == 0
+    ev.eigenvalues(_p([0, L, L + 1j * H, 1j * H], fam.perim))
+    n1 = ev.n_tension_evals
+    assert 0 < ev.worst_sigma <= 1e-9 and ev.worst_sigma == ev.worst_sigma_any == ev.last_sigma
+    assert n1 > 0 and np.isfinite(ev.worst_weyl_deficit)
+    ev.eigenvalues(_p([0, L, L + 1j * H * 1.001, 1j * H], fam.perim))
+    assert ev.n_tension_evals > n1
