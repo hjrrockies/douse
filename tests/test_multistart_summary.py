@@ -142,14 +142,44 @@ def test_the_gates_have_exactly_one_definition_across_all_three_readers():
     assert po.row_deficit is sg.row_deficit and po.PPW is sg.PPW
 
 
-def test_a_ledger_row_says_which_guards_produced_it():
+def test_a_ledger_row_says_which_code_and_solver_produced_it(monkeypatch):
     """A cell is not always written by one version of the code -- `run_grid` retries a crashed
-    start on resume -- so a row has to carry what watched it."""
-    rm = pytest.importorskip('benchmarks.ratio_multistart')
-    import inspect
-    src = inspect.getsource(rm.run_one)
-    for field in ('enforce_weyl=', 'deficit_tol=', 'n_weyl_refusals=', 'refusals='):
-        assert field in src, field
+    start on resume, and the backend changed under the grid on 2026-10-14 -- so a row carries
+    its schema, backend, precision, both SHAs and the backend's health, including the per-solve
+    trace. Checked on `run_one` itself, with the optimizer and the evaluator faked."""
+    import json
+    from douse.backend import RunHealth, SolveTrace
+    from douse.optimize import OptimizeResult
+    from douse import runs
+
+    class FakeEv:
+        backend, prec = 'fake', 1e-10
+        family = runs.family_for(4)
+
+        def eigenvalues(self, p):
+            return np.array([10.0, 20.0, 30.0]), object()
+
+        def reset_continuation(self):
+            pass
+
+        def health(self):
+            return RunHealth(worst_bound=1e-10, worst_deficit=0.05, n_replans=1, n_solves=2,
+                             trace=(SolveTrace('cold', None, 1, 150, 2.0),))
+
+    def fake_maximize(ev, p0, **kw):
+        return OptimizeResult(x=np.asarray(p0), fun=2.5, nit=3, lams=np.array([10.0, 25.0, 30.0]),
+                              gap=0.2, delta=0.01, resolution=1e-6, success=True, message='ok',
+                              n_warnings=0, n_cluster_steps=1, verified=True)
+    monkeypatch.setattr(rm.runs, 'make_evaluator', lambda *a, **k: FakeEv())
+    monkeypatch.setattr(rm, 'maximize_ratio', fake_maximize)
+    row = rm.run_one(4, 1, 0, max_iter=3, seed0=0, delta0=0.05)
+    json.dumps(row)
+    assert row['schema'] == 2 and row['backend'] == 'fake' and row['prec'] == 1e-10
+    assert 'douse_sha' in row and 'chladni_sha' in row
+    assert row['worst_bound'] == 1e-10 and row['worst_deficit'] == 0.05 and row['n_replans'] == 1
+    assert row['trace'] == [dict(kind='cold', reason=None, rung=1, n_evals=150, seconds=2.0)]
+    assert row['fun'] == 2.5 and row['N'] == 4 and row['k'] == 1 and row['start'] == 0
+    assert len(row['edges']) == 4 and len(row['angles']) == 4
 
 
 def test_a_certificate_is_the_STOP_not_a_threshold_on_the_resolution():
@@ -218,8 +248,13 @@ def test_a_second_basin_is_reported_not_discarded():
     s = sg.summarize(sg.load(path), 1e-6, 1e-4)
     assert len(s['basins']) == 2
     vals = sorted(b['fun'] for b in s['basins'])
-    assert vals[1] == pytest.approx(4.2833985583, abs=1e-9)
-    assert vals[0] == pytest.approx(3.5, abs=1e-8)
+    # STRUCTURE, NOT A STORED TRAJECTORY VALUE (2026-10-14): two basins of four starts each, the
+    # better one at or above the exact rectangle oracle (rectangles are quadrilaterals, so the
+    # best quadrilateral cannot fall below the best rectangle). The values themselves belong to
+    # the ledger, not to the test.
+    from benchmarks.rectangle_exact import best_rectangle
+    _, bound = best_rectangle(3, 4.0)
+    assert vals[1] >= bound - 1e-6 and 3.0 < vals[0] < vals[1] < 6.0
     assert all(len(b['rows']) == 4 for b in s['basins'])
 
 

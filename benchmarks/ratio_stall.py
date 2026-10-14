@@ -26,6 +26,7 @@ import warnings
 
 import numpy as np
 
+from douse import ledger, runs
 from douse import (VertexPolygon, param_vector, SpectrumEvaluator, ObjectiveFunction,
                    RatioObjective)
 
@@ -35,15 +36,12 @@ DISK = (3.8317059702/2.4048255577)**2
 
 
 def regular(N, perim=PERIM):
-    return perim/N/(2*np.sin(np.pi/N))*np.exp(2j*np.pi*np.arange(N)/N)
+    return runs.regular(N, perim)
 
 
 def start_shape(N, jitter=0.13, seed=0):
     """A regular N-gon pushed well off symmetry, so the run has somewhere to travel from."""
-    rng = np.random.default_rng(seed)
-    v = regular(N)
-    v = v + jitter*(rng.normal(size=N) + 1j*rng.normal(size=N))*np.abs(v).mean()
-    return v
+    return runs.perturbed(N, jitter, seed)
 
 
 def _ledger(N):
@@ -52,17 +50,11 @@ def _ledger(N):
 
 
 def _load(path):
-    if not os.path.exists(path):
-        return []
-    with open(path) as fh:
-        return [json.loads(line) for line in fh if line.strip()]
+    return ledger.read_rows(path, dedupe=False)
 
 
 def _append(path, rec):
-    with open(path, 'a') as fh:
-        fh.write(json.dumps(rec) + '\n')
-        fh.flush()
-        os.fsync(fh.fileno())
+    ledger.write_row(path, rec)
 
 
 def run(N, max_iter=400, alpha0=0.01, grow=1.6, shrink=0.5, max_backtrack=40, gtol=1e-9):

@@ -76,6 +76,9 @@ __all__ = ['SpectrumEvaluator', 'LappySpectrumEvaluator', 'ObjectiveFunction',
 
 
 class LappySpectrumEvaluator:
+    #: The solver behind this evaluator, for a ledger row's provenance.
+    backend = 'lappy'
+
     """`p -> (lam_1..lam_K, d lam/dp)` for a fixed family, on a frozen basis plan.
 
         ev = LappySpectrumEvaluator(VertexPolygon(4, perim=4.0), n_eigs=3)

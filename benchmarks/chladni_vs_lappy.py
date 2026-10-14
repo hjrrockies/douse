@@ -48,9 +48,8 @@ CASES = [(N, k, seed) for N in (4, 5, 6) for k in (1, 2) for seed in (0, 1, 2)]
 
 
 def _perturbed(N, jitter, seed):
-    rng = np.random.default_rng(seed)
-    v = PERIM / N / (2 * np.sin(np.pi / N)) * np.exp(2j * np.pi * np.arange(N) / N)
-    return v + jitter * (rng.normal(size=N) + 1j * rng.normal(size=N)) * np.abs(v).mean()
+    from douse import runs
+    return runs.perturbed(N, jitter, seed, PERIM)
 
 
 def _peak():

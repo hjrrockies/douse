@@ -48,7 +48,7 @@ import warnings
 
 import numpy as np
 
-from douse import VertexPolygon, spectral_guard
+from douse import VertexPolygon, ledger, spectral_guard
 
 PPW = (3.8317059702/2.4048255577)**2      # Payne--Polya--Weinberger: lam_2/lam_1 <= this
 
@@ -77,11 +77,10 @@ def revalidate(row, n_extra=3):
 
     Returns `(ratio, lams, ok)` -- `ok` is False when the fresh solve disagrees with the record.
     """
-    from douse import SpectrumEvaluator
+    from douse import runs
 
     N, k = row['N'], row['k']
-    fam = VertexPolygon(N, perim=PERIM)
-    ev = SpectrumEvaluator(fam, n_eigs=k + 1 + n_extra, warn_gap=0.0, degenerate_tol=0.0)
+    ev = runs.make_evaluator(N, k, n_eigs=k + 1 + n_extra)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         lams, _ = ev.eigenvalues(np.array(row['x'], dtype=float))
@@ -108,18 +107,7 @@ def load(path):
     the most recent code. Rows with no `start` field (none on disk today) are kept as they are
     rather than collapsed onto each other.
     """
-    rows = []
-    for line in open(path):
-        line = line.strip()
-        if line:
-            rows.append(json.loads(line))
-    last = {}
-    for i, r in enumerate(rows):
-        if r.get('start') is not None:
-            last[r['start']] = i
-    keep = set(last.values())
-    return [r for i, r in enumerate(rows)
-            if r.get('start') is None or i in keep]
+    return ledger.read_rows(path)              # normalized: every row carries both name sets
 
 
 def row_deficit(r):
@@ -139,7 +127,7 @@ def row_deficit(r):
     this way, so "the audit found 3" is a floor, not a count. Pinned in
     `tests/test_multistart_summary.py`.
     """
-    d = r.get('worst_weyl_deficit')
+    d = ledger.normalize(r).get('worst_deficit')
     if d is not None and np.isfinite(d):
         return float(d)
     try:
@@ -219,11 +207,14 @@ def find_basins(good, agree_rtol=1e-6, shape_merge_tol=1e-2):
 
 def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5):
     """Best certified value in a cell, and how many starts agree with it."""
+    rows = [ledger.normalize(r) for r in rows]
     crashed = [r for r in rows if not r.get('ok', True)]
     ok = [r for r in rows if r.get('ok', True)]
-    # A ROW WITHOUT `worst_sigma` IS UNCERTIFIED, not invisible: `nan` fails both comparisons
-    # below, and every chladni row used to fall out of every count here (2026-10-14).
-    sig = lambda r: float(r.get('worst_sigma', float('nan')))               # noqa: E731
+    # A ROW WITHOUT `worst_bound` IS UNCERTIFIED, not invisible: `nan` fails both comparisons
+    # below, and every chladni row used to fall out of every count here (2026-10-14). On a v1
+    # row the statistic is lappy's tension under the same name (`douse.ledger`).
+    sig = lambda r: (float('nan') if r.get('worst_bound') is None                 # noqa: E731
+                     else float(r['worst_bound']))
     uncertified = [r for r in ok if not np.isfinite(sig(r))]
     drifted = [r for r in ok if sig(r) > sigma_max]
     clean = [r for r in ok if sig(r) <= sigma_max]
@@ -253,6 +244,7 @@ def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5):
                   and r['resolution'] <= res_max)
     if not good:
         return dict(best=None, n_total=len(rows), n_crashed=len(crashed),
+                    schema_mix=ledger.schema_mix(rows),
                     n_skipped_mode=len(skipped), n_sharp=0, n_uncertified=len(uncertified),
                     n_drifted=len(drifted), n_certified=0, n_agree=0, n_near=0,
                     n_clean=len(clean),
@@ -270,6 +262,7 @@ def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5):
     basins = find_basins(good, agree_rtol)
     return dict(best=best, basins=basins, n_total=len(rows), n_crashed=len(crashed), n_clean=len(clean),
                 n_skipped_mode=len(skipped), n_sharp=n_sharp, n_uncertified=len(uncertified),
+                schema_mix=ledger.schema_mix(rows),
                 n_drifted=len(drifted), n_certified=len(good), n_agree=len(agreeing),
                 n_near=n_near, spread=spread, best_uncertified=None)
 
@@ -382,6 +375,11 @@ def main():
     tot, cert = total('n_total'), total('n_certified')
     crash, drift, missed = total('n_crashed'), total('n_drifted'), total('n_skipped_mode')
     unc = total('n_uncertified')
+    mix = {}
+    for *_, c in cells:
+        for k2, v2 in c.get('schema_mix', {}).items():
+            mix[k2] = mix.get(k2, 0) + v2
+    print('\n  rows by ledger schema: ' + ', '.join(f'v{k2}: {v2}' for k2, v2 in sorted(mix.items())))
     print(f'\n  {cert} certified of {tot} run(s); {drift} excluded on worst_sigma, '
           f'{missed} on a missed mode, {crash} crashed, {unc} without a health statistic')
     print('  agree = certified starts that found the best value; CERTIFIED means the run')

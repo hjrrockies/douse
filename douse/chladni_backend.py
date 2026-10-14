@@ -190,6 +190,8 @@ class SpectrumEvaluator:
     #: default backend). Each warns once.
     LAPPY_ONLY = ("target", "lam_max_window", "track_ttol", "use_track_set",
                   "replan_tol", "enforce_weyl", "spurious_tol")
+    #: The solver behind this evaluator, for a ledger row's provenance.
+    backend = "chladni"
 
     def __init__(self, family, n_eigs=1, prec=1e-10, plan_at=None, degenerate_tol=1e-6,
                  confirm=False, warn_gap=1e-3, **lappy_options):

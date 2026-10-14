@@ -62,6 +62,7 @@ from douse.sampling import random_convex
 from douse.cluster_opt import maximize_ratio
 from douse.evaluate import ShapeRefusal
 from douse.chladni_backend import _quiet
+from douse import ledger, runs
 
 try:
     from .rectangle_exact import best_rectangle
@@ -80,45 +81,8 @@ PERIM = 4.0
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run', 'ratio_multistart')
 
 
-def regular(N, perim=PERIM):
-    return perim/N/(2*np.sin(np.pi/N))*np.exp(2j*np.pi*np.arange(N)/N)
-
-
-def start_shape(N, i, seed0=0):
-    """Start `i`: 0 is a lightly jittered regular N-gon, the rest are star-shaped and random.
-
-    Star-shaped means simple, which `VertexPolygon.is_valid` would otherwise have to reject at
-    a rate that wastes the whole start budget at larger `N`.
-    """
-    rng = np.random.default_rng(seed0 + 1000*i + N)
-    if i == 0:
-        v = regular(N)
-        return v + 0.02*(rng.normal(size=N) + 1j*rng.normal(size=N))*np.abs(v).mean()
-    ang = np.sort(rng.uniform(0, 2*np.pi, N))
-    while np.min(np.diff(np.concatenate([ang, [ang[0] + 2*np.pi]]))) < 0.25:
-        ang = np.sort(rng.uniform(0, 2*np.pi, N))
-    rad = rng.uniform(0.55, 1.0, N)
-    v = rad*np.exp(1j*ang)
-    return v*PERIM/np.abs(np.diff(np.concatenate([v, v[:1]]))).sum()
-
-
-def convex_start_shape(N, i, seed0=0, min_interior_deg=15.0):
-    """Start `i` for a CONVEX sweep: 0 is the jittered regular N-gon, the rest are Valtr draws.
-
-    Uniform over convex N-gons rather than convex-by-rejection, so the start distribution is a
-    stated measure instead of whatever survives a filter. Two bands are applied, and both are
-    feasibility rather than taste: `min_edge` matches `MinEdgeLength`'s default floor, so no
-    start is born infeasible (17.3% of raw N=12 convex draws are), and `min_interior_deg` keeps
-    the spike end away from the basis plan's `sharp_ref/alpha` regime, where a corner's block
-    shrinks toward `M = 1`.
-
-    Start 0 stays the jittered regular polygon, as in `start_shape`, so the near-regular basin is
-    always represented -- at k=2 that basin holds the answer.
-    """
-    if i == 0:
-        return start_shape(N, 0, seed0)
-    return random_convex(N, PERIM, np.random.default_rng(seed0 + 1000*i + N),
-                         min_interior_deg=min_interior_deg, min_edge=PERIM/(10.0*N))
+# Start shapes and the regular polygon live in `douse.runs` (one definition, 2026-10-14).
+regular, start_shape, convex_start_shape = runs.regular, runs.start_shape, runs.convex_start_shape
 
 
 def fingerprint(v):
@@ -141,7 +105,7 @@ def start_line(row):
     d = row_deficit(row)
     flag = '  ** MISSED MODE? **' if d > spectral_guard.DEFICIT_TOL else ''
     return (f"  start {row['start']:3d}: F={row['fun']:.10f} nit={row['nit']} "
-            f"{row['seconds']:.0f}s sigma={row['worst_sigma']:.1e} "
+            f"{row['seconds']:.0f}s bound={ledger.normalize(row).get('worst_bound') or float('nan'):.1e} "
             f"res={row.get('resolution', float('nan')):.1e} "
             f"{'OK ' if row['success'] else '   '}{row['message'][:44]}{flag}")
 
@@ -153,6 +117,7 @@ def partition(rows, sigma_max):
     test can reach, and this pair went missing here for exactly that reason while
     `summarize_grid` kept applying them.
     """
+    rows = [ledger.normalize(r) for r in rows]
     crashed = [r for r in rows if not r.get('ok', True)]
     ok = [r for r in rows if r.get('ok', True)]
     # A ROW WITHOUT A HEALTH STATISTIC IS NEITHER CLEAN NOR DRIFTED, and `nan > x` and
@@ -167,7 +132,8 @@ def partition(rows, sigma_max):
 
 
 def _sigma(row):
-    return float(row.get('worst_sigma', float('nan')))
+    v = row.get('worst_bound', row.get('worst_sigma'))
+    return float('nan') if v is None else float(v)
 
 
 def _git_sha(path):
@@ -184,7 +150,8 @@ def _provenance(ev):
     retries a crashed start on resume, and the backend changed under the grid on 2026-10-14.
     The row says which solver, at what precision, from which commits."""
     import douse
-    backend = 'chladni' if type(ev).__module__.endswith('chladni_backend') else 'lappy'
+    backend = getattr(ev, 'backend', None) or (
+        'chladni' if type(ev).__module__.endswith('chladni_backend') else 'lappy')
     row = dict(backend=backend, prec=float(getattr(ev, 'prec', float('nan'))),
                douse_sha=_git_sha(pathlib.Path(douse.__file__).resolve().parent.parent))
     try:
@@ -213,12 +180,10 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
     came from. Only a failure BEFORE the first iterate is redrawn; one that appears later is the
     optimizer walking somewhere hard and is reported as it always was.
     """
-    fam = VertexPolygon(N, perim=PERIM)
-    cons = ConstraintSet(MinEdgeLength(fam), ClosingBudget(fam))
-    if convex:
-        # `Convexity` is a RESTRICTION and it is meant to be: it asks the convex question. The
-        # answer belongs in its own ledger -- see `--convex` in `main`.
-        cons = ConstraintSet(MinEdgeLength(fam), ClosingBudget(fam), Convexity(fam))
+    fam = runs.family_for(N, PERIM)
+    # `Convexity` is a RESTRICTION and it is meant to be: it asks the convex question. The
+    # answer belongs in its own ledger -- see `--convex` in `main`.
+    cons = runs.constraints_for(fam, convex)
     draw = convex_start_shape if convex else start_shape
     redraws = []
     for attempt in range(max_redraws + 1):
@@ -229,7 +194,7 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
         # the cell's answer to 5e-10, with a first-order certificate at criticality 6.7e-08 --
         # and was then EXCLUDED on `worst_sigma = 5.0e-04`, a number belonging to a shape it never
         # optimized. Its own endpoint tensions are 7.0e-13 to 3.3e-12.
-        ev = SpectrumEvaluator(fam, n_eigs=(n_eigs or k + 2), warn_gap=0.0, degenerate_tol=0.0)
+        ev = runs.make_evaluator(N, k, n_eigs=n_eigs, fam=fam)
         idx = i if attempt == 0 else i + 1000*attempt
         p0 = param_vector(draw(N, idx, seed0), PERIM)
         try:
@@ -254,59 +219,24 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
         # is what identified the `lappy` failure as a scan stepping over a tight cluster rather
         # than anything to do with the reentrant corner it was assumed to be. Measured cost of
         # not doing this: cell N6_k3 start 5, lost.
-        return dict(N=N, k=k, start=i, convex=bool(convex), ok=False, redraws=redraws,
-                    error=f'{type(exc).__name__}: {exc}',
-                    trace=traceback.format_exc()[-600:],
+        return dict(schema=ledger.SCHEMA, N=N, k=k, start=i, convex=bool(convex), ok=False,
+                    redraws=redraws, error=f'{type(exc).__name__}: {exc}',
+                    traceback=traceback.format_exc()[-600:],
                     seconds=round(time.perf_counter() - t0, 1),
-                    enforce_weyl=bool(getattr(ev, 'enforce_weyl', False)),
                     deficit_tol=float(spectral_guard.DEFICIT_TOL),
-                    n_weyl_escalations=int(getattr(ev, 'n_weyl_escalations', 0)),
-                    n_weyl_refusals=int(getattr(ev, 'n_weyl_refusals', 0)),
-                    refusals=list(getattr(ev, 'refusals', []))[:4])
+                    **{k2: v2 for k2, v2 in ev.health().as_row().items() if k2 != 'trace'},
+                    **_provenance(ev))
     v = fam.vertices(res.x)
-    return dict(N=N, k=k, start=i, convex=bool(convex), redraws=redraws, **_provenance(ev),
-                start_index=(i if not redraws else i + 1000*len(redraws)),
-                fun=float(res.fun), nit=int(res.nit),
-                seconds=round(time.perf_counter() - t0, 1),
-                x=[float(t) for t in res.x],
-                lams=[float(t) for t in np.asarray(res.lams)],
-                edges=[float(t) for t in np.sort(dg.edge_lengths(v))],
-                angles=[float(t) for t in np.sort(np.degrees(dg.interior_angles(v)))],
-                worst_sigma=float(res.worst_sigma), n_replans=int(res.n_replans),
-                n_warnings=int(getattr(res, 'n_warnings', 0)),
-                n_tension_evals=int(getattr(ev, 'n_tension_evals', 0)),
-                # `worst_sigma` is measured at lam_1 alone; this one covers every returned value,
-                # which is what a spurious eigenvalue shows up in. Recorded alongside rather than
-                # replacing it: the two have different calibrations and the gates use the first.
-                worst_sigma_any=float(getattr(res, 'worst_sigma_any', float('nan'))),
-                n_spurious_refusals=int(getattr(res, 'n_spurious_refusals', 0)),
-                plan_at=getattr(res, 'plan_at', None),
-                n_unresolved=int(getattr(res, 'n_unresolved', 0)),
-                # `lappy` declining outright, as against a spectrum that came back
-                # unindexable. Both are survivable trials now; the split says which.
-                n_solver_refused=int(getattr(res, 'n_solver_refused', 0)),
-                # WHICH GUARDS PRODUCED THIS ROW. A cell is not always written by one version of
-                # the code: `run_grid` retries a CRASHED start on resume, so `N6_k1` start 1 will
-                # be re-run with the enforcement while its seven siblings predate it. That is the
-                # mixing the handoff warns about, and the fix is to make a row say what watched
-                # it rather than to forbid the retry.
-                enforce_weyl=bool(getattr(ev, 'enforce_weyl', False)),
-                deficit_tol=float(spectral_guard.DEFICIT_TOL),
-                n_weyl_escalations=int(getattr(ev, 'n_weyl_escalations', 0)),
-                n_weyl_recovered=int(getattr(ev, 'n_weyl_recovered', 0)),
-                n_weyl_refusals=int(getattr(ev, 'n_weyl_refusals', 0)),
-                verified=bool(getattr(res, 'verified', True)),
-                # THE REFUSED SHAPES, capped at 4 per row. A refusal is a `lappy` question --
-                # plan on one shape, solve on another -- and it cannot be asked afterwards
-                # without the vertices. Four is enough to characterise a run and keeps a ledger
-                # line from carrying 16 parameter vectors.
-                refusals=list(getattr(res, 'refusals', []))[:4],
-                worst_weyl_deficit=float(getattr(res, 'worst_weyl_deficit', float('nan'))),
-                n_weyl_flags=int(getattr(res, 'n_weyl_flags', 0)),
-                n_qn_steps=int(res.n_qn_steps), n_cluster_steps=int(res.n_cluster_steps),
-                n_degeneracy_moves=int(res.n_degeneracy_moves),
-                resolution=float(getattr(res, 'resolution', float('nan'))),
-                success=bool(res.success), message=str(res.message))
+    # THE ROW IS SCHEMA 2 (`douse.ledger`): the run's identity and provenance, the result, and
+    # the backend's health under chladni's names, with the per-solve trace. Readers normalize
+    # old rows onto the same names.
+    return ledger.result_row(
+        res, health=ev.health(), N=N, k=k, start=i, convex=bool(convex), redraws=redraws,
+        start_index=(i if not redraws else i + 1000*len(redraws)),
+        seconds=round(time.perf_counter() - t0, 1),
+        edges=[float(t) for t in np.sort(dg.edge_lengths(v))],
+        angles=[float(t) for t in np.sort(np.degrees(dg.interior_angles(v)))],
+        deficit_tol=float(spectral_guard.DEFICIT_TOL), **_provenance(ev))
 
 
 def _cell(job):
@@ -372,14 +302,9 @@ def main():
 
     os.makedirs(OUT, exist_ok=True)
     path = os.path.join(OUT, f'N{args.N}_k{args.k}{"_convex" if args.convex else ""}.jsonl')
-    done = set()
-    if os.path.exists(path):
-        for line in open(path):
-            line = line.strip()
-            if line:
-                _r = json.loads(line)
-                if _r.get('ok', True):
-                    done.add(_r['start'])          # a crashed start is retried on resume
+    done = {r['start'] for r in ledger.read_rows(path, dedupe=False)
+            if r.get('ok', True) and r.get('start') is not None}  # a crash is retried on resume
+    if done:
         print(f'resuming {path}: {len(done)} start(s) already recorded', flush=True)
 
     todo = [i for i in range(args.starts) if i not in done]
@@ -407,8 +332,7 @@ def main():
                 row = fut.result()
                 # WRITTEN FROM THE PARENT ONLY, one row at a time, so concurrent workers cannot
                 # interleave partial lines into the ledger.
-                with open(path, 'a') as fh:
-                    fh.write(json.dumps(row) + '\n')
+                ledger.write_row(path, row)
                 print(start_line(row), flush=True)
         todo = []
 
@@ -430,14 +354,12 @@ def main():
                        error=f'{type(exc).__name__}: {exc}',
                        trace=traceback.format_exc()[-600:])
             print(f'  start {i:3d}: FAILED  {row["error"][:88]}', flush=True)
-            with open(path, 'a') as fh:
-                fh.write(json.dumps(row) + '\n')
+            ledger.write_row(path, row)
             continue
-        with open(path, 'a') as fh:
-            fh.write(json.dumps(row) + '\n')
+        ledger.write_row(path, row)
         print(start_line(row), flush=True)
 
-    allrows = [json.loads(l) for l in open(path) if l.strip()]
+    allrows = ledger.read_rows(path)             # deduped by start, normalized
     rows = [r for r in allrows if r.get('ok', True)]
 
     # THE RECTANGLE ORACLE, at N=4 only. `max lam_k/lam_1` over rectangles is exactly solvable
