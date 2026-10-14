@@ -1,12 +1,20 @@
 # douse
 
 **D**omains **o**f **U**nknown **S**hape, from **E**igenvalues — shape optimization and inverse
-spectral problems, built on [`lappy`](../lappy).
+spectral problems, built on [`chladni`](../chladni).
 
-`lappy` owns *a* domain and its conventions: geometry, normals, eigenvalues, L²-orthonormal
-eigenfunctions, and Cauchy-data boundary integrals. `douse` owns *families* of domains: the map
-from a parameter vector to a domain, its derivative, the shape-derivative formulas, and the
-optimizers. See `lappy/docs/scope_and_downstream.md` for why the line is drawn there.
+The forward solver owns *a* domain and its conventions: geometry, normals, eigenvalues with
+certified bounds, L²-orthonormal eigenfunctions, and Hadamard boundary integrals. `douse` owns
+*families* of domains: the map from a parameter vector to a domain, its derivative, the
+shape-derivative chain rule, and the optimizers.
+
+**Backend (2026-10-14): chladni.** `SpectrumEvaluator` solves on chladni: a frozen basis plan
+(`chladni.plan`), warm-started from the previous iterate, with certified per-level bounds and a
+Weyl count audit, refusing what it cannot certify (`douse/chladni_backend.py`). The earlier
+backend, [`lappy`](../lappy), is a **deprecated** optional extra (`pip install douse[lappy]`):
+`LappySpectrumEvaluator` reproduces older results, and the tests of its internals are marked
+`lappy` and skip without it. lappy-only options (`replan_tol`, `lam_max_window`, `track_ttol`,
+...) are accepted by `SpectrumEvaluator` and ignored, with a one-time warning.
 
 ## Status: Milestones 1-3 complete
 
@@ -19,7 +27,8 @@ fixed perimeter from a generic starting shape:
 | quadrilateral | 19.739208802178 | `2 pi^2` | −9.3e-13 | sides equal to 2.1e-07, angles 90° ± 2.2e-05 |
 
 Those are the two cases where the answer is a theorem (Pólya–Szegő); `n >= 5` is open.
-`benchmarks/known_minimizers.py` reproduces them.
+`benchmarks/known_minimizers.py` reproduces them. Benchmarks that drive the deprecated lappy
+backend live in `benchmarks/lappy/` and need an environment of their own (see its README).
 
 Minimizing `lam_2` instead does **not** give the square — it gives a rectangle with
 `L = 2*4^(1/3)/(1+4^(1/3)) = 1.227023580871` and `lam_2 = 42.7396543166`, reached to 3.8e-11.
@@ -105,7 +114,7 @@ from douse import (VertexPolygon, param_vector, SpectrumEvaluator, ObjectiveFunc
 fam = VertexPolygon(4, perim=4.0)        # perimeter-4 quadrilaterals, 4 parameters
 p0  = param_vector(np.array([0, 1.3, 1.1+0.9j, 0.15+0.8j]), 4.0)
 
-ev  = SpectrumEvaluator(fam, n_eigs=1)   # frozen plan, tracked eigenvalues, verified
+ev  = SpectrumEvaluator(fam, n_eigs=1)   # chladni: frozen plan, warm-started, certified
 obj = ObjectiveFunction(ev, EigenvalueObjective(0))      # minimize lam_1
 res = descend(obj, p0)
 
@@ -130,14 +139,17 @@ differencing the solver.
 | `douse/polygon.py` | `VertexPolygon`, the perimeter-constrained vertex parametrization, and `d_vertices_dp` |
 | `douse/derivative.py` | the Hadamard shape derivative and the chain rule to `p` |
 | `douse/objective.py` | `EigenvalueObjective` (forward), `SpectralMatch` (inverse, scale-invariant), and the arithmetic under them |
-| `douse/evaluate.py` | `SpectrumEvaluator` — frozen plan, tracked-and-verified eigenvalues — and `ObjectiveFunction` |
-| `douse/optimize.py` | `descend`, a backtracking method that respects the parametrization's boundary |
+| `douse/chladni_backend.py` | `SpectrumEvaluator` on chladni — frozen plan, warm start, certified bounds, re-plan on drift — and the Hadamard handle douse's derivatives use |
+| `douse/evaluate.py` | `ObjectiveFunction`, and `LappySpectrumEvaluator` (deprecated: the lappy backend) |
+| `douse/errors.py` | the refusals every backend raises: `ShapeRefusal`, `SolverRefusal`, `UnresolvedSpectrum`, `DegenerateSpectrum` |
+| `douse/spectral_guard.py` | the Weyl-count deficit (`weyl_deficit`, `weyl_report`, `DEFICIT_TOL`): is a returned set consecutive? |
+| `douse/sampling.py` | start shapes: `random_convex` and the samplers the multistart grid draws from |
+| `douse/optimize.py` | `descend`, a backtracking gradient method that respects the parametrization's boundary; `gauss_newton`, a Levenberg-Marquardt driver on `SpectralMatch.residual` for the inverse problem |
 | `douse/certify.py` | cluster analysis at a degenerate optimum: `first_order_report`, `second_order_probe` |
 | `douse/cluster_opt.py` | `maximize_ratio` — trust-region ascent valid through a degeneracy; `model_gain` (first-order, and the stopping certificate) and `model_gain2` (second-order) |
 | `douse/quasi_newton.py` | `SR1`, `BFGS`, and an exact Moré–Sorensen `tr_subproblem` — the curvature the second-order model carries |
 | `douse/constraints.py` | `MinEdgeLength`, `ClosingBudget`, `ConstraintSet` — linearized into the trust-region subproblem |
 | `douse/degeneracy.py` | turning angles, effective vertices, flatten/collapse candidates — how a shape loses a vertex |
-| `douse/opt.py` | **superseded**, kept only until its loss functions are confirmed to have no remaining use. Does not import. |
 
 ## Three things to know before using it
 
@@ -147,12 +159,23 @@ polygon ties everywhere, and regular polygons are what these problems converge t
 canonical map has a branch cut sitting exactly on the target. Use `param_vector` once to build a
 starting `p`, then never again.
 
-**Use `solver.hadamard_quad`, never `solver.bdry_quad`.** Every vertex perturbation moves a
-corner, and `bdry_quad` is the node set for *normalizing* eigenfunctions, not for integrating a
-corner-moving velocity. `douse.derivative` defaults correctly; the difference on an L-shape's
-reentrant vertex is 6.1 digits against 9.3, with both answers looking plausible.
+**Read the health fields before quoting a number.** Every `maximize_ratio` result and every
+ledger row carries `worst_sigma`, `worst_weyl_deficit`, `n_replans`, `n_warnings` and the
+refusals the run met. On chladni `worst_sigma` is the worst *certified relative bound* over the
+returned levels, a different quantity from lappy's tension, and sits near `prec` on a healthy
+run; `summarize_grid` still gates at `1e-6`. A row with no statistic is reported as
+**uncertified**, never dropped (`benchmarks/summarize_grid.py`). Rows record `backend`, `prec`
+and the git SHAs of douse and chladni, because a cell is not always written by one version.
 
-**A tracked eigenvalue is verified before it is trusted.** `lappy`'s `track` refuses a minimum
+**Use `solver.hadamard_quad`, never `solver.bdry_quad` (lappy backend).** Every vertex
+perturbation moves a corner, and `bdry_quad` is the node set for *normalizing* eigenfunctions,
+not for integrating a corner-moving velocity. `douse.derivative` defaults correctly; the
+difference on an L-shape's reentrant vertex is 6.1 digits against 9.3. On chladni the Hadamard
+rule is chosen by `Spectrum.hadamard` itself.
+
+**A tracked eigenvalue is verified before it is trusted.** On chladni, a warm solve is accepted
+only if continuity checks hold (count, no index shift, top level clear of the window, audit), and
+goes cold otherwise and every 10th solve. On the lappy backend: `lappy`'s `track` refuses a minimum
 whose tension exceeds `ttol`, but the default `ttol = 1e-3` is a threshold for deciding whether a
 tension minimum is a mode *at all*, not whether a located value has converged. The first
 end-to-end run converged 2.8e-03 **below** `2 pi^2`, which is impossible — `track` had returned a
@@ -194,19 +217,27 @@ barrier), whole-set tracking (`lappy.Eigenproblem.track_set`), the multi-start h
    k=3, and — on the exactly solvable rectangle subfamily — returns toward it as `k` grows while
    oscillating forever. Whether that survives on the full N-gon family is open and testable.
 
-Deferred deliberately: the inverse problem, which is implemented and FD-verified but has never
-been run end to end.
+The inverse problem runs end to end since 2026-10-14: `gauss_newton` recovers a 1.2 x 0.8
+rectangle from six eigenvalues on chladni in 12 iterations (`tests/test_inverse_smoke.py`).
+Recovery is second order at a rectangle (the shear is a null direction of the ratio Jacobian,
+by reflection symmetry), so a residual `r` leaves edge errors of order `sqrt(r)`; and `K - 1`
+ratios must cover the family's `2N - 4` parameters, so three eigenvalues do not determine a
+quadrilateral.
 
 ## Tests
 
 ```sh
-uv run pytest                  # 77 tests, ~12 min
-uv run pytest -m "not slow"    # the fast subset, <1 s
+uv sync --extra test
+uv run pytest -m "not slow"    # the fast tier: ~225 tests, ~25 s, no optimization runs
+uv run pytest                  # everything: ~310 tests; the slow tier is full optimization runs
 ```
 
-Most of the twelve minutes is three full optimization runs. If that starts discouraging you from
-running the suite, trim their iteration counts before dropping the cases — the acceptance value
-is in *reaching* the square, not in its last three digits.
+Tests of the deprecated lappy backend are marked `lappy` and skip unless a *working* lappy is
+installed (`tests/conftest.py` checks that its gsvd4py still takes `tola`; set
+`DOUSE_NO_LAPPY=1` to force the skip). The slow tier is dominated by a few full
+`maximize_ratio` runs on chladni; if that starts discouraging you from running it, trim their
+iteration counts before dropping the cases — the acceptance value is in *reaching* the square,
+not in its last three digits.
 
 ## Documentation
 

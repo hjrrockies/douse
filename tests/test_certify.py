@@ -16,6 +16,7 @@ import warnings
 import numpy as np
 import pytest
 
+lappy = pytest.importorskip("lappy")   # these drive lappy solvers directly: the deprecated backend
 from lappy import Eigenproblem, basis_plan as BP
 from lappy.asymp import weyl_est
 from lappy.mps import MPSEigensolver
@@ -128,7 +129,7 @@ def square():
     """The regular 4-gon, where lam_2 = lam_3 exactly."""
     fam = VertexPolygon(4, perim=PERIM)
     p = param_vector(_regular(4), PERIM)
-    dom = fam(p)
+    dom = fam.lappy_domain(p)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         plan = BP.plan_basis(dom, weyl_est(6, dom), target=1e-13)
@@ -138,7 +139,7 @@ def square():
                           dtype=float)
 
         def ratio(q):
-            d = fam(q)
+            d = fam.lappy_domain(q)
             s = MPSEigensolver.from_domain(d, lam_max=weyl_est(6, d),
                                            basis=BP.realize(plan, d), prec=1e-12)
             e = np.asarray(Eigenproblem(d, eval_solver=s, precision=1e-12).solve(2), dtype=float)
@@ -213,7 +214,7 @@ def test_the_triangle_has_no_null_directions(square):
     the null space is empty and `Q` is strictly negative definite."""
     fam = VertexPolygon(3, perim=PERIM)
     p = param_vector(_regular(3), PERIM)
-    dom = fam(p)
+    dom = fam.lappy_domain(p)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         plan = BP.plan_basis(dom, weyl_est(6, dom), target=1e-13)
@@ -277,10 +278,12 @@ def test_a_ratio_run_never_exceeds_the_ppw_bound():
                 f'{DISK:.6f} that every planar domain obeys')
 
 
+@pytest.mark.lappy
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_verify_multiplicity_rejects_a_collapse():
     """Sorting cannot see two seeds landing on one mode -- the array still looks like a
     legitimate degenerate spectrum. The tension spectrum is what tells them apart."""
-    from douse import SpectrumEvaluator
+    from douse import LappySpectrumEvaluator as SpectrumEvaluator
 
     class _FakeSolver:
         def __init__(self, tensions):

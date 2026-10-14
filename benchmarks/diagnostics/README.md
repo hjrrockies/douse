@@ -7,6 +7,7 @@ are absolute, and they expect to be run from the `douse` root with `./.venv/bin/
 | script | question it answers |
 |---|---|
 | `repro_N6_k2_s3.py` | **Instrumented reproduction of one start.** Per-iterate `F`, `delta`, `rho`, mode, cluster size, plus the guard's own sigma per call, without editing `douse`. The template for "why did this run do that". |
+| `../lappy/repro_N3_k2_s4.py` (lappy-only, moved 2026-10-14) | **Can a run be replayed to a known bad shape?** Logs every call's shape, spectrum and Weyl deficit, stopping at the first deficit refusal. The answer is **no**: the re-run diverges at iterate 3 on a spurious refusal and converges cleanly to the cell's answer, never revisiting the failure. Read its docstring before planning any test that replays a trajectory. |
 | `phase0_triage.py` | **Classify a stalled run.** Re-runs rows with per-iterate logging and evaluates `rho` at five shrinking radii at the endpoint -- the discriminator that separates rate-limited from noise-limited from a discontinuous objective. |
 | `noise_floor.py` | **Criticality against the active-set width**, for reading a plateau. |
 | `plan_probe.py` | **Fresh plan vs frozen plan at a shape**: is a bad row stale, or out of reach? |
@@ -23,3 +24,8 @@ Two things these encode that are easy to get wrong, both learned the hard way:
 * **Build a fresh `SpectrumEvaluator` per attempt.** Its statistics are running maxima over its
   lifetime, so a reused one carries a discarded shape's numbers into the run that replaces it --
   which cost a certified row before it was noticed.
+
+* **Never solve inside the callback.** `repro_N3_k2_s4.py` briefly re-evaluated each accepted
+  iterate to record its spectrum. That doubled the cost of the run, and -- the real damage --
+  advanced the evaluator's continuation seed, so the trajectory being "reproduced" was not the
+  recorded one. Log from a wrapper around `eigenvalues`, where the spectrum is already in hand.

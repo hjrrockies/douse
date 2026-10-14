@@ -75,6 +75,7 @@ was wanted: a converged run ends with an active set containing exactly the modes
 genuinely degenerate.
 """
 import warnings
+from contextlib import contextmanager
 
 import numpy as np
 from scipy.optimize import minimize, minimize_scalar
@@ -88,6 +89,29 @@ from .quasi_newton import SR1, tr_subproblem
 
 __all__ = ['local_model', 'trust_region_step', 'maximize_ratio', 'model_gain',
            'model_gain2']
+
+
+@contextmanager
+def _watch_warnings(tally):
+    """Let warnings through, counted. `maximize_ratio` used to silence EVERYTHING inside its
+    loop -- `warn_gap`, the degeneracy-move rejection this module insists is "not silent", and
+    the backend's own `PrecisionWarning`s (a level unmet, an eigenvalue possibly MISSED). Now the
+    one non-substantive message is filtered (`FourierBessel can deliver`, measured ~1e5x
+    pessimistic, `chladni/notes/hard_cases.md`), every other warning is shown once per distinct
+    text, and ALL of them are counted into `tally['n']` for the result row (2026-10-14)."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('always')
+        warnings.filterwarnings('ignore', message='FourierBessel can deliver')
+        shown = warnings.showwarning
+
+        def counting(message, category, filename, lineno, file=None, line=None):
+            tally['n'] += 1
+            key = (category.__name__, str(message))
+            if key not in tally['seen']:
+                tally['seen'].add(key)
+                shown(message, category, filename, lineno, file, line)
+        warnings.showwarning = counting
+        yield
 
 
 def _active_cluster(lams, k, eps_abs):
@@ -866,9 +890,9 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     if auto and eps_rel != 'auto':
         raise ValueError(f"eps_rel must be a float or 'auto', got {eps_rel!r}")
     scale = None                      # bootstrapped from the first model
+    tally = dict(n=0, seen=set())     # warnings seen inside the loop; see `_watch_warnings`
 
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with _watch_warnings(tally):
         # (p, lams, F, solver) is ONE consistent state, replaced together or not at all. An
         # earlier version re-evaluated `lams` at the top of each iteration without recomputing
         # `F`, so the two drifted -- and the re-evaluation continued from whatever the last
@@ -897,9 +921,13 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
             #
             # It cannot change a usable result by construction: every run it stops was already
             # destined for exclusion. Set `sigma_abort=None` to disable.
-            if (sigma_abort is not None and getattr(evaluator, 'replan_tol', None) is not None):
-                sig_now = float(getattr(evaluator, 'last_sigma', np.nan))
-                if np.isfinite(sig_now) and sig_now > sigma_abort:
+            # On the chladni backend `last_sigma` is the worst certified relative bound at the
+            # last shape (near `prec` when healthy), re-planned already when it was unmet; the
+            # abort then stops a run whose rebuilt basis still cannot certify the shape. Gated on
+            # the statistic existing, not on the lappy-only `replan_tol` (2026-10-14).
+            sig_now = float(getattr(evaluator, 'last_sigma', np.nan))
+            if sigma_abort is not None and np.isfinite(sig_now):
+                if sig_now > sigma_abort:
                     sigma_streak += 1
                     if sigma_streak >= sigma_abort_streak:
                         message = (f'the basis cannot resolve this shape: tension {sig_now:.2e} '
@@ -1122,8 +1150,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                 d0 = reject_run[-discontinuity_halvings][0]
                 window = [abs(df) for _, df in reject_run[-discontinuity_halvings:]]
                 try:
-                    with warnings.catch_warnings():
-                        warnings.simplefilter('ignore')
+                    with _watch_warnings(tally):
                         evaluator.reset_continuation()
                         lams_fresh, solver_fresh = evaluator.eigenvalues(p)
                 except ShapeRefusal:
@@ -1193,8 +1220,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
         # "the endpoint could not be re-solved" and "the endpoint is optimal" must never read the
         # same in a ledger.
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with _watch_warnings(tally):
                 evaluator.reset_continuation()
                 lams, _ = evaluator.eigenvalues(p)
             F = float(lams[k]/lams[0])
@@ -1224,6 +1250,9 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                           # candidate explanations needed exactly that shape to test.
                           plan_at=(None if getattr(evaluator, '_plan_built_at', None) is None
                                    else [float(t) for t in evaluator._plan_built_at]),
+                          # Warnings the run produced (shown once per distinct text, counted
+                          # in full); a run that warns on every iterate is worth a look.
+                          n_warnings=int(tally['n']),
                           worst_sigma_any=float(getattr(evaluator, 'worst_sigma_any', np.nan)),
                           n_spurious_refusals=int(
                               getattr(evaluator, 'n_spurious_refusals', 0)),

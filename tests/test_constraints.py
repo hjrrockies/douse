@@ -185,7 +185,7 @@ def test_the_report_separates_flattening_from_a_collapsed_edge():
 @pytest.mark.parametrize('n_extra', [1, 2, 3])
 def test_canonicalize_preserves_the_domain(n_extra):
     """It is only allowed because it is exact: same corners, same area, same perimeter."""
-    from lappy.utils import polygon_area, polygon_perimeter
+    from douse.polygon import polygon_area, polygon_perimeter
     v = _square_with_flats(n_extra)
     out = dg.canonicalize(v)
     assert len(out) == len(v)

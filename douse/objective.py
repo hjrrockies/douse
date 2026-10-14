@@ -149,6 +149,24 @@ class SpectralMatch:
         loss, dloss_dnu = l2_loss(nu, self.nu_target, jac=True, log=self.log)
         return loss, dloss_dnu @ dnu_dlam @ np.asarray(dlams)
 
+    def residual(self, lams, dlams):
+        """`(r, J)`: the residual `nu(lams) - nu_target` (or its log form), `(K-1,)`, and its
+        Jacobian in `p`, `(K-1, n_p)`. The loss is `||r||^2`; a least-squares method
+        (`optimize.gauss_newton`) wants the residual, not the gradient of its square. A match is
+        determined only when `K - 1 >= n_p` (2026-10-14: three eigenvalues give two ratios, which
+        cannot pin a quadrilateral's four parameters)."""
+        lams = np.asarray(lams, dtype=float)
+        if len(lams) != len(self.targets):
+            raise ValueError(f'expected {len(self.targets)} eigenvalues, got {len(lams)}')
+        nu, dnu_dlam = normalized_reciprocals(lams, jac=True)
+        if self.log:
+            r = np.log(nu) - np.log(self.nu_target)
+            dr_dnu = np.diag(1.0 / nu)
+        else:
+            r = nu - self.nu_target
+            dr_dnu = np.eye(len(nu))
+        return r, dr_dnu @ dnu_dlam @ np.asarray(dlams, dtype=float)
+
 
 class RatioObjective:
     """`lam_k / lam_1` -- the polygon analogue of Osting's spectral-ratio problems.

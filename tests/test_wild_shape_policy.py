@@ -16,11 +16,12 @@ import warnings
 import numpy as np
 import pytest
 
-from lappy.core import EigensolverFailure, SourcesInsideDomain
+from douse.evaluate import EigensolverFailure, SourcesInsideDomain
 
 from douse import VertexPolygon, param_vector
 from douse.cluster_opt import maximize_ratio
-from douse.evaluate import ShapeRefusal, SolverRefusal, SpectrumEvaluator, UnresolvedSpectrum
+from douse.evaluate import (LappySpectrumEvaluator, ShapeRefusal, SolverRefusal,
+                            SpectrumEvaluator, UnresolvedSpectrum)
 
 PERIM = 4.0
 
@@ -44,16 +45,18 @@ def test_the_two_kinds_of_refusal_share_one_base_class():
     EigensolverFailure('f has too many local minima'),
     SourcesInsideDomain('3 of 240 sources landed inside the domain.'),
 ])
+@pytest.mark.lappy
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_lappy_refusals_are_translated_at_the_evaluator(monkeypatch, exc):
     """Translated where `p` is known, and the original is kept as `__cause__` so a ledger row
     still records WHICH refusal it was."""
     fam, p = rect()
-    ev = SpectrumEvaluator(fam, n_eigs=3, degenerate_tol=0.0, warn_gap=0.0)
+    ev = LappySpectrumEvaluator(fam, n_eigs=3, degenerate_tol=0.0, warn_gap=0.0)
 
     def boom(self, q, seed=None):
         raise exc
 
-    monkeypatch.setattr(SpectrumEvaluator, '_eigenvalues', boom)
+    monkeypatch.setattr(LappySpectrumEvaluator, '_eigenvalues', boom)
     with pytest.raises(SolverRefusal) as info:
         ev.eigenvalues(p)
     assert info.value.__cause__ is exc
@@ -61,16 +64,18 @@ def test_lappy_refusals_are_translated_at_the_evaluator(monkeypatch, exc):
     assert ev.n_solver_refusals == 1
 
 
+@pytest.mark.lappy
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_a_solver_refusal_records_the_shape_and_the_plan_it_used(monkeypatch):
     """A count is not actionable. `benchmarks/replay_refusal.py` re-solves a refusal off-line and
     needs both ends: the shape that failed and the shape its frozen basis was planned on."""
     fam, p = rect()
-    ev = SpectrumEvaluator(fam, n_eigs=3, degenerate_tol=0.0, warn_gap=0.0)
+    ev = LappySpectrumEvaluator(fam, n_eigs=3, degenerate_tol=0.0, warn_gap=0.0)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         ev.eigenvalues(p)                      # builds the plan, so `plan_at` is populated
 
-    monkeypatch.setattr(SpectrumEvaluator, '_eigenvalues',
+    monkeypatch.setattr(LappySpectrumEvaluator, '_eigenvalues',
                         lambda self, q, seed=None: (_ for _ in ()).throw(
                             EigensolverFailure('f has too many local minima')))
     with pytest.raises(SolverRefusal):
@@ -84,13 +89,15 @@ def test_a_solver_refusal_records_the_shape_and_the_plan_it_used(monkeypatch):
     assert 'EigensolverFailure' in rec['error']
 
 
+@pytest.mark.lappy
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_a_ValueError_that_is_NOT_about_the_shape_still_propagates(monkeypatch):
     """The catch is narrow on purpose. `SourcesInsideDomain` subclasses `ValueError` precisely so
     the evaluator does not have to write `except ValueError`, which would turn every shape bug in
     the family code into a silently-shrunk trust radius."""
     fam, p = rect()
-    ev = SpectrumEvaluator(fam, n_eigs=3, degenerate_tol=0.0, warn_gap=0.0)
-    monkeypatch.setattr(SpectrumEvaluator, '_eigenvalues',
+    ev = LappySpectrumEvaluator(fam, n_eigs=3, degenerate_tol=0.0, warn_gap=0.0)
+    monkeypatch.setattr(LappySpectrumEvaluator, '_eigenvalues',
                         lambda self, q, seed=None: (_ for _ in ()).throw(
                             ValueError('an ordinary bug')))
     with pytest.raises(ValueError, match='an ordinary bug'):
@@ -187,6 +194,8 @@ def test_a_refusal_in_the_discontinuity_REPAIR_does_not_kill_the_run():
 # ── persistent sigma drift: stop paying for a row that is already excluded ────────────────────
 
 @pytest.mark.slow
+@pytest.mark.lappy
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_a_run_whose_basis_cannot_resolve_the_shape_STOPS_instead_of_earning_its_exclusion():
     """`worst_sigma` above 1e-6 excludes a row from every summary, and it is a running max, so a
     run that has drifted past the gate and stays there is buying a row that will be discarded
@@ -196,7 +205,7 @@ def test_a_run_whose_basis_cannot_resolve_the_shape_STOPS_instead_of_earning_its
     basis rebuilt at the shape and still failing is what stops the run, not a transient.
     """
     fam, p = rect()
-    ev = SpectrumEvaluator(fam, n_eigs=4, degenerate_tol=0.0, warn_gap=0.0)
+    ev = LappySpectrumEvaluator(fam, n_eigs=4, degenerate_tol=0.0, warn_gap=0.0)
     real = ev.eigenvalues
 
     def drifted(q, seed=None):

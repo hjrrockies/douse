@@ -9,6 +9,19 @@ Numbers appear below only where the number *is* the actionable content.
 
 ## Session handoff
 
+**2026-10-14: chladni is the backend, and the pipeline runs on it end to end.** The morning's
+commits (`ccc85a8`, `266d370`, `e2e039a`) made the fast tier green on the chladni default, gave
+the evaluator run-health statistics the ledger can filter on (a row without one is reported
+UNCERTIFIED, never dropped), fixed the level-cut hazard (`lam_3/lam_1` on hexagons drives
+`lam_3` into the `lam_4 = lam_5` pair, and a truncated copy killed the run), let warnings reach
+`maximize_ratio`'s caller, and ran the inverse problem through `descend` for the first time
+(`tests/test_inverse_smoke.py`). lappy is a deprecated extra that cannot run beside chladni's
+gsvd4py; its scripts are in `benchmarks/lappy/`. Still open from the audit
+(`../CODE_AUDIT_2026-10-13.md`): a single backend protocol instead of `hasattr` dispatch and
+`evaluator._last` writes; splitting `maximize_ratio`; speed near the k=2 cluster (chladni is
+4-9x slower than lappy there; the seed grid is the parallelizable fifth of a cold solve).
+
+
 `../../HANDOFF.md` (in `projects/python`, alongside both repos) is the resume-from-here note:
 scope decisions, results, what was retracted, and the ordered next steps. `../../LAPPY_WISHLIST.md`
 is the list of lappy changes that would unlock performance here, each with the measurement behind
@@ -464,11 +477,12 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
       discourage running, which is how suites rot. The acceptance value is in REACHING the
       square, not in its last three digits, so trimming iteration counts or marking the heaviest
       opt-in would cost little.
-- [ ] **The inverse problem has never been run end to end.** `SpectralMatch` is implemented and
-      its gradient is FD-verified, but no recovery has been attempted. It is what the package is
-      named for.
-- [ ] `douse/opt.py` is superseded and does not import. Kept only until its loss functions are
-      confirmed to have no remaining use; `objective.py` reimplements both.
+- [x] **The inverse problem runs end to end** (2026-10-14): `optimize.gauss_newton` on
+      `SpectralMatch.residual` recovers a 1.2 x 0.8 rectangle from six eigenvalues on chladni
+      (`tests/test_inverse_smoke.py`). Second order at a rectangle (shear is a null direction of
+      the ratio Jacobian by reflection symmetry); `K - 1 >= 2N - 4` ratios are needed.
+- [x] `douse/opt.py` deleted 2026-10-14 (its loss functions live in `objective.py`);
+      `archive/pre_milestone1/` with it.
 
 ## Settled, and worth not re-deriving
 

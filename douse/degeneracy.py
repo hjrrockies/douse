@@ -16,9 +16,7 @@ in the reduced family.
 """
 import numpy as np
 
-from lappy.utils import polygon_area
-
-from .polygon import gauge_vector, polygon_vertices
+from .polygon import gauge_vector, polygon_area, polygon_vertices
 
 __all__ = ['turning_angles', 'interior_angles', 'effective_vertices', 'report',
            'canonicalize', 'canonicalize_p', 'respread', 'collapse_candidates',
