@@ -144,7 +144,7 @@ differencing the solver.
 | `douse/errors.py` | the refusals every backend raises: `ShapeRefusal`, `SolverRefusal`, `UnresolvedSpectrum`, `DegenerateSpectrum` |
 | `douse/spectral_guard.py` | the Weyl-count deficit (`weyl_deficit`, `weyl_report`, `DEFICIT_TOL`): is a returned set consecutive? |
 | `douse/sampling.py` | start shapes: `random_convex` and the samplers the multistart grid draws from |
-| `douse/optimize.py` | `descend`, a backtracking method that respects the parametrization's boundary |
+| `douse/optimize.py` | `descend`, a backtracking gradient method that respects the parametrization's boundary; `gauss_newton`, a Levenberg-Marquardt driver on `SpectralMatch.residual` for the inverse problem |
 | `douse/certify.py` | cluster analysis at a degenerate optimum: `first_order_report`, `second_order_probe` |
 | `douse/cluster_opt.py` | `maximize_ratio` — trust-region ascent valid through a degeneracy; `model_gain` (first-order, and the stopping certificate) and `model_gain2` (second-order) |
 | `douse/quasi_newton.py` | `SR1`, `BFGS`, and an exact Moré–Sorensen `tr_subproblem` — the curvature the second-order model carries |
@@ -217,8 +217,12 @@ barrier), whole-set tracking (`lappy.Eigenproblem.track_set`), the multi-start h
    k=3, and — on the exactly solvable rectangle subfamily — returns toward it as `k` grows while
    oscillating forever. Whether that survives on the full N-gon family is open and testable.
 
-Deferred deliberately: the inverse problem, which is implemented and FD-verified but has never
-been run end to end.
+The inverse problem runs end to end since 2026-10-14: `gauss_newton` recovers a 1.2 x 0.8
+rectangle from six eigenvalues on chladni in 12 iterations (`tests/test_inverse_smoke.py`).
+Recovery is second order at a rectangle (the shear is a null direction of the ratio Jacobian,
+by reflection symmetry), so a residual `r` leaves edge errors of order `sqrt(r)`; and `K - 1`
+ratios must cover the family's `2N - 4` parameters, so three eigenvalues do not determine a
+quadrilateral.
 
 ## Tests
 

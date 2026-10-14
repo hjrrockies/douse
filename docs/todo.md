@@ -477,9 +477,10 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
       discourage running, which is how suites rot. The acceptance value is in REACHING the
       square, not in its last three digits, so trimming iteration counts or marking the heaviest
       opt-in would cost little.
-- [ ] **The inverse problem has never been run end to end.** `SpectralMatch` is implemented and
-      its gradient is FD-verified, but no recovery has been attempted. It is what the package is
-      named for.
+- [x] **The inverse problem runs end to end** (2026-10-14): `optimize.gauss_newton` on
+      `SpectralMatch.residual` recovers a 1.2 x 0.8 rectangle from six eigenvalues on chladni
+      (`tests/test_inverse_smoke.py`). Second order at a rectangle (shear is a null direction of
+      the ratio Jacobian by reflection symmetry); `K - 1 >= 2N - 4` ratios are needed.
 - [x] `douse/opt.py` deleted 2026-10-14 (its loss functions live in `objective.py`);
       `archive/pre_milestone1/` with it.
 
