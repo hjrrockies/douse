@@ -82,8 +82,13 @@ def run_one(args):
         from douse.chladni_backend import ChladniEvaluator
         ev = ChladniEvaluator(fam, n_eigs=k + 2, prec=1e-10, degenerate_tol=0.0)
     else:
-        from douse.evaluate import SpectrumEvaluator
-        ev = SpectrumEvaluator(fam, n_eigs=k + 2, warn_gap=0.0, degenerate_tol=0.0)
+        # The deprecated backend (douse[lappy]); `douse.SpectrumEvaluator` is chladni's since
+        # 2026-10-14, so the comparison has to name lappy's explicitly.
+        from douse.evaluate import HAVE_LAPPY, LappySpectrumEvaluator
+        if not HAVE_LAPPY:
+            return dict(backend=backend, N=N, k=k, seed=seed, constrained=bool(constrained),
+                        error="lappy is not installed (douse[lappy]); see benchmarks/lappy/README.md")
+        ev = LappySpectrumEvaluator(fam, n_eigs=k + 2, warn_gap=0.0, degenerate_tol=0.0)
     t0 = time.perf_counter()
     row = dict(backend=backend, N=N, k=k, seed=seed, constrained=bool(constrained))
     trace, stop = [], threading.Event()

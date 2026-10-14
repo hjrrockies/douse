@@ -44,6 +44,8 @@ imported from `summarize_grid` rather than restated, so the two cannot drift apa
 import argparse
 import json
 import os
+import pathlib
+import subprocess
 import time
 import traceback
 import warnings
@@ -59,7 +61,7 @@ from douse.sampling import random_convex
 
 from douse.cluster_opt import maximize_ratio
 from douse.evaluate import ShapeRefusal
-from lappy.core import EigensolverFailure
+from douse.chladni_backend import _quiet
 
 try:
     from .rectangle_exact import best_rectangle
@@ -153,11 +155,44 @@ def partition(rows, sigma_max):
     """
     crashed = [r for r in rows if not r.get('ok', True)]
     ok = [r for r in rows if r.get('ok', True)]
-    drifted = [r for r in ok if r['worst_sigma'] > sigma_max]
-    clean = [r for r in ok if r['worst_sigma'] <= sigma_max]
+    # A ROW WITHOUT A HEALTH STATISTIC IS NEITHER CLEAN NOR DRIFTED, and `nan > x` and
+    # `nan <= x` are both False, so such a row used to vanish from every bucket and every count
+    # (every chladni row did, 2026-10-14). It is reported as UNCERTIFIED instead.
+    uncertified = [r for r in ok if not np.isfinite(_sigma(r))]
+    drifted = [r for r in ok if _sigma(r) > sigma_max]
+    clean = [r for r in ok if _sigma(r) <= sigma_max]
     skipped = [r for r in clean if row_deficit(r) > spectral_guard.DEFICIT_TOL]
-    good = [r for r in clean if row_deficit(r) <= spectral_guard.DEFICIT_TOL]
-    return crashed, drifted, skipped, good
+    good = [r for r in clean if not (row_deficit(r) > spectral_guard.DEFICIT_TOL)]
+    return crashed, drifted, skipped, good, uncertified
+
+
+def _sigma(row):
+    return float(row.get('worst_sigma', float('nan')))
+
+
+def _git_sha(path):
+    try:
+        out = subprocess.run(['git', '-C', str(path), 'rev-parse', '--short', 'HEAD'],
+                             capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() or None
+    except Exception:                                                 # noqa: BLE001
+        return None
+
+
+def _provenance(ev):
+    """WHICH CODE WROTE THIS ROW. A cell is not always written by one version: `run_grid`
+    retries a crashed start on resume, and the backend changed under the grid on 2026-10-14.
+    The row says which solver, at what precision, from which commits."""
+    import douse
+    backend = 'chladni' if type(ev).__module__.endswith('chladni_backend') else 'lappy'
+    row = dict(backend=backend, prec=float(getattr(ev, 'prec', float('nan'))),
+               douse_sha=_git_sha(pathlib.Path(douse.__file__).resolve().parent.parent))
+    try:
+        import chladni
+        row['chladni_sha'] = _git_sha(pathlib.Path(chladni.__file__).resolve().parents[2])
+    except Exception:                                                 # noqa: BLE001
+        row['chladni_sha'] = None
+    return row
 
 
 def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_redraws=3):
@@ -194,16 +229,14 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
         # the cell's answer to 5e-10, with a first-order certificate at criticality 6.7e-08 --
         # and was then EXCLUDED on `worst_sigma = 5.0e-04`, a number belonging to a shape it never
         # optimized. Its own endpoint tensions are 7.0e-13 to 3.3e-12.
-        ev = SpectrumEvaluator(fam, n_eigs=(n_eigs or k + 2), warn_gap=0.0, degenerate_tol=0.0,
-                               lam_max_window=max(8, 2*k + 4), replan_tol=1e-9)
+        ev = SpectrumEvaluator(fam, n_eigs=(n_eigs or k + 2), warn_gap=0.0, degenerate_tol=0.0)
         idx = i if attempt == 0 else i + 1000*attempt
         p0 = param_vector(draw(N, idx, seed0), PERIM)
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with _quiet():
                 ev.eigenvalues(p0)
             break
-        except (ShapeRefusal, EigensolverFailure) as exc:
+        except ShapeRefusal as exc:
             v = fam.vertices(p0)
             redraws.append(dict(start_index=idx, error=f'{type(exc).__name__}: {str(exc)[:120]}',
                                 angles=[float(t) for t in np.sort(np.degrees(
@@ -212,9 +245,7 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
             ev.reset_continuation()
     t0 = time.perf_counter()
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            res = maximize_ratio(ev, p0, k=k, max_iter=max_iter, constraints=cons, delta0=delta0)
+        res = maximize_ratio(ev, p0, k=k, max_iter=max_iter, constraints=cons, delta0=delta0)
     except ShapeRefusal as exc:
         # A REFUSAL AT THE START SHAPE IS FATAL BY DESIGN -- a run cannot begin from a shape whose
         # spectrum it cannot index -- but the outer handler builds its crash row from the
@@ -233,7 +264,7 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
                     n_weyl_refusals=int(getattr(ev, 'n_weyl_refusals', 0)),
                     refusals=list(getattr(ev, 'refusals', []))[:4])
     v = fam.vertices(res.x)
-    return dict(N=N, k=k, start=i, convex=bool(convex), redraws=redraws,
+    return dict(N=N, k=k, start=i, convex=bool(convex), redraws=redraws, **_provenance(ev),
                 start_index=(i if not redraws else i + 1000*len(redraws)),
                 fun=float(res.fun), nit=int(res.nit),
                 seconds=round(time.perf_counter() - t0, 1),
@@ -242,6 +273,7 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
                 edges=[float(t) for t in np.sort(dg.edge_lengths(v))],
                 angles=[float(t) for t in np.sort(np.degrees(dg.interior_angles(v)))],
                 worst_sigma=float(res.worst_sigma), n_replans=int(res.n_replans),
+                n_warnings=int(getattr(res, 'n_warnings', 0)),
                 # `worst_sigma` is measured at lam_1 alone; this one covers every returned value,
                 # which is what a spurious eigenvalue shows up in. Recorded alongside rather than
                 # replacing it: the two have different calibrations and the gates use the first.
@@ -289,8 +321,9 @@ def _cell(job):
     global read at call time, so it is set here.
     """
     N, k, i, max_iter, seed0, delta0, n_eigs, threads, convex = job
-    from lappy import mps as _mps
-    _mps.n_workers_default = max(1, int(threads))
+    # chladni's search is serial per solve and its LAPACK calls run on the BLAS pool; the parent
+    # sets the BLAS thread variables before the pool is created (a spawned child reads them on
+    # importing numpy). `threads` is kept in the job for that purpose and for the row.
     try:
         return run_one(N, k, i, max_iter, seed0, delta0, n_eigs, convex=convex)
     except Exception as exc:                                          # noqa: BLE001
@@ -426,10 +459,13 @@ def main():
     # by `worst_sigma`; a SKIPPED mode is not -- the 2.6203 row had sigma = 1.3e-09 and was
     # optimizing `lam_3/lam_1` under the name `lam_2/lam_1`. Both are excluded from the grouping
     # and both are reported by name below, so a start that vanishes from the groups says why.
-    failed, bad, skipped, good = partition(allrows, args.sigma_max)
+    failed, bad, skipped, good, uncertified = partition(allrows, args.sigma_max)
     print(f'\nN={args.N} k={args.k}: {len(good)} usable of {len(allrows)} start(s) '
           f'({len(bad)} excluded on worst_sigma > {args.sigma_max:.0e}, '
-          f'{len(skipped)} on a missed mode, {len(failed)} crashed)')
+          f'{len(skipped)} on a missed mode, {len(failed)} crashed, '
+          f'{len(uncertified)} without a health statistic)')
+    for r in uncertified:
+        print(f"  UNCERTIFIED start {r['start']}: no worst_sigma recorded")
     for r in failed:
         print(f"  CRASHED start {r['start']}: {r.get('error', '?')[:88]}")
     groups = group(good)
