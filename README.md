@@ -228,8 +228,9 @@ quadrilateral.
 
 ```sh
 uv sync --extra test
-uv run pytest -m "not slow"    # the fast tier: ~225 tests, ~25 s, no optimization runs
-uv run pytest                  # everything: ~310 tests; the slow tier is full optimization runs
+uv run pytest                  # the fast tier (default): ~230 tests, ~35 s, one real end-to-end run
+uv run pytest -m slow          # the slow tier: full optimization runs, ~15 min
+uv run pytest -m ""            # everything
 ```
 
 Tests of the deprecated lappy backend are marked `lappy` and skip unless a *working* lappy is
