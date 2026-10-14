@@ -39,6 +39,25 @@ place, so it was built differently -- see the two entries below.
 
 ## Where things stand
 
+**2026-10-14, later: the follow-up plan, sessions 1-3 done, 4 in progress**
+(`~/.claude/plans/can-you-do-a-compressed-whisper.md` has the full plan). Session 1: a fast
+end-to-end run in the default tier (`tests/test_pipeline_fast.py`), a golden trace of
+`maximize_ratio` on a fake backend (`tests/test_cluster_opt_trace.py`), and the optimizer split
+into nine stages over an explicit `_State` with unit tests on scripted fakes. Session 2:
+chladni's `Spectrum` is a tuple of `Level`s with the cluster logic (`level_index`,
+`neighbourhood`, `cluster`) and `SolveRecord` carries what produced it; douse has one backend
+seam (`douse/backend.py`: `SpectrumBackend`, `SolvedShape`, `RunHealth`, `SolveTrace`), the
+eps-active cluster is built on the solver's levels, and `reseed`/`health` replace the `_last`
+writes and the `getattr` reads. Session 3: `douse/ledger.py` (schema 2, `normalize` reads any
+era), `douse/runs.py` (one evaluator factory and the shape helpers), provenance and the
+per-solve trace on every row, the stored-value pin removed from the summary test; the summary
+table on the tracked ledgers is identical before and after. Session 4 so far: chladni's planner
+aborts rungs early, hands back the accepted rung's solve (one solve per replan saved), and
+declines wild geometry in microseconds; `benchmarks/diagnostics/warm_trace.py` measures where a
+k=2 run's solves go. Open: the measurement's verdict, the shared objective cache, replanning
+less, per-evaluation cost; Session 5 (chladni's `search.solve` in named steps).
+
+
 `lam_k/lam_1` over N-gons of fixed perimeter — the polygon analogue of Osting's Fourier-boundary
 work — is the target. The forward stack (parametrization, shape derivative, objectives,
 optimizer) is built and validated, and the optimizer now covers every position a `lam_k` can
