@@ -54,8 +54,11 @@ per-solve trace on every row, the stored-value pin removed from the summary test
 table on the tracked ledgers is identical before and after. Session 4 so far: chladni's planner
 aborts rungs early, hands back the accepted rung's solve (one solve per replan saved), and
 declines wild geometry in microseconds; `benchmarks/diagnostics/warm_trace.py` measures where a
-k=2 run's solves go. Open: the measurement's verdict, the shared objective cache, replanning
-less, per-evaluation cost; Session 5 (chladni's `search.solve` in named steps).
+k=2 run's solves go. The measurement's verdict (`chladni/notes/warm_trace_2026-10-14.md`): replans are 3-9% of a
+run and all `unmet`; the warm solve is the gap (65-70% of a run, ~90 evaluations each, because
+chladni's warm window is a full prefix). Next levers: per-level warm windows in chladni's
+`_solve_warm`, cadence 10 -> 20, `log_j` once per distinct `(nu, k r)`. Session 5 (chladni's
+`search.solve` in named steps) not started.
 
 
 `lam_k/lam_1` over N-gons of fixed perimeter — the polygon analogue of Osting's Fourier-boundary
