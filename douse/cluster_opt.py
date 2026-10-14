@@ -116,7 +116,7 @@ def _watch_warnings(tally):
         yield
 
 
-def _active_cluster(lams, k, eps_abs):
+def _active_cluster(lams, k, eps_abs, spec=None):
     """Indices `[lo, hi)` of eigenvalues within `eps_abs` (absolute) of `lam_k`.
 
     An EPS-ACTIVE set rather than an exact-degeneracy test. The gap closes continuously as the
@@ -124,6 +124,14 @@ def _active_cluster(lams, k, eps_abs):
     before the end and never get the benefit; and one that fires too eagerly spends solves on
     cluster matrices it does not need. See the module docstring for how `eps_abs` is chosen.
     """
+    if spec is not None:
+        # ON THE SOLVER'S LEVELS, so a computed double is in or out, never half (2026-10-14):
+        # the range of whole levels around the one holding `lam_k`, mapped to unfolded indices.
+        # Identical to the loop below on all-simple spectra, and on a double the loop already
+        # took both copies (their gap is 0 <= eps_abs), so this changes no accepted trace.
+        lo_l, hi_l = spec.neighbourhood(spec.level_index(k), float(eps_abs))
+        ends = np.cumsum(spec.mult)
+        return int(ends[lo_l] - spec.mult[lo_l]), int(ends[hi_l - 1])
     lams = np.asarray(lams, dtype=float)
     lo = hi = k
     while lo > 0 and (lams[k] - lams[lo - 1]) <= eps_abs:
@@ -185,7 +193,11 @@ def local_model(family, p, solver, lams, k=1, eps_rel=1e-3, eps_abs=None, align_
     lams = np.asarray(lams, dtype=float)
     lam_1, lam_k = float(lams[0]), float(lams[k])
     eps_abs = _eps_width(lam_k, eps_rel, eps_abs, eps_floor_rel)
-    lo, hi = _active_cluster(lams, k, float(eps_abs))
+    # The solver's levels, when the solved shape carries them (`SolvedShape.spectrum`).
+    spec = getattr(solver, 'spectrum', None)
+    if spec is not None and spec.count != len(lams):
+        spec = None                           # a truncated array: fall back to the width loop
+    lo, hi = _active_cluster(lams, k, float(eps_abs), spec=spec)
     m, j = hi - lo, k - lo
     out = dict(cluster=(lo, hi), m=m, j=j, lam_1=lam_1, lam_k=lam_k, ratio=lam_k/lam_1,
                eps_abs=float(eps_abs))
@@ -698,7 +710,9 @@ def _degeneracy_move(evaluator, p, F, k, gain_tol=0.0):
     if not cands:
         return None
 
-    best, plan_at = None, evaluator._plan_at
+    best = None
+    plan_at = (evaluator.health().plan_at if hasattr(evaluator, 'health')
+               else getattr(evaluator, '_plan_at', None))
     for v in cands:
         try:
             q = gauge_vector(v, fam.perim, anchor=0)
@@ -852,8 +866,12 @@ class _State:
 
     def reseed(self, ev):
         """Point the tracker's continuation back at the accepted iterate, so the next
-        evaluation continues from where we are rather than from a rejected trial."""
-        ev._last = (self.p.copy(), np.asarray(self.lams).copy())
+        evaluation continues from where we are rather than from a rejected trial
+        (`SpectrumBackend.reseed`; the `_last` write for an evaluator without it)."""
+        if hasattr(ev, 'reseed'):
+            ev.reseed(self.p, np.asarray(self.lams), self.solver)
+        else:
+            ev._last = (self.p.copy(), np.asarray(self.lams).copy())
 
 
 def _ratio(lams, k):
@@ -1158,7 +1176,16 @@ def _result(st, o, ev, tally, lams_tracked, F_tracked, verified):
     lams = st.lams
     gap = (float(np.min(np.diff(np.sort(lams))/np.sort(lams)[:-1]))
            if len(lams) > 1 else np.inf)
+    # The backend's statistics as a value (`SpectrumBackend.health`), carried on the result
+    # under their own names; the older keys below stay for one cycle, filled from the same
+    # record when the evaluator has one.
+    h = ev.health() if hasattr(ev, 'health') else None
+    health = None if h is None else h.as_row()
+
+    def stat(name, old, default):
+        return default if h is None else getattr(h, name)
     return OptimizeResult(x=st.p, fun=st.F, nit=st.it, lams=lams, gap=gap, delta=st.delta,
+                          health=health,
                           n_cluster_steps=st.n_cluster_steps,
                           n_interior_steps=st.n_interior_steps,
                           n_infeasible=st.n_infeasible, n_unresolved=st.n_unresolved,
@@ -1167,14 +1194,18 @@ def _result(st, o, ev, tally, lams_tracked, F_tracked, verified):
                           n_solver_refused=st.n_solver_refused,
                           n_discontinuity_repairs=st.n_discontinuity_repairs,
                           # The refused shapes themselves, not just the count.
-                          refusals=list(getattr(ev, 'refusals', [])),
+                          refusals=(list(h.refusals) if h is not None
+                                    else list(getattr(ev, 'refusals', []))),
                           # Where the basis was planned, on every result.
-                          plan_at=(None if getattr(ev, '_plan_built_at', None) is None
-                                   else [float(t) for t in ev._plan_built_at]),
+                          plan_at=(health['plan_built_at'] if h is not None else
+                                   (None if getattr(ev, '_plan_built_at', None) is None
+                                    else [float(t) for t in ev._plan_built_at])),
                           # Warnings the run produced (shown once per text, counted in full).
                           n_warnings=int(tally['n']),
-                          worst_sigma_any=float(getattr(ev, 'worst_sigma_any', np.nan)),
-                          n_spurious_refusals=int(getattr(ev, 'n_spurious_refusals', 0)),
+                          worst_sigma_any=float(stat('worst_bound', 'worst_sigma_any',
+                                                     getattr(ev, 'worst_sigma_any', np.nan))),
+                          n_spurious_refusals=int(stat('n_unmet_refusals', 'n_spurious_refusals',
+                                                       getattr(ev, 'n_spurious_refusals', 0))),
                           n_degeneracy_moves=st.n_degeneracy_moves,
                           n_qn_steps=st.n_qn_steps, resolution=float(st.resolution),
                           n_curv_updates=((0, 0) if st.H1 is None
@@ -1184,10 +1215,15 @@ def _result(st, o, ev, tally, lams_tracked, F_tracked, verified):
                           # THE BASIS HEALTH GOES IN THE RESULT, always: a ratio reported without
                           # saying how well its basis resolved the shape is what produced 3.0717
                           # for a problem whose answer is above 3.18.
-                          worst_sigma=float(getattr(ev, 'worst_sigma', np.nan)),
-                          n_replans=int(getattr(ev, 'n_replans', 0)),
-                          worst_weyl_deficit=float(getattr(ev, 'worst_weyl_deficit', np.nan)),
-                          n_weyl_flags=int(getattr(ev, 'n_weyl_flags', 0)),
+                          worst_sigma=float(stat('worst_bound', 'worst_sigma',
+                                                 getattr(ev, 'worst_sigma', np.nan))),
+                          n_replans=int(stat('n_replans', 'n_replans',
+                                             getattr(ev, 'n_replans', 0))),
+                          worst_weyl_deficit=float(stat('worst_deficit', 'worst_weyl_deficit',
+                                                        getattr(ev, 'worst_weyl_deficit',
+                                                                np.nan))),
+                          n_weyl_flags=int(stat('n_audit_flags', 'n_weyl_flags',
+                                                getattr(ev, 'n_weyl_flags', 0))),
                           lams_tracked=lams_tracked, fun_tracked=F_tracked,
                           verified=verified, success=st.success, message=st.message)
 

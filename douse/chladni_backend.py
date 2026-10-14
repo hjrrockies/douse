@@ -41,9 +41,12 @@ from contextlib import contextmanager
 
 import numpy as np
 
+import time
+
+from .backend import RunHealth, SolveTrace
 from .errors import DegenerateSpectrum, SolverRefusal, UnresolvedSpectrum
 
-__all__ = ["ChladniEvaluator", "ChladniSolver", "refusal_for"]
+__all__ = ["SpectrumEvaluator", "ChladniEvaluator", "ChladniSolver", "refusal_for"]
 
 
 @contextmanager
@@ -80,22 +83,28 @@ class ChladniSolver:
     """The handle `ChladniEvaluator.eigenvalues` returns: one solved shape, with what
     `douse.derivative` needs from it."""
 
-    def __init__(self, spec, vertices, degenerate_tol=1e-6):
-        self.spec = spec
+    def __init__(self, record, vertices, degenerate_tol=1e-6):
+        self.record = record                      # chladni's SolveRecord: plan, solver, ...
+        self.spec = record.spectrum               # the value: levels with multiplicities
         self.vertices = np.asarray(vertices, dtype=complex)
         self.degenerate_tol = float(degenerate_tol)
         self._H = {}
 
     @property
+    def spectrum(self):
+        """The `chladni.eigensolver.Spectrum` of this shape (`SolvedShape`)."""
+        return self.spec
+
+    @property
     def basis(self):
         """The realized basis this shape was solved on (its size is the plan's, on every shape)."""
-        return self.spec.source.basis
+        return self.record.basis
 
     def _velocity(self):
         """`V(curve, t)` for the 2N vertex-coordinate fields, `[x_0..x_{N-1}, y_0..y_{N-1}]`:
         moving vertex k displaces its two edges linearly in t, and V is that displacement's normal
         component (outward normal, `chladni` boundaries run counter-clockwise)."""
-        dom = self.spec.source.domain
+        dom = self.record.domain
         segs = [s for b in dom.boundaries for s in b.segments]
         verts = self.vertices
         n = len(verts)
@@ -116,19 +125,17 @@ class ChladniSolver:
         return V
 
     def _level(self, lam):
-        i = int(np.argmin(np.abs(self.spec.lam - float(lam))))
-        if abs(self.spec.lam[i] - lam) > 1e-6 * abs(lam):
-            raise ValueError(f"lam = {lam} is not a level of this spectrum")
-        return i
+        return self.spec.level_of(lam)
 
     def hadamard_vertices(self, i):
         """`(2N, m, m)` for level `i`, cached."""
         if i not in self._H:
             with _quiet():
-                self._H[i] = self.spec.hadamard(i, self._velocity())
+                self._H[i] = self.record.hadamard(i, self._velocity())
         return self._H[i]
 
-    def chladni_dlams_dvertices(self, lams, n_vert):
+    def dlams_dvertices(self, lams, n_vert):
+        """`(K, 2N)`: the simple-eigenvalue gradients (`SolvedShape`)."""
         J = np.empty((len(lams), 2 * n_vert))
         for j, lam in enumerate(lams):
             i = self._level(lam)
@@ -141,21 +148,11 @@ class ChladniSolver:
         return J
 
     def _cluster_levels(self, lam, mult, lams):
-        """The level indices making up a cluster of `mult` eigenvalues near `lam`: those of the
-        members `lams` when given, else the adjacent levels whose multiplicities sum to `mult`."""
-        if lams is not None:
-            idx = sorted({self._level(l) for l in lams})
-        else:
-            lv = np.asarray(self.spec.lam)
-            order = np.argsort(np.abs(lv - float(lam)))
-            idx, got = [], 0
-            for i in order:
-                if got >= int(mult):
-                    break
-                idx.append(int(i))
-                got += int(self.spec.mult[i])
-            idx.sort()
-        if sum(int(self.spec.mult[i]) for i in idx) != int(mult):
+        """The level indices making up a cluster of `mult` eigenvalues near `lam`
+        (`Spectrum.cluster`): those of the members `lams` when given, else the adjacent levels
+        whose multiplicities sum to `mult`."""
+        idx, total = self.spec.cluster(lams, near=lam, mult=mult)
+        if total != int(mult):
             # A refusal, not a bug: the caller's eps-active cluster and the solver's levels
             # disagree on how many eigenvalues sit here, so no block is honest. Raised as a
             # `ShapeRefusal` so an optimizer rejects the trial and shrinks rather than dying.
@@ -166,19 +163,23 @@ class ChladniSolver:
                 + f" hold {sum(int(self.spec.mult[i]) for i in idx)}")
         return idx
 
-    def chladni_cluster_matrices(self, family, p, lam, mult, lams=None):
-        """`(n_p, m, m)` for the cluster of `mult` eigenvalues near `lam`. One level of
-        multiplicity `m`, or several distinct levels -- a nearly degenerate cluster -- taken as
-        ONE block with their cross terms (`Spectrum.hadamard([i, j, ...])`)."""
+    def cluster_matrices_dvertices(self, family, p, lam, mult, lams=None):
+        """`(n_p, m, m)` for the cluster of `mult` eigenvalues near `lam` (`SolvedShape`). One
+        level of multiplicity `m`, or several distinct levels -- a nearly degenerate cluster --
+        taken as ONE block with their cross terms (`SolveRecord.hadamard([i, j, ...])`)."""
         idx = self._cluster_levels(lam, mult, lams)
         key = tuple(idx)
         if key not in self._H:
             with _quiet():
-                self._H[key] = self.spec.hadamard(idx[0] if len(idx) == 1 else idx,
-                                                  self._velocity())
+                self._H[key] = self.record.hadamard(idx[0] if len(idx) == 1 else idx,
+                                                    self._velocity())
         H = self._H[key]                                        # (2N, m, m)
         Jv = family.d_vertices_dp(p)                            # (2N, n_p)
         return np.einsum("fij,fp->pij", H, Jv)
+
+    # The names `douse.derivative` dispatched on before the `SolvedShape` protocol (2026-10-14).
+    chladni_dlams_dvertices = dlams_dvertices
+    chladni_cluster_matrices = cluster_matrices_dvertices
 
 
 class SpectrumEvaluator:
@@ -242,6 +243,10 @@ class SpectrumEvaluator:
         self.n_solver_refusals = 0
         self.refusals = []
         self.max_refusals_kept = 16
+        #: One `SolveTrace` per solve -- cold / warm / replan, why, rung, evaluations, seconds --
+        #: capped, for the ledger and for diagnosing a slow run (`health().trace`).
+        self.trace = []
+        self.max_trace_kept = 400
 
     def __repr__(self):
         return (f"SpectrumEvaluator({self.family!r}, n_eigs={self.n_eigs}, "
@@ -290,6 +295,11 @@ class SpectrumEvaluator:
             self.replan(p)
             self.n_replans += 1
             spec, exc = self._solve(dom, self.plan(p), p)
+            if self.trace:
+                self.trace[-1] = SolveTrace(kind="replan", reason=self.trace[-1].reason,
+                                            rung=self.trace[-1].rung,
+                                            n_evals=self.trace[-1].n_evals,
+                                            seconds=self.trace[-1].seconds)
         if exc is not None:
             self._record(p, str(exc), spec)
             if isinstance(exc, UnresolvedSpectrum):
@@ -312,6 +322,33 @@ class SpectrumEvaluator:
         self._check_gap(lams[:self.n_eigs])     # before the seed moves, as on the lappy backend
         self._remember(p, spec, lams)
         return lams, ChladniSolver(spec, verts, self.degenerate_tol)
+
+    def reseed(self, p, lams, solved=None):
+        """Point warm tracking at the accepted iterate `(p, lams)` after a rejected trial
+        (`SpectrumBackend`). With `solved` (the `ChladniSolver` returned for that iterate) its
+        record is put back so the next warm solve continues from it even after two trial
+        solves evicted it -- which used to force a cold solve."""
+        p = np.asarray(p, dtype=float)
+        self._last = (p.copy(), np.array(lams, dtype=float))
+        rec = getattr(solved, "record", None)
+        if rec is not None:
+            self._specs.pop(p.tobytes(), None)
+            self._specs[p.tobytes()] = rec
+            while len(self._specs) > 2:
+                self._specs.pop(next(iter(self._specs)))
+
+    def health(self):
+        """The run's statistics as a value (`RunHealth`), with chladni's meaning."""
+        return RunHealth(worst_bound=self.worst_sigma, last_bound=self.last_sigma,
+                         worst_deficit=self.worst_weyl_deficit, n_replans=self.n_replans,
+                         n_solves=self.n_solves, n_warm=self.n_tracks,
+                         n_warm_refused=self.n_track_refusals,
+                         n_tension_evals=self.n_tension_evals, n_audit_flags=self.n_weyl_flags,
+                         n_audit_refusals=self.n_weyl_refusals,
+                         n_unmet_refusals=self.n_spurious_refusals,
+                         n_solver_refusals=self.n_solver_refusals, min_gap=self.min_gap,
+                         refusals=tuple(self.refusals), plan_at=self._plan_at,
+                         plan_built_at=self._plan_built_at, trace=tuple(self.trace))
 
     def _health(self, spec):
         """Fold an accepted spectrum into the run statistics (see `__init__`)."""
@@ -380,6 +417,7 @@ class SpectrumEvaluator:
         from chladni.eigenproblem import Eigenproblem
         if near is not None and near.plan is not plan:
             near = None
+        t0, kind = time.perf_counter(), "cold"
         try:
             try:
                 with _quiet():
@@ -390,22 +428,36 @@ class SpectrumEvaluator:
                     raise
                 self.replan(p)                  # a different corner structure: re-plan here
                 self.n_replans += 1
+                kind = "replan"
                 with _quiet():
                     spec = Eigenproblem(dom).solve(self.n_eigs, prec=self.prec,
                                                    plan=self.plan(p))
         except (RuntimeError, ValueError) as e:
             self.n_solver_refusals += 1
+            self._trace(kind, f"{type(e).__name__}: {e}", plan, None, t0)
             exc = SolverRefusal(f"chladni could not solve this shape: {e}")
             exc.__cause__ = e
             return None, exc
         if spec.warm:
             self.n_tracks += 1
+            kind = "warm"
         else:
             self.n_solves += 1
             if near is not None:
                 self.n_track_refusals += 1
         self.last_warm_note = spec.warm_note
-        return spec, refusal_for(spec)
+        refusal = refusal_for(spec)
+        self._trace(kind, spec.warm_note if refusal is None else str(refusal), spec.plan,
+                    spec, t0)
+        return spec, refusal
+
+    def _trace(self, kind, reason, plan, spec, t0):
+        if len(self.trace) < self.max_trace_kept:
+            d = None if spec is None else getattr(spec, "diagnostics", None)
+            self.trace.append(SolveTrace(
+                kind=kind, reason=reason, rung=getattr(plan, "rung", None),
+                n_evals=int(getattr(d, "evaluations", 0) or 0),
+                seconds=time.perf_counter() - t0))
 
     def _record(self, p, error, spec=None):
         if len(self.refusals) < self.max_refusals_kept:

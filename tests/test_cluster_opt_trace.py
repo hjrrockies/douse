@@ -147,7 +147,11 @@ def _compare(got, want, path=""):
         for i, (g, w) in enumerate(zip(got, want)):
             _compare(g, w, f"{path}[{i}]")
     elif isinstance(want, dict):
-        assert set(got) == set(want), (path, set(got) ^ set(want))
+        # A result may GAIN keys without re-recording (the golden is a floor, not a ceiling);
+        # it may never lose one or change one. Callback dicts are compared in full.
+        assert set(want) <= set(got), (path, set(want) - set(got))
+        if path.startswith("trace"):
+            assert set(got) == set(want), (path, set(got) ^ set(want))
         for key in want:
             _compare(got[key], want[key], f"{path}.{key}")
     else:

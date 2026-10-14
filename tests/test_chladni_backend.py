@@ -250,10 +250,11 @@ def test_a_seed_with_no_spectrum_behind_it_solves_cold():
 
 # ── a multiple level is never cut by the request ──────────────────────────────────────────────
 
-class _Levels:
-    """A `Spectrum` stand-in: levels with multiplicities, as `ChladniSolver` reads them."""
+class _Record:
+    """A `SolveRecord` stand-in: the spectrum is all `ChladniSolver` reads here."""
     def __init__(self, lam, mult):
-        self.lam, self.mult = np.asarray(lam, float), np.asarray(mult, int)
+        from chladni.eigensolver import Spectrum
+        self.spectrum = Spectrum.from_arrays(lam, mult)
 
 
 def test_a_cluster_that_straddles_the_request_resolves_to_the_solvers_levels():
@@ -262,7 +263,7 @@ def test_a_cluster_that_straddles_the_request_resolves_to_the_solvers_levels():
     count. Asked for exactly those levels, the solver must say so; asked for two where it holds
     three, it refuses rather than building a block that is not the cluster's."""
     from douse.chladni_backend import ChladniSolver
-    sol = ChladniSolver(_Levels([10.0, 20.0, 30.0], [1, 1, 2]), [0, 1, 1 + 1j, 1j])
+    sol = ChladniSolver(_Record([10.0, 20.0, 30.0], [1, 1, 2]), [0, 1, 1 + 1j, 1j])
     assert sol._cluster_levels(25.0, 3, lams=[20.0, 30.0]) == [1, 2]
     assert sol._cluster_levels(30.0, 2, lams=None) == [2]
     with pytest.raises(UnresolvedSpectrum, match="does not match the solver's levels"):

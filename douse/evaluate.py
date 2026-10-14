@@ -518,6 +518,24 @@ class LappySpectrumEvaluator:
         """Forget the previous iterate, so the next call does a full solve. Use after a jump."""
         self._last = None
 
+    def reseed(self, p, lams, solved=None):
+        """`SpectrumBackend.reseed`: the continuation seed is `(p, lams)`."""
+        self._last = (np.asarray(p, dtype=float).copy(), np.asarray(lams, dtype=float).copy())
+
+    def health(self):
+        """`SpectrumBackend.health`, with lappy's statistics under chladni's names: here
+        `worst_bound` IS the worst MPS tension at lam_1 (`worst_sigma`), not a certified bound."""
+        from .backend import RunHealth
+        return RunHealth(worst_bound=self.worst_sigma, last_bound=self.last_sigma,
+                         worst_deficit=self.worst_weyl_deficit, n_replans=self.n_replans,
+                         n_solves=self.n_solves, n_warm=self.n_tracks,
+                         n_warm_refused=self.n_track_refusals, n_tension_evals=0,
+                         n_audit_flags=self.n_weyl_flags, n_audit_refusals=self.n_weyl_refusals,
+                         n_unmet_refusals=self.n_spurious_refusals,
+                         n_solver_refusals=self.n_solver_refusals, min_gap=self.min_gap,
+                         refusals=tuple(self.refusals), plan_at=self._plan_at,
+                         plan_built_at=self._plan_built_at)
+
 
 class ObjectiveFunction:
     """`p -> (value, gradient)`, ready for `scipy.optimize.minimize(..., jac=True)`.

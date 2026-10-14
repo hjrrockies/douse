@@ -99,7 +99,9 @@ def dlams_dvertices(solver, lams, n_vert, bq=None):
     built once and shared, so the marginal cost of another mode is one `eigenfunction_coef` plus
     one Cauchy-data evaluation -- not another `2N` integrals from scratch.
     """
-    if hasattr(solver, 'chladni_dlams_dvertices'):       # the chladni backend: its own rule
+    if hasattr(solver, 'dlams_dvertices'):               # a `SolvedShape` (douse.backend)
+        return solver.dlams_dvertices(lams, n_vert)
+    if hasattr(solver, 'chladni_dlams_dvertices'):       # the name before the protocol
         return solver.chladni_dlams_dvertices(lams, n_vert)
     if bq is None:
         bq = solver.hadamard_quad
@@ -208,7 +210,9 @@ def cluster_matrices(family, p, solver, lam, mult, bq=None, lams=None):
     orthonormal basis of the eigenspace, so the entries depend on a choice that moves under
     perturbation -- never difference them across iterates, never cache the basis.
     """
-    if hasattr(solver, 'chladni_cluster_matrices'):      # the chladni backend
+    if hasattr(solver, 'cluster_matrices_dvertices'):    # a `SolvedShape` (douse.backend)
+        return solver.cluster_matrices_dvertices(family, p, lam, mult, lams)
+    if hasattr(solver, 'chladni_cluster_matrices'):      # the name before the protocol
         return solver.chladni_cluster_matrices(family, p, lam, mult, lams)
     if bq is None:
         bq = solver.hadamard_quad
