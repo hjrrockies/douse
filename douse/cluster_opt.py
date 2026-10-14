@@ -1031,7 +1031,6 @@ def _trial_step(st, o, ev, tally):
         st.reseed(ev)
         if o.callback is not None:
             o.callback(st.p, st.F, st.model, st.delta, -np.inf)
-        st.it += 1
         if st.refusal_streak >= o.max_unresolved_streak:
             st.message = (f'the solver refused {st.refusal_streak} consecutive trial '
                           f'shapes within delta={st.delta:.3g} of this iterate; the last '
@@ -1081,7 +1080,6 @@ def _repair_discontinuity(st, o, ev, tally):
         st.n_discontinuity_repairs += 1
         st.adopt(st.p, F_fresh, lams_fresh, solver_fresh)
         st.delta = min(max(d0, st.delta), o.delta_max)
-        st.it += 1
         return Outcome.NEXT_ITER
     return Outcome.CONTINUE
 

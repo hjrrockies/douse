@@ -80,7 +80,7 @@ def test_a_refusal_shrinks_counts_reseeds_and_tries_again():
     out = _trial_step(st, o, ev, tally)
     assert out is Outcome.NEXT_ITER
     assert st.delta == 0.025 and st.n_unresolved == 1 and st.n_solver_refused == 0
-    assert st.refusal_streak == 1 and st.it == 2
+    assert st.refusal_streak == 1 and st.it == 1          # `nit` is the loop index, not +1
     assert len(ev.reseeds) == 1 and np.array_equal(ev.reseeds[0][1], st.lams)
     assert seen == [(0.025, -np.inf)]
 
@@ -147,7 +147,7 @@ def test_a_discontinuity_is_repaired_by_believing_the_fresh_solve():
     o, tally = _opts(), dict(n=0, seen=set())
     assert _repair_discontinuity(st, o, ev, tally) is Outcome.NEXT_ITER
     assert ev.resets == 1 and st.F == 2.4 and st.n_discontinuity_repairs == 1
-    assert st.delta == 0.05 and st.reject_run == [] and st.it == 2
+    assert st.delta == 0.05 and st.reject_run == [] and st.it == 1
 
 
 def test_a_refused_fresh_solve_drops_the_repair_and_keeps_the_run():
