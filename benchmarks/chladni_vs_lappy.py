@@ -8,6 +8,13 @@ k + 2. Each run's optimum, gap to the degeneracy, iterations, cluster steps, ref
 time go to one JSONL row, written as it finishes.
 
     .venv/bin/python benchmarks/chladni_vs_lappy.py [WORKERS]       # default 4; JSONL and a table
+    .venv/bin/python benchmarks/chladni_vs_lappy.py [WORKERS] --unconstrained
+
+Constrained by default, as douse's own ratio benchmarks run (`ratio_multistart.py`):
+`ConstraintSet(MinEdgeLength(fam), ClosingBudget(fam))`. The first comparison (2026-10-13 overnight)
+ran unconstrained by mistake, so an optimizer could drive an edge to zero -- a shape douse is set up
+never to visit, where it crosses to a flat vertex instead (`cluster_opt._degeneracy_move`). Those
+rows are kept in `run/chladni_vs_lappy.jsonl`; `--unconstrained` reproduces them.
 
 Each job runs in a fresh process, and its row records its peak memory (`peak_mb`) and a trace
 sampled every 30 s; a job past MEM_CAP is stopped and recorded as an error. Run ONE instance at a
@@ -31,7 +38,9 @@ import numpy as np  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-OUT = os.path.join(HERE, "run", "chladni_vs_lappy.jsonl")
+CONSTRAINED = "--unconstrained" not in sys.argv
+OUT = os.path.join(HERE, "run", "chladni_vs_lappy_constrained.jsonl" if CONSTRAINED
+                   else "chladni_vs_lappy.jsonl")
 PERIM = 4.0
 MEM_CAP = 4 * 2**30   # per job; past it the job is stopped and recorded (2026-10-13: an 8+8-worker
                       # run exhausted 16 GB and the kernel panicked)
@@ -60,11 +69,15 @@ def _watch(trace, stop, every=30.0):
 
 
 def run_one(args):
-    backend, N, k, seed = args
+    backend, N, k, seed, constrained = args
     warnings.simplefilter("ignore")
     from douse.cluster_opt import maximize_ratio
     from douse.polygon import VertexPolygon, param_vector
     fam = VertexPolygon(N, perim=PERIM)
+    cons = None
+    if constrained:
+        from douse import ClosingBudget, ConstraintSet, MinEdgeLength
+        cons = ConstraintSet(MinEdgeLength(fam), ClosingBudget(fam))
     if backend == "chladni":
         from douse.chladni_backend import ChladniEvaluator
         ev = ChladniEvaluator(fam, n_eigs=k + 2, prec=1e-10, degenerate_tol=0.0)
@@ -72,17 +85,19 @@ def run_one(args):
         from douse.evaluate import SpectrumEvaluator
         ev = SpectrumEvaluator(fam, n_eigs=k + 2, warn_gap=0.0, degenerate_tol=0.0)
     t0 = time.perf_counter()
-    row = dict(backend=backend, N=N, k=k, seed=seed)
+    row = dict(backend=backend, N=N, k=k, seed=seed, constrained=bool(constrained))
     trace, stop = [], threading.Event()
     threading.Thread(target=_watch, args=(trace, stop), daemon=True).start()
     try:
         res = maximize_ratio(ev, param_vector(_perturbed(N, 0.08, seed), PERIM), k=k,
-                             max_iter=80)
+                             max_iter=80, constraints=cons)
         row.update(fun=float(res.fun), gap=float(res.gap), nit=int(res.nit),
                    n_cluster_steps=int(res.n_cluster_steps),
                    n_unresolved=int(res.n_unresolved),
                    n_solver_refused=int(res.n_solver_refused),
                    message=str(res.message)[:200], x=[float(t) for t in res.x])
+        row.update({c: int(getattr(ev, c)) for c in ("n_solves", "n_tracks", "n_track_refusals",
+                                                     "n_replans") if hasattr(ev, c)})
     except Exception as e:  # noqa: BLE001 -- a crash is a result
         row.update(error=f"{type(e).__name__}: {str(e)[:300]}")
     except KeyboardInterrupt:
@@ -101,7 +116,7 @@ def main(workers=4):
         for line in open(OUT):
             r = json.loads(line)
             done.add((r["backend"], r["N"], r["k"], r["seed"]))
-    jobs = [(b, N, k, s) for (N, k, s) in CASES for b in ("chladni", "lappy")
+    jobs = [(b, N, k, s, CONSTRAINED) for (N, k, s) in CASES for b in ("chladni", "lappy")
             if (b, N, k, s) not in done]
     with ProcessPoolExecutor(workers, max_tasks_per_child=1) as ex, open(OUT, "a") as fh:
         futs = [ex.submit(run_one, j) for j in jobs]
@@ -133,7 +148,8 @@ def report():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "report":
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if args and args[0] == "report":
         report()
     else:
-        main(int(sys.argv[1]) if len(sys.argv) > 1 else 4)
+        main(int(args[0]) if args else 4)
