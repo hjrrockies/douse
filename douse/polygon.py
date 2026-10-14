@@ -26,11 +26,36 @@ answer. Use `param_vector` to build an initial guess and never again inside a lo
 """
 import numpy as np
 
-from lappy import Polygon
-from lappy.utils import edge_lengths, polygon_area, polygon_perimeter
 
-__all__ = ['polygon_vertices', 'd_vertices_dp', 'param_vector', 'perimeter_gradient',
-           'VertexPolygon', 'n_params', 'n_vertices']
+# Geometry helpers, lappy's conventions exactly (`lappy/utils.py`), so douse no longer imports
+# lappy for them (2026-10-14).
+def _complex_form(pts):
+    pts = np.asarray(pts)
+    if np.iscomplexobj(pts):
+        return pts
+    if pts.ndim == 2 and pts.shape[1] == 2:
+        return pts[:, 0] + 1j*pts[:, 1]
+    return pts.astype(complex)
+
+
+def edge_lengths(vertices):
+    """Edge lengths, edge i running from vertex i to vertex i+1."""
+    v = _complex_form(vertices)
+    return np.abs(np.roll(v, -1) - v)
+
+
+def polygon_area(vertices):
+    """Signed area by the shoelace formula: positive for counter-clockwise vertices."""
+    v = _complex_form(vertices)
+    x, y = v.real, v.imag
+    return 0.5*np.sum((x - np.roll(x, -1))*(y + np.roll(y, -1)))
+
+
+def polygon_perimeter(vertices):
+    return float(np.sum(edge_lengths(vertices)))
+
+__all__ = ['polygon_vertices', 'd_vertices_dp', 'param_vector', 'gauge_vector',
+           'perimeter_gradient', 'VertexPolygon', 'n_params', 'n_vertices']
 
 
 def n_params(n_vert):
@@ -177,6 +202,34 @@ def param_vector(vertices, perim=1.0):
     return np.concatenate([vertices[1:-1].real, vertices[1:-1].imag])
 
 
+def gauge_vector(vertices, perim=1.0, anchor=0):
+    """`param_vector` WITHOUT the longest-side roll: the caller chooses which vertex anchors.
+
+    `param_vector` fixes the gauge and also picks the labelling, by putting the longest side last.
+    That second choice is the non-smooth one, and it is also the wrong one when a caller has
+    already decided which vertex should be `v_0` -- it silently overrides them.
+
+    IT HAS TO BE OVERRIDABLE, because `v_0` is the vertex `polygon_vertices` solves for and the
+    solve fails when `v_0` is FLAT. The two closing edges are then collinear, so the closing
+    budget `C` equals `|v_1|` exactly and the constructor refuses with "no such polygon exists" --
+    on a perfectly good shape, purely because of how it was labelled. Measured on the unit square
+    written as an 8-gon with four flat vertices, which is exactly the representation
+    `douse.constraints` relies on being available: `param_vector` rolls a flat vertex into `v_0`
+    (every side ties at 0.5, so `argmax` takes the first) and the round trip raises.
+
+    `anchor` is the index that becomes `v_0`. `douse.degeneracy.canonicalize_p` passes the corner
+    furthest from flat.
+    """
+    vertices = np.asarray(vertices, dtype=complex).copy()
+    if polygon_area(vertices) < 0:
+        vertices = vertices[::-1]
+    vertices = np.roll(vertices, -int(anchor))
+    vertices = vertices - vertices[-1]
+    vertices = vertices*np.exp(-1j*np.angle(vertices[0] - vertices[-1]))
+    vertices = vertices/(edge_lengths(vertices).sum()/perim)
+    return np.concatenate([vertices[1:-1].real, vertices[1:-1].imag])
+
+
 class VertexPolygon:
     """A family of `n`-gons of fixed perimeter, parametrized by `2n-4` real numbers.
 
@@ -185,7 +238,7 @@ class VertexPolygon:
     owns *a* domain and its conventions; this owns *families* of them.
 
         fam = VertexPolygon(4)
-        dom = fam(p)                 # a lappy.Polygon
+        dom = fam(p)                 # a chladni Polygon (Dirichlet)
         J   = fam.d_vertices_dp(p)   # (2n, 2n-4)
     """
 
@@ -217,9 +270,10 @@ class VertexPolygon:
         return d_vertices_dp(self._check(p), self.perim)
 
     def __call__(self, p, **kwargs):
-        """The `lappy.Polygon` for `p`.
+        """The `chladni.geometry.Polygon` for `p`, Dirichlet unless `bc` is given (chladni is
+        douse's backend since 2026-10-14; `lappy_domain` gives the deprecated lappy one).
 
-        Orientation is checked here rather than left to `lappy`, because the message matters to
+        Orientation is checked here rather than left to the solver, because the message matters to
         an optimizer: a counter-clockwise polygon and its mirror image are both valid shapes with
         the same spectrum, but only one of them is in this parametrization's range.
         """
@@ -229,6 +283,17 @@ class VertexPolygon:
                 'this p gives a clockwise polygon, which is outside the parametrization\'s '
                 'range. Its mirror image has the same spectrum and is inside; `param_vector` '
                 'produces the right orientation from any simple polygon.')
+        from chladni.geometry import Polygon
+        kwargs.setdefault("bc", "dir")
+        return Polygon(vertices, **kwargs)
+
+    def lappy_domain(self, p, **kwargs):
+        """The `lappy.Polygon` for `p`. DEPRECATED: for the lappy backend only (douse[lappy])."""
+        from lappy import Polygon
+        vertices = self.vertices(p)
+        if polygon_area(vertices) < 0:
+            raise ValueError('this p gives a clockwise polygon, which is outside the '
+                             'parametrization\'s range')
         return Polygon(vertices, **kwargs)
 
     def is_valid(self, p):

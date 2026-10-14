@@ -1,0 +1,1 @@
+{"N": 5, "k": 3, "start": 5, "quasi_newton": false, "fun": 4.444630071654563, "nit": 332, "success": false, "message": "trust radius collapsed to 5.68e-15", "resolution": NaN, "n_cluster_steps": 94, "seconds": 2109.6}

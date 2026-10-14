@@ -248,3 +248,28 @@ def test_lam_1_is_never_degenerate_so_it_is_unaffected():
         lams, J = ev(p_sq)                    # must not raise
     assert abs(lams[0] - 2*np.pi**2) < 1e-9, lams
     assert J.shape == (1, fam.n_params)
+
+
+def test_the_result_reprs_whatever_its_producer_filled_in():
+    """`repr` must not assume `descend`'s field set.
+
+    `cluster_opt.maximize_ratio` has no line search and no gradient at a cluster, so it sets
+    neither `nfev` nor `grad_norm` -- and the old fixed format string raised
+    `AttributeError: nfev` on every result it produced. Printing a result is the first thing
+    anyone does with one.
+    """
+    from douse.optimize import OptimizeResult
+
+    lean = OptimizeResult(x=1, fun=2.0, nit=3, success=True, message='m')
+    assert 'fun=2' in repr(lean) and 'nfev' not in repr(lean)
+
+    descended = OptimizeResult(x=1, fun=2.5, nit=8, nfev=20, grad_norm=1e-9,
+                               success=False, message='stalled')
+    assert 'nfev=20' in repr(descended) and 'grad_norm' in repr(descended)
+
+    ratio = OptimizeResult(x=1, fun=3.18, nit=79, gap=1e-6, delta=3e-9, worst_sigma=2.4e-10,
+                           success=True, message='crit')
+    for expected in ('gap=', 'delta=', 'worst_sigma='):
+        assert expected in repr(ratio)
+
+    assert repr(OptimizeResult(x=1, fun=None, nit=0, success=False, message='')) is not None

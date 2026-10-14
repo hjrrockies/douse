@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "douse"
-version = "0.0.1"
-description = "Domains of Unknown Shape, from Eigenvalues: shape optimization and inverse spectral problems on top of lappy"
+version = "0.5.0"
+description = "Domains of Unknown Shape, from Eigenvalues: shape optimization and inverse spectral problems on top of chladni"
 authors = [{name = "Hayden Ringer", email = "hringer@vt.edu"}]
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,10 +15,20 @@ dependencies = [
     "scipy >= 1.14",
     "matplotlib >= 3.9",
     "joblib >= 1.4",
-    "jupyter>=1.1.1",
-    "lappy>=0.9",
-    "ipython==8.22.0",
+    "chladni",
+    # The SDP branch of the cluster subproblem (`cluster_opt`); imported lazily there.
+    "cvxpy>=1.9.2",
 ]
 
+[project.optional-dependencies]
+test = ["pytest >= 8.4"]
+# Notebooks under jupyter_notebooks/ and the animation benchmarks; not needed by the package.
+dev = ["douse[test]", "jupyter >= 1.1.1", "ipython >= 8.22"]
+# DEPRECATED (2026-10-14): the lappy backend (`LappySpectrumEvaluator`), kept so older results
+# reproduce. chladni is the default backend. lappy cannot run beside chladni's gsvd4py >= 0.4
+# (it passes `tola`/`tolb`, removed there), so this extra needs its own environment.
+lappy = ["lappy>=0.9"]
+
 [tool.uv.sources]
+chladni = { path = "../chladni", editable = true }
 lappy = { path = "../lappy", editable = true }

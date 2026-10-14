@@ -1,0 +1,1 @@
+{"N": 5, "k": 2, "start": 3, "quasi_newton": false, "fun": 3.1912930372124686, "nit": 400, "success": false, "message": "reached max_iter=400", "resolution": NaN, "n_cluster_steps": 393, "seconds": 1699.3}

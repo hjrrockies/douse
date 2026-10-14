@@ -1,0 +1,168 @@
+{
+ "N3_k1": [
+  [
+   4,
+   "crashed: UnresolvedSpectrum",
+   null
+  ]
+ ],
+ "N3_k2": [
+  [
+   4,
+   "crashed: UnresolvedSpectrum",
+   null
+  ],
+  [
+   6,
+   "missed mode +0.84",
+   2.8354057953244425
+  ]
+ ],
+ "N3_k3": [
+  [
+   4,
+   "crashed: UnresolvedSpectrum",
+   null
+  ]
+ ],
+ "N3_k4": [
+  [
+   4,
+   "crashed: UnresolvedSpectrum",
+   null
+  ]
+ ],
+ "N3_k5": [
+  [
+   4,
+   "crashed: UnresolvedSpectrum",
+   null
+  ],
+  [
+   5,
+   "missed mode +0.68",
+   5.021205930379239
+  ]
+ ],
+ "N5_k1": [
+  [
+   2,
+   "drifted sigma 1.2e-04",
+   2.488796795782968
+  ]
+ ],
+ "N5_k2": [
+  [
+   2,
+   "drifted sigma 9.6e-05",
+   1.742832772464396
+  ]
+ ],
+ "N5_k3": [
+  [
+   2,
+   "drifted sigma 4.6e-04",
+   1.450731062416477
+  ]
+ ],
+ "N5_k4": [
+  [
+   5,
+   "missed mode +3.05",
+   4.998469657993327
+  ],
+  [
+   3,
+   "missed mode +1.32",
+   5.000075524987852
+  ],
+  [
+   2,
+   "crashed: EigensolverFailure",
+   null
+  ]
+ ],
+ "N5_k5": [
+  [
+   5,
+   "missed mode +0.50",
+   5.772350290518693
+  ],
+  [
+   0,
+   "missed mode +0.53",
+   6.072146847209262
+  ],
+  [
+   6,
+   "missed mode +1.50",
+   6.0686885099927625
+  ],
+  [
+   1,
+   "missed mode +0.56",
+   6.072209449561641
+  ]
+ ],
+ "N6_k1": [
+  [
+   3,
+   "drifted sigma 3.3e-04",
+   2.434030199918942
+  ],
+  [
+   1,
+   "crashed: EigensolverFailure",
+   null
+  ],
+  [
+   5,
+   "drifted sigma 5.3e-04",
+   1.1602337454856895
+  ],
+  [
+   1,
+   "crashed: EigensolverFailure",
+   null
+  ]
+ ],
+ "N6_k2": [
+  [
+   0,
+   "missed mode +0.70",
+   3.1980736295702217
+  ],
+  [
+   1,
+   "drifted sigma 5.3e-04",
+   3.270264412138296
+  ],
+  [
+   3,
+   "drifted sigma 9.5e-04",
+   3.1618153062050394
+  ],
+  [
+   5,
+   "drifted sigma 6.3e-04",
+   3.637203856418299
+  ],
+  [
+   7,
+   "drifted sigma 2.4e-04",
+   3.1918120571242135
+  ]
+ ],
+ "N6_k3": [
+  [
+   5,
+   "crashed: UnresolvedSpectrum",
+   null
+  ],
+  [
+   7,
+   "missed mode +1.98",
+   4.412398213842116
+  ]
+ ]
+}

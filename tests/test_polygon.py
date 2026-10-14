@@ -8,7 +8,7 @@ import pytest
 
 from douse.polygon import (VertexPolygon, polygon_vertices, d_vertices_dp, param_vector,
                            perimeter_gradient, n_params, n_vertices)
-from lappy.utils import polygon_area, polygon_perimeter
+from douse.polygon import polygon_area, polygon_perimeter
 
 PERIM = 4.0        # so a regular polygon has O(1) sides and O(10) eigenvalues
 
@@ -138,10 +138,32 @@ def test_wrong_length_p_is_refused():
         VertexPolygon(5, perim=PERIM)(np.zeros(4))
 
 
-def test_the_family_builds_a_lappy_domain():
-    from lappy import Polygon
+def test_the_family_builds_a_chladni_domain():
+    """chladni is douse's backend (2026-10-14): `fam(p)` is a Dirichlet chladni Polygon."""
+    from chladni.geometry import Polygon
     fam = VertexPolygon(4, perim=PERIM)
     dom = fam(_p('quad'))
-    assert isinstance(dom, Polygon)
+    assert isinstance(dom, Polygon) and dom.bc_type == "dir"
+    assert abs(dom.perimeter - PERIM) < 1e-12
+    assert len(dom.boundaries[0].segments) == 4
+
+
+def test_the_family_still_builds_a_lappy_domain_on_request():
+    """The deprecated lappy backend's domain, for `LappySpectrumEvaluator` (douse[lappy])."""
+    lappy = pytest.importorskip("lappy")
+    fam = VertexPolygon(4, perim=PERIM)
+    dom = fam.lappy_domain(_p('quad'))
+    assert isinstance(dom, lappy.Polygon)
     assert abs(dom.perimeter - PERIM) < 1e-12
     assert len(dom.bdry.segments) == 4
+
+
+def test_the_geometry_helpers_match_lappys():
+    """Copied from `lappy.utils` when douse stopped importing lappy for them."""
+    lu = pytest.importorskip("lappy.utils")
+    from douse.polygon import edge_lengths
+    v = np.array([0, 1.1, 1.25 + 0.95j, 0.15 + 0.8j, -0.3 + 0.4j])
+    for z in (v, v[::-1], np.c_[v.real, v.imag]):
+        np.testing.assert_array_equal(edge_lengths(z), lu.edge_lengths(z))
+        assert polygon_area(z) == lu.polygon_area(z)
+        assert polygon_perimeter(z) == lu.polygon_perimeter(z)

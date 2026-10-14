@@ -178,3 +178,6 @@ docs/*.fls
 docs/*.fdb_latexmk
 docs/*.synctex.gz
 docs/*.toc
+
+# supervisor logs for the overnight grids: reproducible, and noisy in a diff
+benchmarks/run/grid_logs/

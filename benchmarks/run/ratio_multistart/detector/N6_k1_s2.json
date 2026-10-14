@@ -1,0 +1,1 @@
+{"N": 6, "k": 1, "start": 2, "fun": 2.526003767050661, "nit": 37, "success": false, "message": "the spectrum could not be indexed at 5 consecutive trial shapes within delta=4.88e-05 of this iterate", "n_discontinuity_repairs": 0, "n_unresolved": 6, "delta": 4.8828125e-05, "seconds": 311.3}

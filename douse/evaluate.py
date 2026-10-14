@@ -50,48 +50,35 @@ import warnings
 
 import numpy as np
 
-from lappy import Eigenproblem, basis_plan as BP
-from lappy.asymp import weyl_est
-from lappy.core import EigensolverFailure
-from lappy.mps import MPSEigensolver
+from . import spectral_guard
+from .spectral_guard import weyl_report
+from .errors import DegenerateSpectrum, ShapeRefusal, SolverRefusal, UnresolvedSpectrum
 
 from .derivative import dlams_dp
 
-__all__ = ['SpectrumEvaluator', 'ObjectiveFunction', 'DegenerateSpectrum']
+try:                                    # lappy is an optional, deprecated extra (douse[lappy])
+    from lappy import Eigenproblem, basis_plan as BP
+    from lappy.asymp import weyl_est
+    from lappy.core import EigensolverFailure, SourcesInsideDomain
+    from lappy.mps import MPSEigensolver
+    HAVE_LAPPY = True
+except ImportError:                     # the names the lappy evaluator's except clauses need
+    HAVE_LAPPY = False
+
+    class EigensolverFailure(Exception):
+        """Placeholder: lappy is not installed."""
+
+    class SourcesInsideDomain(ValueError):
+        """Placeholder: lappy is not installed."""
+
+__all__ = ['SpectrumEvaluator', 'LappySpectrumEvaluator', 'ObjectiveFunction',
+           'DegenerateSpectrum', 'ShapeRefusal', 'SolverRefusal', 'UnresolvedSpectrum']
 
 
-class DegenerateSpectrum(RuntimeError):
-    """Two tracked eigenvalues have merged, so the simple-eigenvalue gradient is meaningless.
-
-    At a multiple eigenvalue `lam` is only DIRECTIONALLY differentiable: the modes that emerge
-    under a perturbation `V` are the eigenvalues of `M(V)_ij = -int (du_i/dn)(du_j/dn)(V.n) ds`,
-    and `lappy.weighted_integral(..., mult=m)` returns exactly that matrix. What the
-    simple-eigenvalue path returns instead is built from `eigenfunction_coef(lam, mult=1)`, which
-    hands back an ARBITRARY vector out of the m-dimensional eigenspace -- so it is not a bad
-    approximation to the right answer, it is a different quantity.
-
-    Measured at the unit square, where lam_2 = lam_3 = 5 pi^2 exactly:
-
-        parameter      true directional derivatives      simple-eigenvalue path
-        p[0]              -14.222,  +14.222                  +14.032,  +14.032
-        p[2]              -32.847,  +32.847                   +9.212,   +9.212
-        p[3]              -29.609,  +29.609                   -4.820,   -4.820
-
-    Identical for both modes, wrong by factors of three to six, and carrying no sign that two
-    branches exist at all. Hence a raise rather than a warning: an optimizer that continued here
-    would follow a confident wrong gradient, and in a long run a warning is just noise.
-
-    Note the true splits are symmetric about zero -- `tr M = 0` in these directions -- which is
-    the general fact that SYMMETRIC functions of a cluster stay smooth even where the individual
-    eigenvalues do not. `lam_2 + lam_3` has an honest gradient at the square. Rephrasing an
-    objective in terms of the whole cluster is often cheaper than handling the nonsmoothness.
-    """
-
-
-class SpectrumEvaluator:
+class LappySpectrumEvaluator:
     """`p -> (lam_1..lam_K, d lam/dp)` for a fixed family, on a frozen basis plan.
 
-        ev = SpectrumEvaluator(VertexPolygon(4, perim=4.0), n_eigs=3)
+        ev = LappySpectrumEvaluator(VertexPolygon(4, perim=4.0), n_eigs=3)
         lams, J = ev(p)
 
     `target` sizes the basis and `prec` the eigenvalue search. The defaults are tighter than
@@ -101,7 +88,16 @@ class SpectrumEvaluator:
 
     def __init__(self, family, n_eigs=1, target=1e-14, prec=1e-13, plan_at=None,
                  lam_max_window=6, warn_gap=1e-3, degenerate_tol=1e-6,
-                 track_ttol=1e-8):
+                 track_ttol=1e-8, use_track_set=True, replan_tol=1e-9, enforce_weyl=True,
+                 spurious_tol=1e-4):
+        """DEPRECATED (2026-10-14): douse's default backend is chladni, `SpectrumEvaluator`.
+        This lappy evaluator needs the `douse[lappy]` extra and is kept so older results
+        reproduce."""
+        if not HAVE_LAPPY:
+            raise ImportError("LappySpectrumEvaluator needs lappy: install the douse[lappy] extra")
+        warnings.warn("LappySpectrumEvaluator is deprecated: douse's backend is chladni "
+                      "(`SpectrumEvaluator`). Kept so lappy results reproduce.",
+                      DeprecationWarning, stacklevel=2)
         self.family = family
         self.n_eigs = int(n_eigs)
         self.target = float(target)
@@ -110,17 +106,64 @@ class SpectrumEvaluator:
         self.warn_gap = float(warn_gap)
         self.degenerate_tol = float(degenerate_tol)
         self.track_ttol = float(track_ttol)
+        self.use_track_set = bool(use_track_set)
+        self.replan_tol = None if replan_tol is None else float(replan_tol)
+        self.enforce_weyl = bool(enforce_weyl)
+        # `worst_sigma` IS MEASURED AT `lams[0]` ONLY, and a run was lost to that. The stalled
+        # re-run of N6_k1 start 2 carried 58.1948 as its `lam_3` -- a value whose tension is
+        # **0.62**, i.e. not an eigenvalue under any basis tested, including the run's own -- and
+        # reported `worst_sigma = 1.3e-09`, because the first eigenvalue was resolved beautifully
+        # the whole time. Its Weyl deficit read 0.470, under threshold, because a DROPPED mode
+        # plus a SPURIOUS one preserves the count that statistic is built on. Nothing saw it.
+        #
+        # `spurious_tol` is the "this is not an eigenvalue" bar, and it is measured rather than
+        # chosen. Over the best certified row of nine cells, the worst tension at any GENUINE
+        # returned eigenvalue is 3.7e-07 (range 1.7e-14 to 3.7e-07, and it grows with lam --
+        # which is exactly why this cannot be folded into `replan_tol = 1e-9` or the 1e-6
+        # exclusion gate, both of which are calibrated for `lam_1`). 1e-4 sits ~270x above the
+        # worst genuine case and ~6000x below the spurious one.
+        self.spurious_tol = None if spurious_tol is None else float(spurious_tol)
+        self.worst_sigma_any = -np.inf   # over EVERY returned value, not just the first
+        self.n_weyl_escalations = 0      # deficit tripped, a full solve was taken
+        self.n_weyl_recovered = 0        # ...and the full solve repaired it
+        self.n_weyl_refusals = 0         # ...and it did not, so the shape was refused
+        self.n_weyl_replans = 0          # ...and the basis was rebuilt before giving up
+        self.n_spurious_escalations = 0  # a returned value was not an eigenvalue at all
+        self.n_spurious_refusals = 0     # ...and a full solve did not repair that either
+        # THE REFUSED SHAPES THEMSELVES, so a refusal is reproducible off-line rather than merely
+        # counted. `benchmarks/envelope/reentrant_sweep.py` in `lappy` takes exactly this pair --
+        # plan on one shape, solve on another -- and the first sweep could only guess at the
+        # family because the runs recorded no vertices. Bounded, because a 400-iterate start
+        # already carries a memory problem and an unbounded list on the evaluator would join it.
+        self.refusals = []
+        self.max_refusals_kept = 16
+        self.n_replans = 0
+        self.worst_sigma = 0.0
+        # The tension at the LAST shape evaluated, AFTER any replan it triggered --
+        # not a running max. See the replan block in `_eigenvalues`.
+        self.last_sigma = np.nan
+        # A MISSED MODE IS INVISIBLE TO `worst_sigma`; see `douse.spectral_guard`. Tracked the
+        # same way -- worst over the run, so a caller filters on one number.
+        self.worst_weyl_deficit = -np.inf
+        self.n_weyl_flags = 0
+        self.last_mults = None
         self._plan = None
         self._plan_at = None if plan_at is None else np.array(plan_at, dtype=float)
+        # WHERE THE PLAN WAS ACTUALLY BUILT, which `_plan_at` does not answer: left None it means
+        # "the first `p` seen", and by the time a refusal wants to name that shape the first `p`
+        # is long gone. A refused shape is only re-solvable off-line if BOTH ends are recorded --
+        # the shape that failed and the shape its basis was planned on.
+        self._plan_built_at = None
         self._last = None            # (p, lams) for continuation
         self.n_solves = 0
         self.n_tracks = 0
         self.n_track_refusals = 0
         self.n_collapses = 0
+        self.n_solver_refusals = 0   # `lappy` declined outright; see SolverRefusal
         self.min_gap = np.inf
 
     def __repr__(self):
-        return (f'SpectrumEvaluator({self.family!r}, n_eigs={self.n_eigs}, '
+        return (f'LappySpectrumEvaluator({self.family!r}, n_eigs={self.n_eigs}, '
                 f'target={self.target:.0e})')
 
     def plan(self, p):
@@ -132,7 +175,8 @@ class SpectrumEvaluator:
         """
         if self._plan is None:
             at = self._plan_at if self._plan_at is not None else np.asarray(p, dtype=float)
-            dom = self.family(at)
+            self._plan_built_at = np.array(at, dtype=float)
+            dom = self.family.lappy_domain(at)
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 self._plan = BP.plan_basis(dom, weyl_est(self.lam_max_window, dom),
@@ -141,7 +185,7 @@ class SpectrumEvaluator:
 
     def solver(self, p):
         """A solver for `family(p)`, on the frozen plan."""
-        dom = self.family(p)
+        dom = self.family.lappy_domain(p)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             return dom, MPSEigensolver.from_domain(
@@ -155,7 +199,31 @@ class SpectrumEvaluator:
         window edge or a point where the tension is too large. A refusal means the shape moved
         further than the scan window, so the honest response is to pay for a global scan, not to
         widen the window until something is found.
+
+        RAISES `ShapeRefusal` AND NOTHING ELSE when the shape is the problem. A caller that can
+        move -- an optimizer trialling a step -- catches that one class and shrinks; see
+        `SolverRefusal` for why `lappy`'s own exceptions are translated here rather than at each
+        of the five call sites in `cluster_opt`, which is where the previous version leaked them.
         """
+        try:
+            return self._eigenvalues(p, seed=seed)
+        except (EigensolverFailure, SourcesInsideDomain) as exc:
+            # NARROW ON PURPOSE. `SourcesInsideDomain` is a `ValueError` subclass precisely so
+            # this does not have to be `except ValueError`, which would turn every shape bug in
+            # the family code into a silently-shrunk trust radius.
+            self.n_solver_refusals += 1
+            if len(self.refusals) < self.max_refusals_kept:
+                self.refusals.append(dict(
+                    p=[float(t) for t in np.asarray(p, dtype=float)],
+                    plan_at=(None if self._plan_built_at is None
+                             else [float(t) for t in self._plan_built_at]),
+                    lams=None, deficit=None, n_replans=int(self.n_replans),
+                    error=f'{type(exc).__name__}: {exc}'))
+            raise SolverRefusal(
+                f'the solver declined this shape with '
+                f'{type(exc).__name__}: {exc}') from exc
+
+    def _eigenvalues(self, p, seed=None):
         p = np.asarray(p, dtype=float)
         dom, solver = self.solver(p)
         evp = Eigenproblem(dom, eval_solver=solver, precision=self.prec)
@@ -164,7 +232,29 @@ class SpectrumEvaluator:
             seed = self._last[1]
 
         lams = None
-        if seed is not None and len(seed) >= self.n_eigs:
+        sig_all = None                   # max tension over ALL returned values, when known
+        from_full_solve = False          # a tracked set can be repaired by solving; a solved one
+        if self.use_track_set and seed is not None and len(seed) >= self.n_eigs:
+            # ONE windowed scan for the whole set. See `lappy.Eigenproblem.track_set`: tracking
+            # the K values separately succeeded once in 46 steps on a rectangle family walked
+            # into a degeneracy, and one of the successes was wrong by 1.1e-08 having passed
+            # every guard. track_set cannot collapse two seeds onto one mode, because it does no
+            # per-seed convergence -- it brackets every minimum in the window at once.
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    cand, mults = evp.track_set(np.asarray(seed[:self.n_eigs], dtype=float))
+                    worst = max(float(np.atleast_1d(solver.sigma(float(l)))[0]) for l in cand)
+                if worst > self.track_ttol:
+                    self.n_track_refusals += 1
+                else:
+                    lams, self.last_mults = np.asarray(cand, dtype=float), mults
+                    sig_all = worst          # already paid for, on this path
+                    self.n_tracks += 1
+            except EigensolverFailure:
+                self.n_track_refusals += 1
+        if lams is None and not self.use_track_set and seed is not None \
+                and len(seed) >= self.n_eigs:
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter('ignore')
@@ -188,6 +278,8 @@ class SpectrumEvaluator:
                 warnings.simplefilter('ignore')
                 lams = np.asarray(evp.solve(self.n_eigs), dtype=float)[:self.n_eigs]
             self.n_solves += 1
+            self.last_mults = None
+            from_full_solve = True
 
         if len(lams) > 1:
             gap = float(np.min(np.diff(np.sort(lams))/np.sort(lams)[:-1]))
@@ -206,6 +298,165 @@ class SpectrumEvaluator:
                     f'this shape. An index-based objective is not differentiable through a '
                     f'crossing, and these problems tend to optimize TOWARDS one, so a gradient '
                     f'method may stall or chatter here rather than converge.')
+
+        # THE FROZEN PLAN HAS TO BE WATCHED, and nothing was watching it. `plan` promises that a
+        # shape wandering out of the plan's reach "shows up as a rising tension rather than as a
+        # silent change of basis, and `sigma_at` is how a caller checks" -- but no caller checked,
+        # so the failure was silent after all. Measured at the end of a `max lam_3/lam_1` run at
+        # N=5: the plan frozen at the starting shape gave sigma = 1.6e-04 where a plan built at
+        # that shape gives 5.4e-11, a factor of 2.9 MILLION, and `F` was wrong by 1.6e-06.
+        #
+        # That number is the whole stall. The trust region shrinks below 1e-06, the predicted
+        # gain drops under the error in `F`, `rho` goes negative (measured: -0.52 at a radius of
+        # 1e-06, against 0.99 at 1e-03 where the model is fine), every step is rejected and the
+        # radius collapses -- leaving the run at a point whose gradient is still O(1).
+        #
+        # Re-planning is a discrete change of basis and does make `F` jump slightly, which is
+        # exactly what freezing exists to prevent. A jump of 1e-06 once is cheaper than a
+        # systematic 1e-06 error forever.
+        if self.replan_tol is not None and len(lams):
+            sig = float(np.atleast_1d(solver.sigma(float(lams[0])))[0])
+            self.worst_sigma = max(self.worst_sigma, sig)
+            self.last_sigma = sig
+            if sig > self.replan_tol:
+                self.replan(p)
+                self.n_replans += 1
+                dom, solver = self.solver(p)
+                evp = Eigenproblem(dom, eval_solver=solver, precision=self.prec)
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    lams = np.asarray(evp.solve(self.n_eigs), dtype=float)[:self.n_eigs]
+                self.n_solves += 1
+                self.last_mults = None
+                from_full_solve = True
+                # WHAT THE TENSION IS *AFTER* THE REPLAN, which is a different question from the
+                # one `worst_sigma` answers and the only one that says a shape is hopeless. The
+                # running max is a DRIFT statistic -- it is meant to stay high once the frozen
+                # plan has been caught out, so a caller can exclude the row afterwards. A basis
+                # rebuilt AT this shape that still cannot resolve `lam_1` is a different claim:
+                # nothing further is going to help, and `maximize_ratio` stops on a run of them
+                # rather than spending an hour earning an exclusion (measured: 78 minutes on one
+                # N=3 row). Costs one extra tension evaluation, and only on a replan.
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    self.last_sigma = float(np.atleast_1d(solver.sigma(float(lams[0])))[0])
+
+        # DOES EVERY RETURNED VALUE LOOK LIKE AN EIGENVALUE AT ALL? See `spurious_tol` above:
+        # a counting statistic cannot see a dropped mode paired with a spurious one, and the
+        # tension can -- by six orders of magnitude. Escalated the same way the Weyl audit is,
+        # because a tracked set is the usual source and a full solve is the usual repair.
+        if self.spurious_tol is not None and len(lams):
+            if sig_all is None:
+                sig_all = max(float(np.atleast_1d(solver.sigma(float(l)))[0]) for l in lams)
+            self.worst_sigma_any = max(self.worst_sigma_any, float(sig_all))
+            if sig_all > self.spurious_tol:
+                if not from_full_solve:
+                    self.n_spurious_escalations += 1
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore')
+                        lams = np.asarray(evp.solve(self.n_eigs), dtype=float)[:self.n_eigs]
+                    self.n_solves += 1
+                    self.last_mults = None
+                    from_full_solve = True
+                    sig_all = max(float(np.atleast_1d(solver.sigma(float(l)))[0]) for l in lams)
+                    self.worst_sigma_any = max(self.worst_sigma_any, float(sig_all))
+                if sig_all > self.spurious_tol:
+                    self.n_spurious_refusals += 1
+                    raise UnresolvedSpectrum(
+                        f'a returned value has MPS tension {sig_all:.2e}, above spurious_tol='
+                        f'{self.spurious_tol:.0e}: it is not an eigenvalue of this shape, and a '
+                        f'full solve did not repair it. `worst_sigma` cannot see this -- it is '
+                        f'measured at lam_1, which stays perfectly resolved -- and neither can '
+                        f'the Weyl count, since a dropped mode plus a spurious one preserves it.')
+
+        # IS THIS THE CONSECUTIVE SET IT CLAIMS TO BE? Every consumer reads `lams` as
+        # `lam_1 .. lam_K`, and nothing checked. `spectral_guard` compares the count Weyl puts in
+        # the returned window against the number found; a skipped mode shows up as a shortfall
+        # that `worst_sigma` is structurally blind to. Reported, not enforced -- Weyl is
+        # asymptotic and this is a heuristic, so it warns ONCE per evaluator and records the worst
+        # value for a filter to act on.
+        if len(lams) >= 2:
+            deficit, message = weyl_report(dom, lams)
+            if np.isfinite(deficit):
+                self.worst_weyl_deficit = max(self.worst_weyl_deficit, deficit)
+            if message:
+                self.n_weyl_flags += 1
+                if self.n_weyl_flags == 1:
+                    warnings.warn(message)
+
+            # ENFORCED, NOT MERELY REPORTED -- and the escalation is what makes that defensible.
+            # Measured on N=6 `lam_3/lam_1` start 3, the run this was written for: at a reentrant
+            # angle of 284 degrees `track_set` returned [56.90, 209.97, 274.11, 286.67] at a
+            # PRISTINE sigma of 4.7e-12, the optimizer accepted a step whose `rho` was +1265
+            # because `F` had leapt to a ratio of non-consecutive values, and the run then sat at
+            # a frozen `F` for forty iterations while `rho` doubled negative and the radius
+            # collapsed. Reporting the deficit caught none of that at the time it happened.
+            #
+            # THE FIRST READING IS NOT ACTED ON. The deficit is a heuristic -- Weyl's
+            # `O(sqrt(lam))` error is not uniform and `DEFICIT_TOL` is calibrated on N=4..6 at
+            # k<=5 -- so a single trip only buys a FULL SOLVE, discarding the tracking seed that
+            # is the usual culprit. Acting on the second reading means acting on a spectrum
+            # computed from scratch, which is a different and much stronger statement.
+            if (self.enforce_weyl and np.isfinite(deficit)
+                    and deficit > spectral_guard.DEFICIT_TOL):
+                if not from_full_solve:
+                    self.n_weyl_escalations += 1
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore')
+                        lams = np.asarray(evp.solve(self.n_eigs), dtype=float)[:self.n_eigs]
+                    self.n_solves += 1
+                    self.last_mults = None
+                    deficit, _ = weyl_report(dom, lams)
+                    if np.isfinite(deficit):
+                        self.worst_weyl_deficit = max(self.worst_weyl_deficit, deficit)
+                    if not (deficit > spectral_guard.DEFICIT_TOL):
+                        self.n_weyl_recovered += 1
+                # AND IF THE FULL SOLVE DID NOT REPAIR IT, REBUILD THE BASIS BEFORE GIVING
+                # UP. The escalation above re-solves on the SAME frozen plan, so a plan that
+                # cannot see the mode cannot see it the second time either -- measured on all
+                # four recorded refusals of N=5 `lam_6/lam_1` start 1, where the frozen plan
+                # returns [20.2672, 42.6339, 59.1257, 77.2296] at deficit +0.51 while a plan
+                # built AT that shape returns [20.2672, 20.2672, 42.6339, 59.1257] at -0.73.
+                # `lam_1` is DOUBLE there and the frozen plan was returning one copy.
+                #
+                # Nothing else can catch this. `sigma` is 5.8e-11 -- the copy that IS found is
+                # beautifully resolved -- so the sigma-triggered replan never fires, and the
+                # count is the only signal that a copy went missing. Replanning is expensive and
+                # discontinuous, which is why it is the LAST rung and not the first.
+                if deficit > spectral_guard.DEFICIT_TOL and self.replan_tol is not None:
+                    self.n_weyl_replans += 1
+                    self.replan(p)
+                    dom, solver = self.solver(p)
+                    evp = Eigenproblem(dom, eval_solver=solver, precision=self.prec)
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore')
+                        lams = np.asarray(evp.solve(self.n_eigs), dtype=float)[:self.n_eigs]
+                    self.n_solves += 1
+                    self.n_replans += 1
+                    self.last_mults = None
+                    deficit, _ = weyl_report(dom, lams)
+                    if np.isfinite(deficit):
+                        self.worst_weyl_deficit = max(self.worst_weyl_deficit, deficit)
+                    if not (deficit > spectral_guard.DEFICIT_TOL):
+                        self.n_weyl_recovered += 1
+
+                if deficit > spectral_guard.DEFICIT_TOL:
+                    self.n_weyl_refusals += 1
+                    if len(self.refusals) < self.max_refusals_kept:
+                        self.refusals.append(dict(
+                            p=[float(t) for t in np.asarray(p, dtype=float)],
+                            plan_at=(None if self._plan_built_at is None
+                                     else [float(t) for t in self._plan_built_at]),
+                            lams=[float(t) for t in np.asarray(lams, dtype=float)],
+                            deficit=float(deficit), n_replans=int(self.n_replans),
+                            from_full_solve=bool(from_full_solve)))
+                    raise UnresolvedSpectrum(
+                        f'the {self.n_eigs} values returned at this shape are not consecutive: '
+                        f'Weyl counts {deficit:.2f} more eigenvalues below the returned set than '
+                        f'were found, above DEFICIT_TOL={spectral_guard.DEFICIT_TOL}, and a full '
+                        f'solve on a fresh continuation did not repair it. `worst_sigma` cannot '
+                        f'see this -- every value found is a genuine eigenvalue, the INDEX is '
+                        f'wrong. See douse.spectral_guard.')
 
         self._last = (p.copy(), lams.copy())
         return lams, solver
@@ -242,6 +493,26 @@ class SpectrumEvaluator:
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             return float(np.atleast_1d(solver.sigma(float(lam)))[0])
+
+    def replan(self, p=None):
+        """Throw the frozen plan away so the next call rebuilds it. For a DISCRETE jump only.
+
+        The plan is frozen on purpose: an identical basis size at every iterate is what makes a
+        change in `lam` attributable to the shape rather than to the discretization, and
+        re-planning inside a continuous walk makes the objective discontinuous. None of that
+        applies at a deliberate jump between two representations of a degenerate shape, where the
+        objective moves by `O(eps)` anyway.
+
+        And the plan cannot survive that jump regardless. `BasisPlan` carries one corner block per
+        CORNER, and a flat vertex is not a corner -- so a plan frozen on a 5-corner pentagon,
+        realized on the 4-corner quadrilateral the pentagon collapsed to, indexes `fb_orders[4]`
+        into an array of length 4 and raises `IndexError` inside `lappy.basis_plan.realize`. The
+        frozen-plan architecture assumes a constant corner count across the family, which
+        degeneration is precisely the act of violating.
+        """
+        self._plan = None
+        self._plan_at = None if p is None else np.asarray(p, dtype=float)
+        self.reset_continuation()
 
     def reset_continuation(self):
         """Forget the previous iterate, so the next call does a full solve. Use after a jump."""
@@ -280,6 +551,7 @@ class ObjectiveFunction:
         self.invalid_value = float(invalid_value)
         self.history = []
         self.n_invalid = 0
+        self.n_refused = 0           # `ShapeRefusal`s returned as `invalid_value`
 
     def __repr__(self):
         return f'ObjectiveFunction({self.evaluator!r}, {self.objective!r})'
@@ -292,8 +564,27 @@ class ObjectiveFunction:
                                      grad_norm=0.0, valid=False))
             return self.invalid_value, np.zeros_like(p)
 
-        lams, dlams = self.evaluator(p)
+        try:
+            lams, dlams = self.evaluator(p)
+        except ShapeRefusal as exc:
+            # The solver could not certify this shape. The same answer as an inadmissible `p`:
+            # a line search backs off from `inf`, which is the honest value of an objective that
+            # cannot be evaluated. Counted and recorded, so a run that keeps hitting refusals
+            # is visible in `history` rather than in a traceback (2026-10-14).
+            self.n_refused += 1
+            self.history.append(dict(p=p.copy(), lams=None, value=self.invalid_value,
+                                     grad_norm=0.0, valid=False, refused=str(exc)))
+            return self.invalid_value, np.zeros_like(p)
+        # The evaluator may return more than `n_eigs` values (a multiple level at the top is
+        # returned whole); the objective sees exactly the count it declared.
+        K = self.objective.n_eigs
+        lams, dlams = np.asarray(lams, dtype=float)[:K], np.asarray(dlams, dtype=float)[:K]
         val, grad = self.objective(lams, dlams)
         self.history.append(dict(p=p.copy(), lams=lams.copy(), value=float(val),
                                  grad_norm=float(np.linalg.norm(grad)), valid=True))
         return float(val), np.asarray(grad, dtype=float)
+
+
+# The default backend (2026-10-14): chladni. `SpectrumEvaluator` is `chladni_backend`'s evaluator;
+# `LappySpectrumEvaluator` above is the deprecated lappy one.
+from .chladni_backend import SpectrumEvaluator  # noqa: E402

@@ -42,9 +42,14 @@ import warnings
 import numpy as np
 import pytest
 
-from lappy import Eigenproblem, Polygon, basis_plan as BP
-from lappy.asymp import weyl_est
-from lappy.mps import MPSEigensolver
+# Every test here drives lappy's solver and lappy's Hadamard path: the deprecated backend
+# (douse[lappy]). The whole module is marked `lappy` and skips without a working lappy
+# (tests/conftest.py). The chladni backend's derivatives are checked in test_chladni_backend.py.
+pytestmark = pytest.mark.lappy
+lappy = pytest.importorskip("lappy")
+from lappy import Eigenproblem, Polygon, basis_plan as BP   # noqa: E402
+from lappy.asymp import weyl_est                            # noqa: E402
+from lappy.mps import MPSEigensolver                        # noqa: E402
 
 from douse.polygon import VertexPolygon, param_vector
 from douse.derivative import dlam_dvertices, dlam_dp, vertex_velocity
@@ -64,7 +69,7 @@ def setup():
     """
     fam = VertexPolygon(4, perim=PERIM)
     p0 = param_vector(SEED_SHAPE, PERIM)
-    dom0 = fam(p0)
+    dom0 = fam.lappy_domain(p0)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         plan = BP.plan_basis(dom0, weyl_est(6, dom0), target=1e-14)
@@ -156,7 +161,7 @@ def test_dlam_dp_matches_a_finite_difference(setup):
         def lam_at(t, seed, i=i):
             p = p0.copy()
             p[i] += t
-            return solve(fam(p), seed=seed)[0]
+            return solve(fam.lappy_domain(p), seed=seed)[0]
         fd[i] = _fd5(lam_at, H, lam0)
 
     err = np.max(np.abs(g - fd))
@@ -179,7 +184,7 @@ def test_the_gradient_predicts_a_step(setup):
     d = np.array([0.37, -0.51, 0.62, -0.28])
     d = d/np.linalg.norm(d)
     predicted = g @ d
-    measured = _fd5(lambda t, seed: solve(fam(p0 + t*d), seed=seed)[0], H, lam0)
+    measured = _fd5(lambda t, seed: solve(fam.lappy_domain(p0 + t*d), seed=seed)[0], H, lam0)
     assert abs(predicted - measured) < 1e-6, (predicted, measured)
 
 

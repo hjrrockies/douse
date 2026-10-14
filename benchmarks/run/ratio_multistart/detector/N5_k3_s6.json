@@ -1,0 +1,1 @@
+{"N": 5, "k": 3, "start": 6, "fun": 4.482340477064436, "nit": 104, "success": true, "message": "criticality plateaued at 0.0003 (radius 0.1 -> 0.0001 moves it by 1.5e-09): first-order optimal to that resolution", "n_discontinuity_repairs": 1, "n_unresolved": 0, "delta": 0.1, "seconds": 652.3}

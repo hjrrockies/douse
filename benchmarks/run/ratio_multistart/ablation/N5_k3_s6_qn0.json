@@ -1,0 +1,1 @@
+{"N": 5, "k": 3, "start": 6, "quasi_newton": false, "fun": 4.482345076132182, "nit": 251, "success": true, "message": "criticality plateaued at 0.000281 (radius 4.88e-05 -> 4.88e-08 moves it by 1.7e-06): first-order optimal to that resolution", "resolution": 0.00028118919503781836, "n_cluster_steps": 249, "seconds": 1700.1}

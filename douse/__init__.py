@@ -10,6 +10,10 @@ from . import evaluate
 from . import optimize
 from . import certify
 from . import cluster_opt
+from . import constraints
+from . import degeneracy
+from . import spectral_guard
+from . import quasi_newton
 
 # classes and functions available directly from douse
 from .polygon import VertexPolygon, polygon_vertices, param_vector
@@ -17,7 +21,15 @@ from .derivative import (dlam_dp, dlam_dvertices, dlams_dp, cluster_matrices,
                          detect_cluster, directional_derivatives)
 from .objective import (EigenvalueObjective, RatioObjective, SpectralMatch,
                         normalized_reciprocals, l2_loss)
-from .evaluate import SpectrumEvaluator, ObjectiveFunction
-from .optimize import descend, OptimizeResult
+from .evaluate import (SpectrumEvaluator, LappySpectrumEvaluator, ObjectiveFunction,
+                       ShapeRefusal, SolverRefusal, UnresolvedSpectrum, DegenerateSpectrum)
+from .optimize import descend, gauss_newton, OptimizeResult
 from .certify import first_order_report, second_order_probe, det_form
-from .cluster_opt import maximize_ratio, local_model, trust_region_step
+from .cluster_opt import (maximize_ratio, local_model, trust_region_step, model_gain,
+                          model_gain2)
+from .quasi_newton import SR1, BFGS, tr_subproblem
+from .spectral_guard import weyl_deficit, weyl_report, DEFICIT_TOL
+from .constraints import (Constraint, ConstraintSet, Convexity, MinEdgeLength,
+                          ClosingBudget)
+from .degeneracy import (effective_vertices, interior_angles, turning_angles,
+                         canonicalize)

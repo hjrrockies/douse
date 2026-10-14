@@ -1,0 +1,411 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.15in]{geometry}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{microtype}
+\usepackage[htt]{hyphenat}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+
+\newcommand{\dd}{\,\mathrm{d}}
+\newcommand{\Om}{\Omega}
+\newcommand{\bd}{\partial\Omega}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\pdn}[1]{\frac{\partial #1}{\partial n}}
+\newcommand{\lammin}{\lambda_{\min}}
+\newcommand{\lammax}{\lambda_{\max}}
+\newcommand{\R}{\mathbb{R}}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\theoremstyle{plain}
+\newtheorem{fact}{Fact}
+\newtheorem*{remark}{Remark}
+
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.15}
+
+\title{Spectral Shape Optimization: A Mathematical Overview\\
+\large How \code{douse} maximizes $\lambda_k/\lambda_1$ over polygons}
+\author{douse project notes}
+\date{August 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note is a self-contained mathematical tour of the shape-optimization problem \code{douse}
+solves: maximizing the ratio $\lambda_k(\Om)/\lambda_1(\Om)$ of Dirichlet--Laplacian eigenvalues
+over polygons of fixed perimeter. It states, without derivation, the Hadamard shape-derivative
+formulas for simple and repeated eigenvalues; works out what these formulas imply about the
+structure of optimal points of $\lambda_k/\lambda_1$, first when $\lambda_k$ is simple and then
+when it sits inside a degenerate cluster; and closes by describing the optimization algorithms
+built on that structure and how they are wired together in \code{douse}. For a derivation-level
+treatment and implementation cross-references see \code{spectral\_optimization.tex} in the same
+directory; this document is the map, that one is the territory.
+\end{abstract}
+
+\tableofcontents
+
+\section{The problem}
+
+Let $\Om\subset\R^2$ be bounded, open and connected, with Dirichlet spectrum
+\[
+  0<\lambda_1(\Om)<\lambda_2(\Om)\le\lambda_3(\Om)\le\cdots,\qquad
+  -\Delta u_j=\lambda_j u_j \text{ in }\Om,\quad u_j=0\text{ on }\bd,
+\]
+eigenfunctions taken $L^2(\Om)$-orthonormal. We study the functional
+\begin{equation}\label{eq:F}
+  F(\Om)=\frac{\lambda_k(\Om)}{\lambda_1(\Om)},\qquad k\ge2\text{ fixed},
+\end{equation}
+over the class of $N$-gons of fixed perimeter, for a chosen $N$. Two structural facts set the
+stage.
+
+\begin{fact}[Krahn]\label{fact:krahn}
+$\lambda_1$ is always simple for connected $\Om$: its eigenfunction can be taken positive, and two
+orthogonal positive functions cannot coexist.
+\end{fact}
+
+\begin{fact}[Payne--P\'olya--Weinberger, proved by Ashbaugh--Benguria]\label{fact:ppw}
+$\lambda_2/\lambda_1\le(j_{1,1}/j_{0,1})^2=2.5387340\ldots$ for every bounded connected planar
+$\Om$, with equality only for the disk.
+\end{fact}
+
+Fact~\ref{fact:krahn} is the reason the \emph{denominator} of $F$ is always smooth: whatever
+happens to $\lambda_k$, $\lambda_1$ never participates in a degeneracy. Fact~\ref{fact:ppw} bounds
+$F$ itself when $k=2$ and, more importantly here, gives a certificate: any computed $F>2.5387$
+is a bug, not a discovery.
+
+Because $\Om\mapsto c\Om$ sends $\lambda_j\mapsto c^{-2}\lambda_j$, $F$ is scale invariant. The
+perimeter constraint is therefore pure gauge-fixing --- it removes a redundant degree of freedom
+from the parametrization without adding content to the problem. (This is unlike, say,
+$\min\lambda_1$, where the same constraint \emph{is} the problem.) An $N$-gon's spectrum also
+ignores translation, rotation and reflection, so \code{douse} parametrizes the shape by a vector
+$p\in\R^{2N-4}$ of free vertex coordinates after fixing that gauge; the details are geometric
+bookkeeping and are not needed below beyond the one fact that $p\mapsto\Om(p)$ is a smooth,
+locally invertible map on an open (but not all of $\R^{2N-4}$) admissible set.
+
+\section{The Hadamard formulas}\label{sec:hadamard}
+
+Everything that follows rests on how $\lambda_j$ responds to a perturbation of the domain. Let
+$V$ be a velocity field on $\bd$ (only its normal component $V\cdot n$ matters) and let $\Om_t$
+be the domain swept out by transporting $\bd$ along $V$.
+
+\begin{fact}[Hadamard, simple eigenvalue]\label{fact:had-simple}
+If $\lambda$ is a simple eigenvalue with $\|u\|_{L^2(\Om)}=1$, then $t\mapsto\lambda(\Om_t)$ is
+differentiable at $t=0$ and
+\begin{equation}\label{eq:hadamard-simple}
+  \frac{\dd\lambda}{\dd t}\bigg|_{t=0}=-\int_{\bd}\Big(\pdn{u}\Big)^{\!2}(V\cdot n)\dd s .
+\end{equation}
+\end{fact}
+
+\begin{fact}[Hadamard, repeated eigenvalue]\label{fact:had-multi}
+If $\lambda$ has multiplicity $m$ with an orthonormal eigenbasis $u_1,\dots,u_m$ for its
+eigenspace, define the symmetric $m\times m$ matrix
+\begin{equation}\label{eq:M}
+  M(V)_{ij}=-\int_{\bd}\pdn{u_i}\pdn{u_j}(V\cdot n)\dd s .
+\end{equation}
+Then the $m$ eigenvalue branches bifurcating from $\lambda$ under the perturbation $t\mapsto\Om_t$
+are, to first order in $t$, the eigenvalues of $M(V)$ --- i.e.\ each branch has a one-sided
+derivative at $t=0$ equal to one eigenvalue of $M(V)$, the branches ordered to match.
+\end{fact}
+
+We take both facts as given; see Henrot--Pierre or Delfour--Zol\'esio for proofs. What matters for
+everything below is their \emph{shape} rather than their derivation: \eqref{eq:hadamard-simple} is
+a linear functional of $V\cdot n$, so a simple eigenvalue is differentiable with an honest
+gradient; \eqref{eq:M} is a \emph{matrix-valued} linear functional of $V\cdot n$, so a multiple
+eigenvalue is not differentiable at all in the ordinary sense --- what survives is a well-defined
+first-order model for the whole cluster together, and that model is linear in $V$ even though no
+individual branch is.
+
+Fact~\ref{fact:had-simple} applied to $\lambda_1$ is unconditional, by
+Fact~\ref{fact:krahn} --- $\nabla_p\lambda_1$ exists everywhere on the (open) admissible set.
+Fact~\ref{fact:had-multi} applies to $\lambda_k$ wherever the shape sits at (or near) a
+degeneracy, which for the regular $N$-gons that these problems tend to converge to is generic
+rather than exceptional: at a regular $N$-gon, every eigenvalue past $\lambda_1$ belongs to a
+cluster of size $1$ or $2$ (occasionally more, at special $N$), forced by the shape's dihedral
+symmetry $D_N$.
+
+\section{Optimal points of $\lambda_k/\lambda_1$}\label{sec:optimal}
+
+We now ask what \eqref{eq:hadamard-simple}--\eqref{eq:M} imply about a local maximum of $F$. Write
+$g_1=\nabla_p\lambda_1$, which always exists.
+
+\subsection{$\lambda_k$ simple}\label{sec:simple}
+
+If $\lambda_k$ is simple near $p$, $F$ is differentiable there with
+\begin{equation}\label{eq:gradF}
+  \nabla_p F=\frac{g_k\,\lambda_1-\lambda_k\,g_1}{\lambda_1^2},\qquad g_k=\nabla_p\lambda_k,
+\end{equation}
+an ordinary quotient rule. A local maximum in the interior of the admissible set is characterized,
+to first order, by the single vector equation $\nabla_p F=0$, equivalently
+\begin{equation}\label{eq:crit-simple}
+  \lambda_1\,g_k=\lambda_k\,g_1 ,
+\end{equation}
+i.e.\ the two shape gradients are parallel with a ratio fixed by the current value of $F$ itself.
+Geometrically: at a critical point of $F$, the boundary velocity field that most increases
+$\lambda_k$ is (up to sign and scale) the same field that most increases $\lambda_1$ --- there is
+no direction that helps one without proportionally helping the other. This is a codimension-$1$-worth-of-conditions
+statement in each of the $2N-4$ parameter directions and is otherwise unremarkable: it is exactly
+what one gets by differentiating any smooth ratio, with the geometric content entirely loaded into
+what $g_1$ and $g_k$ \emph{are}. Second-order conditions (a negative-semidefinite Hessian of $F$
+restricted to the admissible tangent space) then distinguish maxima from saddle points in the
+usual way, and are not special to this problem.
+
+The interesting mathematics starts precisely where \eqref{eq:crit-simple} stops applying: at the
+shapes these optimizations actually converge to, $\lambda_k$ is essentially never simple.
+
+\subsection{$\lambda_k$ degenerate: the directional derivative}\label{sec:degen-general}
+
+Suppose $\lambda_k$ sits in a cluster of multiplicity $m$, occupying position $j\in\{0,\dots,m-1\}$
+when the cluster's members are listed in increasing order (so $j=0$ is the bottom of the cluster,
+$j=m-1$ the top). By Fact~\ref{fact:had-multi}, the one-sided directional derivative of
+$\lambda_k$ in a parameter direction $d$ is $\sigma_j(M(d))$, the $j$-th ordered eigenvalue of the
+affine matrix function $M(d)=\sum_i d_i M^{(i)}$ built from \eqref{eq:M} applied to the $2N-4$
+coordinate velocity fields. Combining with the (always-defined) derivative of $\lambda_1$, the
+one-sided directional derivative of $F$ itself is
+\begin{equation}\label{eq:dF}
+  \dd F(d)=\frac{\sigma_j\big(M(d)\big)\,\lambda_1-\lambda_k\,(g_1\cdot d)}{\lambda_1^2}.
+\end{equation}
+(When the cluster's members are not exactly equal but merely close, the correct model replaces
+$M(d)$ by $\Lambda+M(d)$ with $\Lambda=\mathrm{diag}(\lambda_\ell-\lambda_k,\dots)$ recording the
+actual splitting; this refines \eqref{eq:dF} without changing anything said below, and is taken up
+in \S\ref{sec:algorithms}.)
+
+Equation~\eqref{eq:dF} is positively homogeneous of degree $1$ in $d$ (since $\sigma_j$ is), so
+$F$ is directionally, but not (in general) Gateaux, differentiable at $p$: $\dd F(-d)\ne-\dd F(d)$
+whenever $\sigma_j$ is genuinely nonlinear in $d$, which happens exactly when $0<m\le n_p$ and $j$
+is not both the top and bottom of a singleton cluster. $F$ has a \emph{kink} at every such shape,
+the multivariate analogue of $|x|$ at $x=0$: it is the norm of the shape gradient near the corner
+$V=0$ of the eigenvalue branches that produces the kink, not any failure of the underlying spectral
+data to vary smoothly.
+
+\subsection{First-order optimality at a degeneracy}\label{sec:optimality-degen}
+
+At a local maximum, no direction can increase $F$ to first order:
+\begin{equation}\label{eq:opt-degen}
+  \dd F(d)\le0\qquad\text{for every admissible direction }d .
+\end{equation}
+Because $\sigma_j$ is positively homogeneous, \eqref{eq:opt-degen} is equivalent to its restriction
+to $\|d\|=1$, and it is exactly this restricted problem --- maximize $\dd F$ over a sphere (or, with
+active linear constraints, a sphere cap) --- whose \emph{value} is what a numerical certificate has
+to test: $p$ is first-order optimal iff that maximum is $\le0$. The structure of that maximization,
+and hence of the certificate and of the ascent step that precedes it, depends entirely on where
+$\lambda_k$ sits inside its cluster:
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lLL@{}}
+\toprule
+position $j$ & $\sigma_j(M(d))$ as a function of $d$ & consequence for \eqref{eq:opt-degen}\\
+\midrule
+$j=0$ (bottom of cluster) & concave & concave maximization: a genuine, tractable optimum\\
+$j=m-1$ (top of cluster) & convex & maximizing a convex function over a ball: the max sits on the
+  boundary and the feasible set of \emph{improving} directions is generically large unless a
+  further reduction applies (\S\ref{sec:algorithms})\\
+$0<j<m-1$ (interior) & neither & no closed form; genuinely nonconvex, though cheap to evaluate\\
+$m=1$ (simple) & linear & recovers \S\ref{sec:simple}\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+This dichotomy is the load-bearing fact of the whole theory: $\lammin$ of a symmetric affine
+matrix function is concave and $\lammax$ is convex, a classical and easy fact (each is an infimum,
+respectively supremum, of linear functions $u^\top M(d)u$ over unit vectors $u$), and it is what
+makes the bottom of a cluster qualitatively different from the top.
+
+\paragraph{Which case actually occurs.} At the regular $N$-gons that these optimizations converge
+to, the pattern (forced by $D_N$ symmetry and confirmed numerically) is $\lambda_1$ simple, then
+clusters of size $1$ or $2$ alternating, with $\lambda_2$ always the \emph{bottom} of its pair.
+Maximizing $\lambda_2/\lambda_1$ therefore lands in the tractable concave row for every $N$; the
+higher ratios $\lambda_4/\lambda_1,\dots$ can land in any row depending on $N$ and $k$, which is
+why \code{douse} needs all three branches of \S\ref{sec:algorithms} rather than only the concave
+one.
+
+\subsection{A worked degeneracy: when the first-order test is vacuous}\label{sec:vacuous}
+
+It is worth seeing explicitly that \eqref{eq:opt-degen} can hold identically, carrying no
+information, which is a genuine phenomenon and not a numerical artifact. Take $k=2$, $m=2$ at a
+regular $N$-gon. Two facts hold there exactly:
+\begin{enumerate}
+\item $g_1=0$ --- the regular $N$-gon minimizes $\lambda_1$ at fixed perimeter among $N$-gons
+  (Polya--Szeg\H{o}, $N=3,4$; conjectured/observed more generally), so the denominator's gradient
+  vanishes at exactly the shapes where the numerator degenerates;
+\item $\operatorname{tr}M(d)=0$ for every $d$ --- the symmetric function $\lambda_2+\lambda_3$ is
+  stationary there, a consequence of \eqref{eq:M} and the shape's symmetry.
+\end{enumerate}
+With $g_1=0$, \eqref{eq:dF} collapses to $\dd F(d)=\sigma_0(M(d))/\lambda_1=\lammin(M(d))/\lambda_1$.
+Because $M(-d)=-M(d)$, the sign condition $\lammin(M(d))\le0$ for all $d$ is equivalent to $M(d)$
+never being positive definite, and for a $2\times2$ block exactly to $\det M(d)\le0$ for all $d$.
+The traceless condition forces $M(d)=\begin{psmallmatrix}\alpha&\beta\\\beta&-\alpha\end{psmallmatrix}$
+with $\alpha,\beta$ linear in $d$, so $\det M(d)=-\alpha^2-\beta^2\le0$ \emph{identically} ---
+\eqref{eq:opt-degen} is satisfied automatically, for every regular $N$-gon, and certifies nothing
+about optimality: the quadratic form behind it is negative semidefinite of rank at most $2$ no
+matter how many free parameters $n_p$ the shape has. The verdict is then decided at second order,
+on the null space where the first-order test is silent; only for $N=3$ does that null space vanish
+(there $n_p=2$ exactly matches the rank), making the equilateral triangle a genuine first-order
+\emph{strict} local maximizer of $\lambda_2/\lambda_1$ among triangles.
+
+The moral for the rest of the document: a first-order stopping test at a cluster is a real
+mathematical statement, not a formality, and it can degenerate into a tautology at exactly the
+symmetric points the optimization is trying to find. \code{douse} treats this as a fact to be
+checked (\code{certify.py}), not something the ascent algorithm itself can be trusted to notice.
+
+\subsection{Kinks that are geometric, not spectral}\label{sec:kink}
+
+One further nonsmooth phenomenon deserves separating out because it looks like the eigenvalue
+degeneracy of \S\ref{sec:degen-general} but has nothing to do with it: $F$ also has kinks at
+shapes where the polygon itself degenerates, e.g.\ where a vertex becomes flat (an $N$-gon
+momentarily coinciding with an $(N-1)$-gon). There $\lambda_k$ is simple and smooth in the shape,
+but the exponent $\nu=\pi/\omega$ governing the corner behavior of the eigenfunction crosses $1$
+as the interior angle $\omega$ passes through $\pi$, and the two sides (reentrant, $\nu<1$;
+convex, $\nu>1$) are different analytic problems meeting at a point. The result is again a
+concave kink with finite, unequal, nonzero one-sided derivatives, and again a first-order model
+cannot land on it. This is a fact about the \emph{parametrization} intersecting a fact about
+corner singularities, not about the multiplicity structure of \S\ref{sec:degen-general}, and
+\code{douse} handles the two with genuinely different machinery (\S\ref{sec:algorithms}).
+
+\section{Optimization algorithms}\label{sec:algorithms}
+
+Sections~\ref{sec:hadamard}--\ref{sec:optimal} describe the local model available at a point $p$:
+a gradient when $\lambda_k$ is simple, a matrix pencil when it is not, always with $g_1$ available.
+\code{douse} turns that model into an ascent method by a standard device --- trust-region maximization
+of the local model, followed by an accept/reject test against the true objective --- specialized in
+three ways to the structure above.
+
+\subsection{Trust-region ascent, in outline}
+
+At iterate $p$ with radius $\Delta$, propose $d^\star=\arg\max_{\|d\|\le\Delta}(\text{local model
+of }\dd F)$, evaluate $F(p+d^\star)$ exactly (one eigensolve), and accept or shrink according to
+the usual ratio test $\rho=(F(p+d^\star)-F(p))/(\text{predicted gain})$. Because the local model is
+positively homogeneous of degree $1$ (\S\ref{sec:degen-general}), its optimal value over
+$\|d\|\le\Delta$ scales linearly in $\Delta$; the stopping test is therefore not the raw optimal
+value but \emph{criticality} $=(\text{optimal gain})/\Delta$, the best achievable directional
+derivative, which is the quantity \eqref{eq:opt-degen} actually tests and which is scale-free.
+
+\subsection{The smooth phase: BFGS/SR1 inside an exact trust-region solve}
+
+Away from any degeneracy (\S\ref{sec:simple}), the local model is linear and its maximizer over a
+ball is trivial ($d\propto g_k\text{ or }\nabla F$), which wastes the curvature information a run
+accumulates for free along the way. \code{douse} instead fits quadratic models
+$g\cdot d+\tfrac12 d^\top Bd$ to $-\lambda_1$ and to the (possibly still-active) cluster mean, using
+symmetric-rank-one updates (SR1, chosen over BFGS because neither scalar is known to be convex
+along the ascent path) built from consecutive \emph{accepted} smooth gradients, and solves the
+resulting trust-region subproblem exactly via the More--Sorensen secular-equation characterization
+$d(\sigma)=-(B+\sigma I)^{-1}g$ --- cheap here since the parameter dimension is at most a few dozen.
+The curvature chain is deliberately broken (not discarded) whenever the model switches into cluster
+mode, since a secant pair straddling a nonsmooth excursion compares two things that are not the
+same function.
+
+\subsection{The cluster phase: matching the subproblem to $j$}
+
+When $\lambda_k$ is (nearly) degenerate, \S\ref{sec:optimality-degen}'s three cases become three
+different subproblem solvers, all maximizing \eqref{eq:dF} over $\|d\|\le\Delta$:
+
+\begin{itemize}
+\item \textbf{Bottom of cluster ($j=0$), concave.} For a $2\times2$ block the matrix inequality
+  defining $\lammin\ge t$ reduces to two scalar conditions on trace and determinant, solved as a
+  small smooth program; equivalently (and more robustly, avoiding a degenerate constraint gradient
+  at the natural starting point) $\lammin$ of a $2\times2$ symmetric matrix is written directly as
+  \emph{linear minus a norm}, turning the subproblem into an unconstrained-looking concave program
+  in $d$ alone. For $m\ge3$ blocks the honest semidefinite program is solved numerically.
+\item \textbf{Top of cluster ($j=m-1$), convex.} Maximizing a convex function over a ball puts the
+  optimum on the sphere, but for $m=2$ the identity
+  $\lammax=\ell\cdot d+\|Ld\|$ (with $\ell,L$ linear in $d$) lets the maximization over
+  $\|d\|=\Delta\subset\R^{n_p}$ be exchanged for a maximization over the unit circle in $\R^2$: a
+  one-dimensional search, exact. For $m\ge3$ the same reduction becomes a maximization over the
+  sphere $S^{m-1}$, handled by multi-start.
+\item \textbf{Interior of cluster ($0<j<m-1$).} Neither reduction applies, and the subproblem is
+  genuinely nonconvex; but since evaluating the model at any trial $d$ is a cheap $m\times m$
+  eigenvalue problem, it is simply maximized directly by multi-start local optimization, seeded
+  from the two extreme-case solutions above. This branch carries no first-order certificate of its
+  own, only empirical agreement with brute-force search.
+\end{itemize}
+
+\noindent Whichever branch produces the step, the criticality test of \S\ref{sec:optimality-degen}
+is always evaluated against the exact model \eqref{eq:dF}, so a heuristic interior step can still
+be checked against the certificate it does not itself supply.
+
+Near, but not exactly at, a degeneracy the cluster is only \emph{$\varepsilon$-active}: its
+members are close, not equal, and the correct affine model is $\Lambda+M(d)$ rather than $M(d)$
+alone, with $\Lambda$ the diagonal matrix of the actual (small) splitting. Treating a near-degeneracy
+as an exact one makes the existing splitting look free and produces a systematically over-optimistic
+predicted gain; the width of the active set is tied to the trust radius so that it neither
+under-clusters (which manufactures a fictitious O(1) gradient at a genuinely nonsmooth point) nor
+over-clusters indefinitely as the run converges.
+
+\subsection{Second-order refinement of the ratio itself}
+
+The model \eqref{eq:dF} linearizes numerator, denominator, and quotient all at once, which is more
+loss than necessary: the quotient's own curvature is exact arithmetic once the two pieces are in
+hand, so \code{douse} additionally forms
+\[
+  \widehat F(d)=\frac{\lambda_k+\sigma_j(\Lambda+M(d))+\tfrac12 d^\top H_\mu d}
+                     {\lambda_1+g_1\cdot d+\tfrac12 d^\top H_1 d}-\frac{\lambda_k}{\lambda_1},
+\]
+carrying SR1 curvature $H_1,H_\mu$ on the two genuinely smooth scalars --- $\lambda_1$ and the
+cluster mean $\mu$ --- while leaving the nonsmooth eigenvalue term $\sigma_j$ at its exact,
+first-order-only, form (a second-order model of a kink is fiction). The linear/matrix-pencil steps
+above are retained as seeds for maximizing $\widehat F$, so the refinement can only improve on them,
+never lose ground.
+
+\subsection{Crossing geometric kinks}
+
+The kinks of \S\ref{sec:kink} are not reachable by any local step, however the trust region is
+sized, because they sit at a discontinuity in the parametrization itself (a flat vertex, or a
+collapsed edge, correspond to different regions of $p$-space that a smooth path cannot connect).
+\code{douse} instead treats the two canonical degenerate configurations --- exactly flattening a
+nearly-flat vertex, and deleting a very short edge --- as discrete \emph{trial moves}: propose the
+candidate shape, evaluate $F$ there exactly, and accept it under the same improvement test used
+for an ordinary step. This is offered only when an ordinary step has stalled at very small radius
+near such a configuration, and it is what lets a run cross, for instance, from a pentagon pinned
+against a minimum-edge-length constraint to the true quadrilateral optimum it is degenerating
+toward.
+
+\subsection{Assembling \texorpdfstring{$\lambda_k/\lambda_1$}{lambda\_k/lambda\_1} maximization}
+
+Putting the pieces together, one iteration of \code{douse}'s spectral-ratio maximizer
+(\code{douse.cluster\_opt.maximize\_ratio}) does the following:
+\begin{enumerate}
+\item Solve for the current spectrum and detect whether $\lambda_k$ is simple or belongs to an
+  $\varepsilon$-active cluster, sizing the cluster width from the current trust radius.
+\item Build the local model: $g_1$ always (Fact~\ref{fact:had-simple} applied to $\lambda_1$), and
+  either $g_k$ (simple case) or the pencil $\{M^{(i)}\}$ and splitting $\Lambda$ (cluster case,
+  Fact~\ref{fact:had-multi}).
+\item Dispatch to the matching trust-region subproblem of \S\ref{sec:algorithms}, refine with the
+  second-order quotient model, and test the resulting step's criticality against the linear model;
+  stop (and report an achieved \emph{resolution}, not a bare pass/fail) if criticality is at or
+  below tolerance, or if it has stopped changing as the radius shrinks --- a signal that the floor
+  has been reached is the accuracy of the eigenvalue solves themselves, not that the point is a
+  first-order maximizer to arbitrary precision.
+\item Otherwise take the step (subject to any geometric constraints, linearized into the same
+  subproblem), evaluate the true ratio, and accept or shrink by the ratio test; if the step is
+  instead rejected while the shape is pinned near a geometric kink, offer the discrete crossing
+  moves of \S\ref{sec:kink}.
+\item On termination, re-solve the eigenproblem once from a cold start at the reported optimum,
+  since a continuation-tracked spectrum converging \emph{onto} a degeneracy is exactly where
+  tracking is least trustworthy, and report the invariants of \S\ref{fact:krahn}--\ref{fact:ppw}
+  as a sanity check on the answer.
+\end{enumerate}
+
+The upshot is that the algorithm's control flow mirrors the mathematics of
+\S\ref{sec:optimal} directly: every branch it can take corresponds to one row of the
+position-in-cluster table, and the two places it departs from a plain smooth trust-region method
+--- the matrix-pencil subproblems and the discrete kink-crossing moves --- are exactly the two
+places \S\ref{sec:optimal} identified $\lambda_k/\lambda_1$ as failing to be an ordinary smooth
+function of the shape.
+
+\section*{Pointers}
+
+\noindent\begin{tabularx}{\textwidth}{@{}lL@{}}
+\toprule
+\S\ref{sec:hadamard} & \code{douse/derivative.py}; the underlying quadrature is \code{lappy}'s
+  \code{hadamard\_quad} \\
+\S\ref{sec:degen-general}--\S\ref{sec:vacuous} & \code{douse/derivative.py}
+  (\code{cluster\_matrices}), \code{douse/certify.py} \\
+\S\ref{sec:kink} & \code{douse/degeneracy.py} \\
+\S\ref{sec:algorithms} & \code{douse/cluster\_opt.py} (\code{local\_model},
+  \code{trust\_region\_step}, \code{maximize\_ratio}), \code{douse/quasi\_newton.py} \\
+\bottomrule
+\end{tabularx}
+
+\end{document}
