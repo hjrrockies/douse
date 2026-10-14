@@ -142,6 +142,9 @@ differencing the solver.
 | `douse/chladni_backend.py` | `SpectrumEvaluator` on chladni — frozen plan, warm start, certified bounds, re-plan on drift — and the Hadamard handle douse's derivatives use |
 | `douse/evaluate.py` | `ObjectiveFunction`, and `LappySpectrumEvaluator` (deprecated: the lappy backend) |
 | `douse/errors.py` | the refusals every backend raises: `ShapeRefusal`, `SolverRefusal`, `UnresolvedSpectrum`, `DegenerateSpectrum` |
+| `douse/backend.py` | the seam: `SpectrumBackend` and `SolvedShape` protocols, `RunHealth` (the backend's statistics as a value, chladni's names) and `SolveTrace` |
+| `douse/ledger.py` | the ledger's schema (`SCHEMA = 2`): `normalize` reads rows of any era under both name sets, `read_rows`/`write_row`, `result_row` |
+| `douse/runs.py` | one place that sets a run up: `make_evaluator`, `regular`, `perturbed`, `start_shape`, `convex_start_shape`, `constraints_for` |
 | `douse/spectral_guard.py` | the Weyl-count deficit (`weyl_deficit`, `weyl_report`, `DEFICIT_TOL`): is a returned set consecutive? |
 | `douse/sampling.py` | start shapes: `random_convex` and the samplers the multistart grid draws from |
 | `douse/optimize.py` | `descend`, a backtracking gradient method that respects the parametrization's boundary; `gauss_newton`, a Levenberg-Marquardt driver on `SpectralMatch.residual` for the inverse problem |
@@ -159,7 +162,7 @@ polygon ties everywhere, and regular polygons are what these problems converge t
 canonical map has a branch cut sitting exactly on the target. Use `param_vector` once to build a
 starting `p`, then never again.
 
-**Read the health fields before quoting a number.** Every `maximize_ratio` result and every
+**Read the health fields before quoting a number.** (Schema 2 rows, written since 2026-10-14, name them `worst_bound`, `worst_deficit`, `n_audit_flags`, ...; older rows are read under both names by `douse.ledger.normalize`, and `summarize_grid` prints the schema mix.) Every `maximize_ratio` result and every
 ledger row carries `worst_sigma`, `worst_weyl_deficit`, `n_replans`, `n_warnings` and the
 refusals the run met. On chladni `worst_sigma` is the worst *certified relative bound* over the
 returned levels, a different quantity from lappy's tension, and sits near `prec` on a healthy
