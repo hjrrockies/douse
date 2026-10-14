@@ -156,9 +156,14 @@ class ChladniSolver:
                 got += int(self.spec.mult[i])
             idx.sort()
         if sum(int(self.spec.mult[i]) for i in idx) != int(mult):
-            raise ValueError(f"no set of levels near lam = {lam:.10g} holds exactly {mult} "
-                             f"eigenvalues (levels {[float(self.spec.lam[i]) for i in idx]}, "
-                             f"multiplicities {[int(self.spec.mult[i]) for i in idx]})")
+            # A refusal, not a bug: the caller's eps-active cluster and the solver's levels
+            # disagree on how many eigenvalues sit here, so no block is honest. Raised as a
+            # `ShapeRefusal` so an optimizer rejects the trial and shrinks rather than dying.
+            raise UnresolvedSpectrum(
+                f"chladni: the cluster of {mult} eigenvalues near lam = {lam:.10g} does not match "
+                f"the solver's levels: " + ", ".join(
+                    f"{float(self.spec.lam[i]):.10g} x{int(self.spec.mult[i])}" for i in idx)
+                + f" hold {sum(int(self.spec.mult[i]) for i in idx)}")
         return idx
 
     def chladni_cluster_matrices(self, family, p, lam, mult, lams=None):
@@ -206,6 +211,26 @@ class SpectrumEvaluator:
         self._specs = {}                    # p.tobytes() -> Spectrum, the last two shapes solved
         self._last_spec = None
         self.last_sigma = np.nan            # worst attained relative bound at the last shape
+        # RUN HEALTH, with chladni's meaning (2026-10-14). The ledger (`benchmarks/
+        # ratio_multistart.py`, `summarize_grid.py`) filters rows on these names, which the lappy
+        # evaluator coined for its tension statistics. Here they are read off each accepted
+        # `Spectrum`, and are BOUNDS, not tensions:
+        #   worst_sigma        running max of `last_sigma`, the worst certified relative bound
+        #                      over the returned levels. On a healthy run it sits near `prec`;
+        #                      the ledger's `sigma_max = 1e-6` gate is then 4 orders above it.
+        #   worst_sigma_any    the same number: every returned level is certified, so one
+        #                      statistic serves where lappy needed two.
+        #   worst_weyl_deficit running max of the count audit's mean Weyl deficit
+        #                      (`chladni.asymp.CountAudit.statistic`) where it was computed.
+        #   n_weyl_flags       audits that did not read "ok" (including "unaudited").
+        #   n_weyl_refusals, n_spurious_refusals: `UnresolvedSpectrum`s by cause -- the count
+        #                      audit, or a level unmet/uncertain/short.
+        self.worst_sigma = -np.inf
+        self.worst_sigma_any = -np.inf
+        self.worst_weyl_deficit = -np.inf
+        self.n_weyl_flags = 0
+        self.n_weyl_refusals = 0
+        self.n_spurious_refusals = 0
         self.n_solves = 0                   # cold solves
         self.n_tracks = 0                   # warm solves accepted
         self.n_track_refusals = 0           # warm solves asked for and refused (then solved cold)
@@ -263,14 +288,39 @@ class SpectrumEvaluator:
             self.n_replans += 1
             spec, exc = self._solve(dom, self.plan(p), p)
         if exc is not None:
-            self._record(p, str(exc))
+            self._record(p, str(exc), spec)
+            if isinstance(exc, UnresolvedSpectrum):
+                if "count audit" in str(exc):
+                    self.n_weyl_refusals += 1
+                else:
+                    self.n_spurious_refusals += 1
             raise exc
         with np.errstate(invalid="ignore", divide="ignore"):
             self.last_sigma = float(np.nanmax(spec.bound / spec.lam)) if spec.lam.size else np.nan
-        lams = spec.unfolded[:self.n_eigs]
-        self._check_gap(lams)                   # before the seed moves, as on the lappy backend
+        self._health(spec)
+        # THE WHOLE TOP LEVEL, never cut. `Spectrum` returns the level at `n_eigs` whole, so
+        # `len(lams) >= n_eigs`, with equality unless a multiple level straddles the request. A
+        # truncated copy is a cluster `maximize_ratio` would count as `m` members while the
+        # solver holds `m + 1` -- a mismatch `ChladniSolver._cluster_levels` must refuse -- and
+        # on `lam_3/lam_1` over hexagons, where the run drives lam_3 into the lam_4 = lam_5
+        # pair, that was the standard problem's own geometry (2026-10-14). Consumers index by
+        # position (`lams[k]`); `ObjectiveFunction` slices to its objective's count.
+        lams = spec.unfolded
+        self._check_gap(lams[:self.n_eigs])     # before the seed moves, as on the lappy backend
         self._remember(p, spec, lams)
         return lams, ChladniSolver(spec, verts, self.degenerate_tol)
+
+    def _health(self, spec):
+        """Fold an accepted spectrum into the run statistics (see `__init__`)."""
+        if np.isfinite(self.last_sigma):
+            self.worst_sigma = max(self.worst_sigma, self.last_sigma)
+            self.worst_sigma_any = self.worst_sigma
+        audit = getattr(spec, "count_audit", None)
+        if audit is not None:
+            if audit.verdict != "ok":
+                self.n_weyl_flags += 1
+            if np.isfinite(audit.statistic):
+                self.worst_weyl_deficit = max(self.worst_weyl_deficit, float(audit.statistic))
 
     def _check_gap(self, lams):
         """The degeneracy guard, as the lappy evaluator has it: raise below `degenerate_tol`,
@@ -351,12 +401,14 @@ class SpectrumEvaluator:
         self.last_warm_note = spec.warm_note
         return spec, refusal_for(spec)
 
-    def _record(self, p, error):
+    def _record(self, p, error, spec=None):
         if len(self.refusals) < self.max_refusals_kept:
             self.refusals.append(dict(
                 p=[float(t) for t in np.asarray(p, dtype=float)],
                 plan_at=(None if self._plan_built_at is None
                          else [float(t) for t in self._plan_built_at]),
+                lams=(None if spec is None else [float(t) for t in spec.unfolded]),
+                flags=(None if spec is None else list(spec.flags)),
                 n_replans=int(self.n_replans), error=error))
 
     def __call__(self, p, seed=None):

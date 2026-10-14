@@ -551,6 +551,7 @@ class ObjectiveFunction:
         self.invalid_value = float(invalid_value)
         self.history = []
         self.n_invalid = 0
+        self.n_refused = 0           # `ShapeRefusal`s returned as `invalid_value`
 
     def __repr__(self):
         return f'ObjectiveFunction({self.evaluator!r}, {self.objective!r})'
@@ -563,7 +564,21 @@ class ObjectiveFunction:
                                      grad_norm=0.0, valid=False))
             return self.invalid_value, np.zeros_like(p)
 
-        lams, dlams = self.evaluator(p)
+        try:
+            lams, dlams = self.evaluator(p)
+        except ShapeRefusal as exc:
+            # The solver could not certify this shape. The same answer as an inadmissible `p`:
+            # a line search backs off from `inf`, which is the honest value of an objective that
+            # cannot be evaluated. Counted and recorded, so a run that keeps hitting refusals
+            # is visible in `history` rather than in a traceback (2026-10-14).
+            self.n_refused += 1
+            self.history.append(dict(p=p.copy(), lams=None, value=self.invalid_value,
+                                     grad_norm=0.0, valid=False, refused=str(exc)))
+            return self.invalid_value, np.zeros_like(p)
+        # The evaluator may return more than `n_eigs` values (a multiple level at the top is
+        # returned whole); the objective sees exactly the count it declared.
+        K = self.objective.n_eigs
+        lams, dlams = np.asarray(lams, dtype=float)[:K], np.asarray(dlams, dtype=float)[:K]
         val, grad = self.objective(lams, dlams)
         self.history.append(dict(p=p.copy(), lams=lams.copy(), value=float(val),
                                  grad_norm=float(np.linalg.norm(grad)), valid=True))
