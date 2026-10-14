@@ -21,8 +21,8 @@ from .derivative import (dlam_dp, dlam_dvertices, dlams_dp, cluster_matrices,
                          detect_cluster, directional_derivatives)
 from .objective import (EigenvalueObjective, RatioObjective, SpectralMatch,
                         normalized_reciprocals, l2_loss)
-from .evaluate import (SpectrumEvaluator, ObjectiveFunction, ShapeRefusal,
-                       SolverRefusal, UnresolvedSpectrum)
+from .evaluate import (SpectrumEvaluator, LappySpectrumEvaluator, ObjectiveFunction,
+                       ShapeRefusal, SolverRefusal, UnresolvedSpectrum, DegenerateSpectrum)
 from .optimize import descend, OptimizeResult
 from .certify import first_order_report, second_order_probe, det_form
 from .cluster_opt import (maximize_ratio, local_model, trust_region_step, model_gain,

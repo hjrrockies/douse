@@ -11,7 +11,12 @@ import pytest
 
 from douse import VertexPolygon, param_vector, spectral_guard
 from douse.cluster_opt import maximize_ratio
-from douse.evaluate import SpectrumEvaluator, UnresolvedSpectrum
+from douse.evaluate import LappySpectrumEvaluator as SpectrumEvaluator, UnresolvedSpectrum
+
+# The lappy backend's Weyl enforcement (escalate, rebuild, refuse). chladni's count audit and
+# continuity checks replace it, so these pin the deprecated backend (2026-10-14).
+pytestmark = [pytest.mark.lappy,
+              pytest.mark.filterwarnings("ignore::DeprecationWarning")]
 
 PERIM = 4.0
 

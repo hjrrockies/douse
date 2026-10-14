@@ -1,12 +1,20 @@
 # douse
 
 **D**omains **o**f **U**nknown **S**hape, from **E**igenvalues — shape optimization and inverse
-spectral problems, built on [`lappy`](../lappy).
+spectral problems, built on [`chladni`](../chladni).
 
-`lappy` owns *a* domain and its conventions: geometry, normals, eigenvalues, L²-orthonormal
-eigenfunctions, and Cauchy-data boundary integrals. `douse` owns *families* of domains: the map
-from a parameter vector to a domain, its derivative, the shape-derivative formulas, and the
-optimizers. See `lappy/docs/scope_and_downstream.md` for why the line is drawn there.
+The forward solver owns *a* domain and its conventions: geometry, normals, eigenvalues with
+certified bounds, L²-orthonormal eigenfunctions, and Hadamard boundary integrals. `douse` owns
+*families* of domains: the map from a parameter vector to a domain, its derivative, the
+shape-derivative chain rule, and the optimizers.
+
+**Backend (2026-10-14): chladni.** `SpectrumEvaluator` solves on chladni: a frozen basis plan
+(`chladni.plan`), warm-started from the previous iterate, with certified per-level bounds and a
+Weyl count audit, refusing what it cannot certify (`douse/chladni_backend.py`). The earlier
+backend, [`lappy`](../lappy), is a **deprecated** optional extra (`pip install douse[lappy]`):
+`LappySpectrumEvaluator` reproduces older results, and the tests of its internals are marked
+`lappy` and skip without it. lappy-only options (`replan_tol`, `lam_max_window`, `track_ttol`,
+...) are accepted by `SpectrumEvaluator` and ignored, with a one-time warning.
 
 ## Status: Milestones 1-3 complete
 
@@ -105,7 +113,7 @@ from douse import (VertexPolygon, param_vector, SpectrumEvaluator, ObjectiveFunc
 fam = VertexPolygon(4, perim=4.0)        # perimeter-4 quadrilaterals, 4 parameters
 p0  = param_vector(np.array([0, 1.3, 1.1+0.9j, 0.15+0.8j]), 4.0)
 
-ev  = SpectrumEvaluator(fam, n_eigs=1)   # frozen plan, tracked eigenvalues, verified
+ev  = SpectrumEvaluator(fam, n_eigs=1)   # chladni: frozen plan, warm-started, certified
 obj = ObjectiveFunction(ev, EigenvalueObjective(0))      # minimize lam_1
 res = descend(obj, p0)
 
@@ -130,7 +138,9 @@ differencing the solver.
 | `douse/polygon.py` | `VertexPolygon`, the perimeter-constrained vertex parametrization, and `d_vertices_dp` |
 | `douse/derivative.py` | the Hadamard shape derivative and the chain rule to `p` |
 | `douse/objective.py` | `EigenvalueObjective` (forward), `SpectralMatch` (inverse, scale-invariant), and the arithmetic under them |
-| `douse/evaluate.py` | `SpectrumEvaluator` — frozen plan, tracked-and-verified eigenvalues — and `ObjectiveFunction` |
+| `douse/chladni_backend.py` | `SpectrumEvaluator` on chladni — frozen plan, warm start, certified bounds, re-plan on drift — and the Hadamard handle douse's derivatives use |
+| `douse/evaluate.py` | `ObjectiveFunction`, and `LappySpectrumEvaluator` (deprecated: the lappy backend) |
+| `douse/errors.py` | the refusals every backend raises: `ShapeRefusal`, `SolverRefusal`, `UnresolvedSpectrum`, `DegenerateSpectrum` |
 | `douse/optimize.py` | `descend`, a backtracking method that respects the parametrization's boundary |
 | `douse/certify.py` | cluster analysis at a degenerate optimum: `first_order_report`, `second_order_probe` |
 | `douse/cluster_opt.py` | `maximize_ratio` — trust-region ascent valid through a degeneracy; `model_gain` (first-order, and the stopping certificate) and `model_gain2` (second-order) |
@@ -147,12 +157,15 @@ polygon ties everywhere, and regular polygons are what these problems converge t
 canonical map has a branch cut sitting exactly on the target. Use `param_vector` once to build a
 starting `p`, then never again.
 
-**Use `solver.hadamard_quad`, never `solver.bdry_quad`.** Every vertex perturbation moves a
-corner, and `bdry_quad` is the node set for *normalizing* eigenfunctions, not for integrating a
-corner-moving velocity. `douse.derivative` defaults correctly; the difference on an L-shape's
-reentrant vertex is 6.1 digits against 9.3, with both answers looking plausible.
+**Use `solver.hadamard_quad`, never `solver.bdry_quad` (lappy backend).** Every vertex
+perturbation moves a corner, and `bdry_quad` is the node set for *normalizing* eigenfunctions,
+not for integrating a corner-moving velocity. `douse.derivative` defaults correctly; the
+difference on an L-shape's reentrant vertex is 6.1 digits against 9.3. On chladni the Hadamard
+rule is chosen by `Spectrum.hadamard` itself.
 
-**A tracked eigenvalue is verified before it is trusted.** `lappy`'s `track` refuses a minimum
+**A tracked eigenvalue is verified before it is trusted.** On chladni, a warm solve is accepted
+only if continuity checks hold (count, no index shift, top level clear of the window, audit), and
+goes cold otherwise and every 10th solve. On the lappy backend: `lappy`'s `track` refuses a minimum
 whose tension exceeds `ttol`, but the default `ttol = 1e-3` is a threshold for deciding whether a
 tension minimum is a mode *at all*, not whether a located value has converged. The first
 end-to-end run converged 2.8e-03 **below** `2 pi^2`, which is impossible — `track` had returned a

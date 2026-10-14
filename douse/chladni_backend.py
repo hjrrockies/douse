@@ -1,12 +1,12 @@
-"""The `chladni` backend: `ChladniEvaluator`, a drop-in for `SpectrumEvaluator`.
+"""douse's backend: `SpectrumEvaluator` on `chladni`.  (the default since 2026-10-14)
 
 `chladni` (`../chladni`, the rebuild of `lappy`) plans its own basis per shape family, solves to a
 requested `prec` with a certified bound and flags per level, and supplies the Hadamard matrices
 (`chladni.eigensolver.Spectrum.hadamard`). This module adapts that to `douse`'s evaluator
-interface, so an optimizer can switch backends by constructing one evaluator instead of the
-other:
+interface. The lappy backend survives, deprecated, as `douse.evaluate.LappySpectrumEvaluator`
+(`douse[lappy]`); `ChladniEvaluator` is this class's name from before the switch.
 
-    ev = ChladniEvaluator(VertexPolygon(5), n_eigs=3, prec=1e-10)
+    ev = SpectrumEvaluator(VertexPolygon(5), n_eigs=3, prec=1e-10)
     lams, J = ev(p)                       # the spectrum and its (K, n_p) Jacobian
     lams, solver = ev.eigenvalues(p)      # `solver` works with `douse.derivative`
 
@@ -41,7 +41,7 @@ from contextlib import contextmanager
 
 import numpy as np
 
-from .evaluate import DegenerateSpectrum, SolverRefusal, UnresolvedSpectrum
+from .errors import DegenerateSpectrum, SolverRefusal, UnresolvedSpectrum
 
 __all__ = ["ChladniEvaluator", "ChladniSolver", "refusal_for"]
 
@@ -85,6 +85,11 @@ class ChladniSolver:
         self.vertices = np.asarray(vertices, dtype=complex)
         self.degenerate_tol = float(degenerate_tol)
         self._H = {}
+
+    @property
+    def basis(self):
+        """The realized basis this shape was solved on (its size is the plan's, on every shape)."""
+        return self.spec.source.basis
 
     def _velocity(self):
         """`V(curve, t)` for the 2N vertex-coordinate fields, `[x_0..x_{N-1}, y_0..y_{N-1}]`:
@@ -171,15 +176,28 @@ class ChladniSolver:
         return np.einsum("fij,fp->pij", H, Jv)
 
 
-class ChladniEvaluator:
+class SpectrumEvaluator:
     """`SpectrumEvaluator`'s interface on the `chladni` backend. See the module docstring."""
 
+    #: lappy-backend options accepted for compatibility and ignored here: chladni's solve has
+    #: its own precision checks, tracking and re-planning (2026-10-14, when chladni became the
+    #: default backend). Each warns once.
+    LAPPY_ONLY = ("target", "lam_max_window", "track_ttol", "use_track_set",
+                  "replan_tol", "enforce_weyl", "spurious_tol")
+
     def __init__(self, family, n_eigs=1, prec=1e-10, plan_at=None, degenerate_tol=1e-6,
-                 confirm=False):
+                 confirm=False, warn_gap=1e-3, **lappy_options):
+        unknown = sorted(set(lappy_options) - set(self.LAPPY_ONLY))
+        if unknown:
+            raise TypeError(f"unexpected option(s) {unknown}")
+        for name in sorted(lappy_options):
+            _warn_once(name)
         self.family = family
         self.n_eigs = int(n_eigs)
         self.prec = float(prec)
         self.degenerate_tol = float(degenerate_tol)
+        self.warn_gap = float(warn_gap)
+        self.min_gap = np.inf               # smallest relative gap seen, over every evaluation
         self.confirm = bool(confirm)
         self._plan = None
         self._plan_at = None if plan_at is None else np.asarray(plan_at, dtype=float)
@@ -198,7 +216,7 @@ class ChladniEvaluator:
         self.max_refusals_kept = 16
 
     def __repr__(self):
-        return (f"ChladniEvaluator({self.family!r}, n_eigs={self.n_eigs}, "
+        return (f"SpectrumEvaluator({self.family!r}, n_eigs={self.n_eigs}, "
                 f"prec={self.prec:.0e})")
 
     def _domain(self, p):
@@ -250,8 +268,33 @@ class ChladniEvaluator:
         with np.errstate(invalid="ignore", divide="ignore"):
             self.last_sigma = float(np.nanmax(spec.bound / spec.lam)) if spec.lam.size else np.nan
         lams = spec.unfolded[:self.n_eigs]
+        self._check_gap(lams)                   # before the seed moves, as on the lappy backend
         self._remember(p, spec, lams)
         return lams, ChladniSolver(spec, verts, self.degenerate_tol)
+
+    def _check_gap(self, lams):
+        """The degeneracy guard, as the lappy evaluator has it: raise below `degenerate_tol`,
+        where an index-based gradient is a different quantity (`DegenerateSpectrum`), and warn
+        below `warn_gap`. Pass `degenerate_tol=0` to run through crossings on cluster objectives."""
+        if len(lams) < 2:
+            return
+        s = np.sort(np.asarray(lams, dtype=float))
+        gap = float(np.min(np.diff(s) / s[:-1]))
+        self.min_gap = min(self.min_gap, gap)
+        if gap < self.degenerate_tol:
+            raise DegenerateSpectrum(
+                f'two of the tracked eigenvalues are within {gap:.2e} (relative) at this shape, '
+                f'below degenerate_tol={self.degenerate_tol:.1e}. The simple-eigenvalue gradient '
+                f'is not an approximation here, it is a different quantity -- see '
+                f'DegenerateSpectrum. Use the m x m cluster matrix, or an objective that is a '
+                f'symmetric function of the cluster, or raise degenerate_tol if you know this '
+                f'crossing is benign.')
+        if gap < self.warn_gap:
+            warnings.warn(
+                f'the tracked eigenvalues are within {gap:.2e} (relative) of each other at this '
+                f'shape. An index-based objective is not differentiable through a crossing, and '
+                f'these problems tend to optimize TOWARDS one, so a gradient method may stall or '
+                f'chatter here rather than converge.')
 
     def _near(self):
         """The Spectrum behind the continuation seed `_last = (p, lams)`, or None."""
@@ -332,3 +375,17 @@ class ChladniEvaluator:
         """Forget the previous shape, so the next call solves cold. Use after a jump."""
         self._last = None
         self._specs = {}
+
+
+#: The name this evaluator had while lappy was douse's default (2026-10-12 .. 10-14).
+ChladniEvaluator = SpectrumEvaluator
+
+_WARNED = set()
+
+
+def _warn_once(name):
+    if name not in _WARNED:
+        _WARNED.add(name)
+        warnings.warn(f"SpectrumEvaluator ignores the lappy-backend option {name!r}: chladni's "
+                      f"solve has its own precision checks, tracking and re-planning",
+                      DeprecationWarning, stacklevel=3)

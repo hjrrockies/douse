@@ -60,7 +60,16 @@ act on it and a recalibration can be measured against stored rows rather than gu
 """
 import numpy as np
 
-from lappy.asymp import weyl_count_poly
+from chladni.asymp import weyl_count_poly as _weyl_count_poly
+
+
+def weyl_count_poly(lam, domain):
+    """chladni's corner-corrected Weyl count (identical to lappy's to ~1e-15, checked
+    2026-10-14). A lappy Polygon from the deprecated backend is converted by its vertices."""
+    from chladni.geometry import Domain, Polygon
+    if not isinstance(domain, Domain):      # lappy's Polygon also has `corners`, as complex points
+        domain = Polygon(np.asarray(domain.vertices, dtype=complex), bc="dir")
+    return _weyl_count_poly(lam, domain)
 
 DEFICIT_TOL = 0.5
 LEVEL_RTOL = 1e-6            # values within this of each other are one degenerate level
@@ -79,7 +88,7 @@ def distinct_levels(lams, rtol=LEVEL_RTOL):
 def weyl_deficit(dom, lams, rtol=LEVEL_RTOL):
     """Worst shortfall between Weyl's count and the returned set, over all mid-gap cut points.
 
-    `dom` is a `lappy` Polygon -- its interior angles carry the corner correction, which is not
+    `dom` is the shape's Polygon (chladni, or lappy's from the deprecated backend) -- its interior angles carry the corner correction, which is not
     negligible at these `lam`. Returns a float: at or below ~0.3 on a clean consecutive set, near
     or above +1 when a mode is missing below the top level. `nan` when the set has fewer than two
     distinct levels, since without a gap there is nowhere to cut.

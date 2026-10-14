@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "douse"
 version = "0.0.1"
-description = "Domains of Unknown Shape, from Eigenvalues: shape optimization and inverse spectral problems on top of lappy"
+description = "Domains of Unknown Shape, from Eigenvalues: shape optimization and inverse spectral problems on top of chladni"
 authors = [{name = "Hayden Ringer", email = "hringer@vt.edu"}]
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,10 +16,16 @@ dependencies = [
     "matplotlib >= 3.9",
     "joblib >= 1.4",
     "jupyter>=1.1.1",
-    "lappy>=0.9",
+    "chladni",
     "ipython==8.22.0",
     "cvxpy>=1.9.2",
 ]
 
+[project.optional-dependencies]
+# DEPRECATED (2026-10-14): the lappy backend (`LappySpectrumEvaluator`), kept so older results
+# reproduce. chladni is the default backend.
+lappy = ["lappy>=0.9"]
+
 [tool.uv.sources]
+chladni = { path = "../chladni", editable = true }
 lappy = { path = "../lappy", editable = true }
