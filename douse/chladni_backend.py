@@ -249,6 +249,7 @@ class SpectrumEvaluator:
         #: capped, for the ledger and for diagnosing a slow run (`health().trace`).
         self.trace = []
         self.max_trace_kept = 400
+        self._planned = None                # (p.tobytes(), record): the planner's own solve
 
     def __repr__(self):
         return (f"SpectrumEvaluator({self.family!r}, n_eigs={self.n_eigs}, "
@@ -269,9 +270,14 @@ class SpectrumEvaluator:
             at = self._plan_at if self._plan_at is not None else np.asarray(p, dtype=float)
             self._plan_built_at = np.array(at, dtype=float)
             dom, _ = self._domain(at)
+            t0 = time.perf_counter()
             with _quiet():
-                self._plan = Eigenproblem(dom).plan(self.n_eigs, prec=self.prec,
-                                                    confirm=self.confirm)
+                self._plan, rec = Eigenproblem(dom).plan_and_solve(self.n_eigs, prec=self.prec,
+                                                                   confirm=self.confirm)
+            # THE PLANNER ALREADY SOLVED THIS SHAPE on the rung it accepted; keep that answer
+            # for the solve that follows at the same shape instead of computing it twice
+            # (one solve per replan saved, 2026-10-14). Consumed once, by `_solve`.
+            self._planned = (self._plan_built_at.tobytes(), rec, time.perf_counter() - t0)
         return self._plan
 
     def eigenvalues(self, p, seed=None):
@@ -417,6 +423,18 @@ class SpectrumEvaluator:
         the same plan. A plan that cannot be realized here (a different corner count) is
         re-planned at `p` immediately."""
         from chladni.eigenproblem import Eigenproblem
+        planned = self._planned
+        if (planned is not None and planned[0] == np.asarray(p, dtype=float).tobytes()
+                and planned[1].plan is plan):
+            # The planner's own solve at this shape on this plan: the same computation.
+            self._planned = None
+            spec = planned[1]
+            self.n_solves += 1
+            self.last_warm_note = None
+            refusal = refusal_for(spec)
+            self._trace("plan", None if refusal is None else str(refusal), plan, spec,
+                        time.perf_counter() - planned[2])
+            return spec, refusal
         if near is not None and near.plan is not plan:
             near = None
         t0, kind = time.perf_counter(), "cold"

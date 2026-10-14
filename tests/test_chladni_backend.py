@@ -341,3 +341,20 @@ def test_the_evaluator_keeps_the_runs_health_and_cost():
     assert n1 > 0 and np.isfinite(ev.worst_weyl_deficit)
     ev.eigenvalues(_p([0, L, L + 1j * H * 1.001, 1j * H], fam.perim))
     assert ev.n_tension_evals > n1
+
+
+def test_the_planners_own_solve_is_the_first_answer_at_a_planned_shape():
+    """Planning solves the accepted rung; the first `eigenvalues` at that shape used to solve it
+    again on the same plan. Now the planner's record is the answer: one solve, traced as
+    'plan', and a replan at a new shape costs one solve, not two (2026-10-14)."""
+    L, H = 1.2, 0.8
+    fam = VertexPolygon(4, perim=2 * (L + H))
+    ev = ChladniEvaluator(fam, n_eigs=3, prec=PREC)
+    lams, _ = ev.eigenvalues(_p([0, L, L + 1j * H, 1j * H], fam.perim))
+    assert len(ev.trace) == 1 and ev.trace[0].kind == "plan" and ev.n_solves == 1
+    assert ev._planned is None                                    # consumed once
+    n = ev.n_tension_evals
+    ev.replan()                                                   # a fresh plan at the next shape
+    ev.eigenvalues(_p([0, L, L + 1j * H * 1.01, 1j * H], fam.perim))
+    assert [t.kind for t in ev.trace] == ["plan", "plan"] and ev.n_solves == 2
+    assert ev.n_tension_evals > n
