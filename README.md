@@ -27,7 +27,8 @@ fixed perimeter from a generic starting shape:
 | quadrilateral | 19.739208802178 | `2 pi^2` | −9.3e-13 | sides equal to 2.1e-07, angles 90° ± 2.2e-05 |
 
 Those are the two cases where the answer is a theorem (Pólya–Szegő); `n >= 5` is open.
-`benchmarks/known_minimizers.py` reproduces them.
+`benchmarks/known_minimizers.py` reproduces them. Benchmarks that drive the deprecated lappy
+backend live in `benchmarks/lappy/` and need an environment of their own (see its README).
 
 Minimizing `lam_2` instead does **not** give the square — it gives a rectangle with
 `L = 2*4^(1/3)/(1+4^(1/3)) = 1.227023580871` and `lam_2 = 42.7396543166`, reached to 3.8e-11.
@@ -141,13 +142,14 @@ differencing the solver.
 | `douse/chladni_backend.py` | `SpectrumEvaluator` on chladni — frozen plan, warm start, certified bounds, re-plan on drift — and the Hadamard handle douse's derivatives use |
 | `douse/evaluate.py` | `ObjectiveFunction`, and `LappySpectrumEvaluator` (deprecated: the lappy backend) |
 | `douse/errors.py` | the refusals every backend raises: `ShapeRefusal`, `SolverRefusal`, `UnresolvedSpectrum`, `DegenerateSpectrum` |
+| `douse/spectral_guard.py` | the Weyl-count deficit (`weyl_deficit`, `weyl_report`, `DEFICIT_TOL`): is a returned set consecutive? |
+| `douse/sampling.py` | start shapes: `random_convex` and the samplers the multistart grid draws from |
 | `douse/optimize.py` | `descend`, a backtracking method that respects the parametrization's boundary |
 | `douse/certify.py` | cluster analysis at a degenerate optimum: `first_order_report`, `second_order_probe` |
 | `douse/cluster_opt.py` | `maximize_ratio` — trust-region ascent valid through a degeneracy; `model_gain` (first-order, and the stopping certificate) and `model_gain2` (second-order) |
 | `douse/quasi_newton.py` | `SR1`, `BFGS`, and an exact Moré–Sorensen `tr_subproblem` — the curvature the second-order model carries |
 | `douse/constraints.py` | `MinEdgeLength`, `ClosingBudget`, `ConstraintSet` — linearized into the trust-region subproblem |
 | `douse/degeneracy.py` | turning angles, effective vertices, flatten/collapse candidates — how a shape loses a vertex |
-| `douse/opt.py` | **superseded**, kept only until its loss functions are confirmed to have no remaining use. Does not import. |
 
 ## Three things to know before using it
 
@@ -156,6 +158,14 @@ the longest side and normalizes orientation, and both choices jump when sides ti
 polygon ties everywhere, and regular polygons are what these problems converge to, so the
 canonical map has a branch cut sitting exactly on the target. Use `param_vector` once to build a
 starting `p`, then never again.
+
+**Read the health fields before quoting a number.** Every `maximize_ratio` result and every
+ledger row carries `worst_sigma`, `worst_weyl_deficit`, `n_replans`, `n_warnings` and the
+refusals the run met. On chladni `worst_sigma` is the worst *certified relative bound* over the
+returned levels, a different quantity from lappy's tension, and sits near `prec` on a healthy
+run; `summarize_grid` still gates at `1e-6`. A row with no statistic is reported as
+**uncertified**, never dropped (`benchmarks/summarize_grid.py`). Rows record `backend`, `prec`
+and the git SHAs of douse and chladni, because a cell is not always written by one version.
 
 **Use `solver.hadamard_quad`, never `solver.bdry_quad` (lappy backend).** Every vertex
 perturbation moves a corner, and `bdry_quad` is the node set for *normalizing* eigenfunctions,
@@ -213,13 +223,17 @@ been run end to end.
 ## Tests
 
 ```sh
-uv run pytest                  # 77 tests, ~12 min
-uv run pytest -m "not slow"    # the fast subset, <1 s
+uv sync --extra test
+uv run pytest -m "not slow"    # the fast tier: ~225 tests, ~25 s, no optimization runs
+uv run pytest                  # everything: ~310 tests; the slow tier is full optimization runs
 ```
 
-Most of the twelve minutes is three full optimization runs. If that starts discouraging you from
-running the suite, trim their iteration counts before dropping the cases — the acceptance value
-is in *reaching* the square, not in its last three digits.
+Tests of the deprecated lappy backend are marked `lappy` and skip unless a *working* lappy is
+installed (`tests/conftest.py` checks that its gsvd4py still takes `tola`; set
+`DOUSE_NO_LAPPY=1` to force the skip). The slow tier is dominated by a few full
+`maximize_ratio` runs on chladni; if that starts discouraging you from running it, trim their
+iteration counts before dropping the cases — the acceptance value is in *reaching* the square,
+not in its last three digits.
 
 ## Documentation
 

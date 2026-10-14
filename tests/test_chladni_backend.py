@@ -1,12 +1,12 @@
-"""The `chladni` backend: `ChladniEvaluator`, behind the same interface as `SpectrumEvaluator`.
+"""The `chladni` backend: `SpectrumEvaluator` (alias `ChladniEvaluator`), douse's default.
 
 `chladni` plans its own basis (`chladni.plan`), solves to a requested `prec` with per-level bounds
 and flags, and supplies Hadamard matrices (`Spectrum.hadamard`). This checks the seam against
-ground truth and against the `lappy` backend: the rectangle's closed form; agreement of both
-backends on eigenvalues and on the parameter Jacobian of a generic quadrilateral; the Jacobian
-against central differences of `chladni`'s own eigenvalues; and the mapping of `chladni`'s
-shortfall flags onto `douse`'s refusal exceptions, so an optimizer shrinks rather than trusting a
-flagged spectrum.
+ground truth: the rectangle's closed form; the Jacobian against central differences of
+`chladni`'s own eigenvalues; the cluster block's diagonal against the members' own simple
+gradients; and the mapping of `chladni`'s shortfall flags onto `douse`'s refusal exceptions, so
+an optimizer shrinks rather than trusting a flagged spectrum. The one cross-backend check, against
+the deprecated lappy evaluator, is marked `lappy`.
 """
 import warnings
 
@@ -14,8 +14,8 @@ import numpy as np
 import pytest
 
 from douse.chladni_backend import ChladniEvaluator, refusal_for
-from douse.evaluate import DegenerateSpectrum, SpectrumEvaluator, UnresolvedSpectrum, \
-    SolverRefusal
+from douse.evaluate import (DegenerateSpectrum, LappySpectrumEvaluator, UnresolvedSpectrum,
+                            SolverRefusal)
 from douse.polygon import VertexPolygon, param_vector
 
 PREC = 1e-10
@@ -38,11 +38,13 @@ def test_a_rectangles_eigenvalues_match_the_closed_form():
 
 
 @pytest.mark.slow
+@pytest.mark.lappy
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_both_backends_agree_on_values_and_the_jacobian():
     fam = VertexPolygon(4, perim=float(np.sum(np.abs(np.diff(np.append(QUAD, QUAD[0]))))))
     p = _p(QUAD, fam.perim)
     lams_c, J_c = ChladniEvaluator(fam, n_eigs=3, prec=PREC)(p)
-    lams_l, J_l = SpectrumEvaluator(fam, n_eigs=3)(p)
+    lams_l, J_l = LappySpectrumEvaluator(fam, n_eigs=3)(p)
     np.testing.assert_allclose(lams_c, lams_l, rtol=1e-9)
     np.testing.assert_allclose(J_c, J_l, rtol=1e-6, atol=1e-6 * np.abs(J_l).max())
 
@@ -97,26 +99,26 @@ def test_chladni_flags_map_onto_douses_refusals(flags, declined, want):
 
 @pytest.mark.slow
 def test_cluster_matrices_near_a_double_carry_the_members_own_gradients():
-    """A nearly square rectangle: lam_2, lam_3 split slightly. Built from the members' OWN
-    eigenfunctions (`lams=`), the cluster block's diagonal is each member's gradient. Checked
-    against the `lappy` backend's simple gradients, an independent computation (the two backends'
-    simple gradients agree to ~2e-12).
+    """A nearly square rectangle: lam_2, lam_3 split slightly but resolvably, so each is a simple
+    level. Built from the members' OWN eigenfunctions (`lams=`), the cluster block's diagonal is
+    each member's simple gradient, which the same backend computes by its simple path -- the
+    same Cauchy data, so the two paths agree to the orthonormalization's roundoff.
 
     Not checked against `lappy`'s `cluster_matrices`, which evaluates both members' Cauchy data at
     the cluster's MEAN eigenvalue: its own diagonal is off its own simple gradients by ~1e-3 here
-    (measured 2026-10-12), first order in the split. `chladni` evaluates each member at its own."""
+    (measured 2026-10-12), first order in the split. `chladni` evaluates each member at its own.
+    (Until 2026-10-14 this compared against the lappy backend's simple gradients; the two
+    backends' simple gradients agree to ~2e-12.)"""
     from douse.derivative import cluster_matrices, dlams_dp
     L, H = 1.0, 1.002
     fam = VertexPolygon(4, perim=2 * (L + H))
     p = _p([0, L, L + 1j * H, 1j * H], fam.perim)
     lams_c, solver_c = ChladniEvaluator(fam, n_eigs=3, prec=PREC,
                                         degenerate_tol=0.0).eigenvalues(p)
-    lams_l, solver_l = SpectrumEvaluator(fam, n_eigs=3, degenerate_tol=0.0,
-                                         warn_gap=0.0).eigenvalues(p)
     Mc = cluster_matrices(fam, p, solver_c, float(np.mean(lams_c[1:3])), 2, lams=lams_c[1:3])
-    Jl = dlams_dp(fam, p, solver_l, lams_l[1:3])
-    np.testing.assert_allclose(np.stack([Mc[:, 0, 0], Mc[:, 1, 1]]), Jl, rtol=1e-8,
-                               atol=1e-9 * np.abs(Jl).max())
+    Js = dlams_dp(fam, p, solver_c, lams_c[1:3])
+    np.testing.assert_allclose(np.stack([Mc[:, 0, 0], Mc[:, 1, 1]]), Js, rtol=1e-8,
+                               atol=1e-9 * np.abs(Js).max())
 
 
 @pytest.mark.slow
@@ -244,3 +246,82 @@ def test_a_seed_with_no_spectrum_behind_it_solves_cold():
     ev._last = (p + 1e-3, lams)
     ev.eigenvalues(p + 1e-3)
     assert (ev.n_solves, ev.n_tracks) == (2, 0)
+
+
+# ── a multiple level is never cut by the request ──────────────────────────────────────────────
+
+class _Levels:
+    """A `Spectrum` stand-in: levels with multiplicities, as `ChladniSolver` reads them."""
+    def __init__(self, lam, mult):
+        self.lam, self.mult = np.asarray(lam, float), np.asarray(mult, int)
+
+
+def test_a_cluster_that_straddles_the_request_resolves_to_the_solvers_levels():
+    """Levels `[l1 x1, a x1, b x2]` with `n_eigs=3`: the unfolded array is `[l1, a, b, b]`, four
+    values, and an eps-active cluster over `[a, b]` holds THREE eigenvalues by the solver's
+    count. Asked for exactly those levels, the solver must say so; asked for two where it holds
+    three, it refuses rather than building a block that is not the cluster's."""
+    from douse.chladni_backend import ChladniSolver
+    sol = ChladniSolver(_Levels([10.0, 20.0, 30.0], [1, 1, 2]), [0, 1, 1 + 1j, 1j])
+    assert sol._cluster_levels(25.0, 3, lams=[20.0, 30.0]) == [1, 2]
+    assert sol._cluster_levels(30.0, 2, lams=None) == [2]
+    with pytest.raises(UnresolvedSpectrum, match="does not match the solver's levels"):
+        sol._cluster_levels(25.0, 2, lams=[20.0, 30.0])
+
+
+def test_the_evaluator_returns_a_top_level_whole():
+    """The unit square's lam_2 = lam_3: asked for 2 eigenvalues, the evaluator returns 3, the
+    double whole. (Its simple gradient is still refused, by policy: that is what
+    `cluster_matrices` is for.) `ObjectiveFunction` hands its objective exactly the count the
+    objective declared, however many the evaluator returned."""
+    from douse.evaluate import ObjectiveFunction
+    from douse.objective import EigenvalueObjective
+    fam = VertexPolygon(4, perim=4.0)
+    ev = ChladniEvaluator(fam, n_eigs=2, prec=PREC, degenerate_tol=0.0, warn_gap=0.0)
+    lams, _ = ev.eigenvalues(_p([0, 1, 1 + 1j, 1j], 4.0))
+    assert len(lams) == 3 and abs(lams[1] - lams[2]) < 1e-8 * lams[1]
+    np.testing.assert_allclose(lams, np.pi**2 * np.array([2, 5, 5]), rtol=1e-8)
+
+    L, H = 1.2, 0.8
+    fam = VertexPolygon(4, perim=2 * (L + H))
+    ev = ChladniEvaluator(fam, n_eigs=3, prec=PREC)
+    obj = ObjectiveFunction(ev, EigenvalueObjective(0))
+    val, grad = obj(_p([0, L, L + 1j * H, 1j * H], fam.perim))
+    lam_1 = np.pi**2 * (1 / L**2 + 1 / H**2)
+    assert abs(val - lam_1) < 1e-8 * lam_1 and obj.history[-1]['lams'].shape == (1,)
+    assert grad.shape == (4,)
+
+
+# ── warnings reach the caller ─────────────────────────────────────────────────────────────────
+
+@pytest.mark.slow
+@pytest.mark.filterwarnings("default")
+def test_the_gap_warning_reaches_a_maximize_ratio_caller():
+    """`maximize_ratio` used to silence every warning inside its loop. On a nearly square
+    rectangle lam_2 and lam_3 sit 4e-3 apart, so `warn_gap=0.1` fires on the first solve; the
+    caller sees it once, and the result counts it."""
+    from douse.cluster_opt import maximize_ratio
+    L, H = 1.0, 1.002
+    fam = VertexPolygon(4, perim=2 * (L + H))
+    ev = ChladniEvaluator(fam, n_eigs=3, prec=PREC, degenerate_tol=0.0, warn_gap=0.1)
+    with pytest.warns(UserWarning, match="within .* of each other"):
+        res = maximize_ratio(ev, _p([0, L, L + 1j * H, 1j * H], fam.perim), k=1, max_iter=1)
+    assert res.n_warnings >= 1
+
+
+@pytest.mark.slow
+def test_lam3_over_lam1_on_a_hexagon_survives_the_lam4_lam5_pair():
+    """The standard problem's own geometry: maximizing lam_3/lam_1 drives lam_3 into the
+    regular hexagon's lam_4 = lam_5 pair. With `n_eigs = k + 2 = 4` the request ends INSIDE that
+    double, and a truncated copy made douse's eps-active cluster and the solver's level count
+    disagree -- a `ValueError` out of `cluster_matrices` that killed the run (2026-10-14). The
+    level is now returned whole; a short run must finish, by any honest ending."""
+    from douse.cluster_opt import maximize_ratio
+    from douse import ClosingBudget, ConstraintSet, MinEdgeLength
+    fam = VertexPolygon(6, perim=4.0)
+    ev = ChladniEvaluator(fam, n_eigs=4, prec=PREC, degenerate_tol=0.0)
+    cons = ConstraintSet(MinEdgeLength(fam), ClosingBudget(fam))
+    res = maximize_ratio(ev, param_vector(_perturbed(6, 0.03), 4.0), k=2, max_iter=12,
+                         constraints=cons)
+    assert np.isfinite(res.fun) and res.fun > 1.0, res.message
+    assert all(len(l) >= 4 for l in [res.lams])

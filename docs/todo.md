@@ -467,8 +467,8 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
 - [ ] **The inverse problem has never been run end to end.** `SpectralMatch` is implemented and
       its gradient is FD-verified, but no recovery has been attempted. It is what the package is
       named for.
-- [ ] `douse/opt.py` is superseded and does not import. Kept only until its loss functions are
-      confirmed to have no remaining use; `objective.py` reimplements both.
+- [x] `douse/opt.py` deleted 2026-10-14 (its loss functions live in `objective.py`);
+      `archive/pre_milestone1/` with it.
 
 ## Settled, and worth not re-deriving
 

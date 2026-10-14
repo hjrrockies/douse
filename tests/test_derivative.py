@@ -42,10 +42,14 @@ import warnings
 import numpy as np
 import pytest
 
-lappy = pytest.importorskip("lappy")   # lappy solvers and Hadamard path: the deprecated backend
-from lappy import Eigenproblem, Polygon, basis_plan as BP
-from lappy.asymp import weyl_est
-from lappy.mps import MPSEigensolver
+# Every test here drives lappy's solver and lappy's Hadamard path: the deprecated backend
+# (douse[lappy]). The whole module is marked `lappy` and skips without a working lappy
+# (tests/conftest.py). The chladni backend's derivatives are checked in test_chladni_backend.py.
+pytestmark = pytest.mark.lappy
+lappy = pytest.importorskip("lappy")
+from lappy import Eigenproblem, Polygon, basis_plan as BP   # noqa: E402
+from lappy.asymp import weyl_est                            # noqa: E402
+from lappy.mps import MPSEigensolver                        # noqa: E402
 
 from douse.polygon import VertexPolygon, param_vector
 from douse.derivative import dlam_dvertices, dlam_dp, vertex_velocity
