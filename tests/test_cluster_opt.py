@@ -139,7 +139,7 @@ def test_the_convex_case_is_answered_and_the_square_is_not_optimal_for_it():
     and the two ratios have the same value there (5/2).
     """
     fam = VertexPolygon(4, perim=PERIM)
-    ev = SpectrumEvaluator(fam, n_eigs=4, warn_gap=0.0, degenerate_tol=0.0, lam_max_window=8)
+    ev = SpectrumEvaluator(fam, n_eigs=4, warn_gap=0.0, degenerate_tol=0.0)
     p = param_vector(_regular(4), PERIM)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
