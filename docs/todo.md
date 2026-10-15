@@ -81,6 +81,27 @@ since been generalized to any m, and §6.1's LMI form is superseded (see below).
 
 ## Spectral ratios — the critical path
 
+- [ ] **A reliable experimental setup for the PRODUCTION spectral-ratio runs, for the thesis**
+      (added 2026-10-14). The grid that goes in the thesis -- `max lam_k/lam_1` over N-gons of
+      fixed perimeter, N up to 12-16, k as high as chladni honestly supports, Dirichlet, with the
+      convex family as the complementary study -- should run on Virginia Tech's research
+      computing cluster (ARC), not on a laptop. What that needs, none of it built yet:
+      - a run specification that is a FILE (cells, starts, seeds, max_iter, prec, backend, the
+        constraint set, the commit SHAs of douse and chladni), so a cell is reproducible from
+        the spec alone and `summarize_grid` can say which spec wrote each row;
+      - a job layout for the scheduler (Slurm on ARC): one start per task, an array job per
+        cell, a resumable ledger per cell as now, BLAS threads pinned per task, memory capped
+        per task (the N = 6 runs peaked at 0.9-1.4 GB after the pencil cache fix; measure N = 12);
+      - an environment that builds on the cluster without lappy (chladni's `gsvd4py` needs
+        LAPACK's `?ggsvd3`; off macOS that is the `scipy-openblas32` route in chladni's
+        `pyproject.toml` -- verify on ARC's Linux before anything else);
+      - a stability protocol: every certified cell re-run under at least two seeds of the start
+        sampler and one ulp-level perturbation of the window, so the thesis quotes a value with a
+        spread rather than a number;
+      - the summary and figures generated from the ledgers by scripts in the repo, never by hand.
+      Depends on the speed work (step-controlled warm windows) landing first: at today's
+      1000-1600 s per N = 6, k = 2 start, N = 12 is out of reach on any machine.
+
 - [x] **THE RADIUS COLLAPSE WAS THE ACTIVE SET BEING LOST, and it ended 8 of the first 10
       multi-start runs -- including every run that found the BEST answer.** `eps_abs = Delta*scale`
       is right on the way in and wrong at the end. Measured at the N=4 `max lam_4/lam_1` optimum,
