@@ -42,7 +42,9 @@ place, so it was built differently -- see the two entries below.
 **2026-10-14, later: the follow-up plan, sessions 1-3 done, 4 in progress**
 (`~/.claude/plans/can-you-do-a-compressed-whisper.md` has the full plan). Session 1: a fast
 end-to-end run in the default tier (`tests/test_pipeline_fast.py`), a golden trace of
-`maximize_ratio` on a fake backend (`tests/test_cluster_opt_trace.py`), and the optimizer split
+`maximize_ratio` on a fake backend (`tests/test_cluster_opt_trace.py`; the exact replay runs only
+on the machine that recorded it, `recorded_on` in the JSON, since one ulp of evaluation noise
+changes the cluster-mode path; elsewhere a structural check runs), and the optimizer split
 into nine stages over an explicit `_State` with unit tests on scripted fakes. Session 2:
 chladni's `Spectrum` is a tuple of `Level`s with the cluster logic (`level_index`,
 `neighbourhood`, `cluster`) and `SolveRecord` carries what produced it; douse has one backend
