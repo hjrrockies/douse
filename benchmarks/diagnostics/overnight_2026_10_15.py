@@ -89,9 +89,12 @@ def report():
                   f"{kinds.get('warm', 0):5d} {kinds.get('cold', 0):5d} "
                   f"{kinds.get('replan', 0):6d} {r.get('n_tension_evals', 0):7d}  "
                   f"{'ok' if r['success'] else '--'} {r['message'][:40]}")
-        if 'prefix' in by[seed] and 'windowed' in by[seed]:
-            a, b = by[seed]['prefix']['fun'], by[seed]['windowed']['fun']
-            print(f"     prefix vs windowed: |dF| = {abs(a - b):.2e}")
+        # against the LATEST windowed setting (windowed2 is the fixed step cap, 271e740)
+        wins = [k for k in by[seed] if k.startswith('windowed')]
+        if 'prefix' in by[seed] and wins:
+            w = sorted(wins)[-1]
+            a, b = by[seed]['prefix']['fun'], by[seed][w]['fun']
+            print(f"     prefix vs {w}: |dF| = {abs(a - b):.2e}")
 
 
 def main():
