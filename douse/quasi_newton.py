@@ -42,10 +42,25 @@ step goes interior and its gain falls quadratically in `||grad||` while `Delta` 
 `delta_max`, so `gain/Delta` would declare optimality at `||grad|| ~ 3e-04`. The quadratic gain
 is used for `rho` -- where it belongs, and where it is what makes `rho -> 1` hold to second
 order -- and never for the stop.
+
+SR1 BLOWS UP ON THESE RUNS, AND THE TRUST REGION CANNOT SAVE IT (measured 2026-10-15, N=6
+`lam_3/lam_1` seed 0, both warm paths). The SR1 matrix for `lam_1` grew from a norm of 1.5e2 at
+iterate 18 to 1e7 by iterate 60 against a true Hessian of norm 2.2e2 (central differences of
+the Hadamard gradient, symmetric to 3e-7, so the gradients are not the problem); the cluster
+mean's followed, to 6e11. Mechanism: once the steps zigzag inside a low-dimensional subspace,
+`s.(y - Bs)` cancels while `|y - Bs|` stays at the size of the third-order terms, so each
+rank-one update is enormous and the 1e-8 skip rule never fires. The second-order gain then
+over- or under-shoots the first-order one by up to five orders, `rho` decays to the acceptance
+threshold, rejections halve the radius, and nothing repairs the matrix because rejected trials
+produce no pairs: the "trust radius collapsed to 5.68e-15" ending. A cap on each update
+relative to the current norm compounds and does not help. `ScalarSecant` is the default now:
+the curvature along the last step, a Rayleigh quotient that cannot leave the true Hessian's
+range. Over 100 iterates from a healthy state it matched SR1 to 5e-6 in the objective, so the
+directional information SR1 carried was worth nothing here.
 """
 import numpy as np
 
-__all__ = ['BFGS', 'SR1', 'tr_subproblem']
+__all__ = ['BFGS', 'SR1', 'ScalarSecant', 'tr_subproblem']
 
 
 def tr_subproblem(g, B, delta, tol=1e-12, maxiter=200):
@@ -179,6 +194,63 @@ class BFGS:
 
         Returns True if a pair was formed and absorbed.
         """
+        p = np.asarray(p, dtype=float).copy()
+        g = np.asarray(g, dtype=float).copy()
+        took = False
+        if self.chain is not None:
+            took = self.update(p - self.chain[0], g - self.chain[1])
+        self.chain = (p, g)
+        return took
+
+
+class ScalarSecant:
+    """`B = gamma I` with `gamma = s.y / s.s`, the curvature along the last accepted step.
+
+    The Rayleigh quotient of the average Hessian over the step, so `gamma` lies in the range of
+    the true Hessian's eigenvalues whatever the pairs do -- the property SR1 lacks (module
+    docstring). It carries one number: the curvature in the direction the run is walking, which
+    is the only direction the trust-region step of the next iterate differs from the first-order
+    one by. Same interface as `SR1` so `cluster_opt` and `model_gain2` need not know which."""
+
+    def __init__(self, n):
+        self.n = int(n)
+        self.B = np.zeros((self.n, self.n))
+        self.gamma = 0.0
+        self.n_updates = 0
+        self.n_skipped = 0
+        self.chain = None
+
+    def __repr__(self):
+        return f'ScalarSecant(n={self.n}, gamma={self.gamma:.3g}, updates={self.n_updates})'
+
+    @property
+    def ready(self):
+        return self.n_updates > 0
+
+    def reset(self):
+        self.B = np.zeros((self.n, self.n))
+        self.gamma = 0.0
+        self.n_updates = 0
+        self.chain = None
+
+    def chain_broken(self):
+        """Forget the previous iterate, keep the curvature."""
+        self.chain = None
+
+    def update(self, s, y):
+        s = np.asarray(s, dtype=float)
+        y = np.asarray(y, dtype=float)
+        ss, sy = float(s @ s), float(s @ y)
+        if ss == 0 or not np.isfinite(sy):
+            self.n_skipped += 1
+            return False
+        self.gamma = sy/ss
+        self.B = self.gamma*np.eye(self.n)
+        self.n_updates += 1
+        return True
+
+    def observe(self, p, g):
+        """Record `(p, g)`; update from the previous recorded pair if the chain is unbroken."""
         p = np.asarray(p, dtype=float).copy()
         g = np.asarray(g, dtype=float).copy()
         took = False

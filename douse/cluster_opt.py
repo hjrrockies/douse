@@ -87,7 +87,7 @@ from .derivative import cluster_matrices, dlams_dp
 from .evaluate import ShapeRefusal, SolverRefusal
 from .polygon import gauge_vector
 from .optimize import OptimizeResult
-from .quasi_newton import SR1, tr_subproblem
+from .quasi_newton import SR1, ScalarSecant, tr_subproblem
 
 __all__ = ['local_model', 'trust_region_step', 'maximize_ratio', 'model_gain',
            'model_gain2']
@@ -807,7 +807,7 @@ class _Opts:
     verify_final: bool
     constraints: object
     degeneracy_moves: bool
-    quasi_newton: bool
+    quasi_newton: object
     max_unresolved_streak: int
     discontinuity_halvings: int
     discontinuity_ratio: float
@@ -1283,6 +1283,17 @@ def _result(st, o, ev, tally, lams_tracked, F_tracked, verified):
                           verified=verified, success=st.success, message=st.message)
 
 
+def _curvature(choice, n):
+    """The curvature model `quasi_newton` names, or None."""
+    if choice is None or choice is False:
+        return None
+    if choice is True or choice == 'scalar':
+        return ScalarSecant(n)
+    if choice == 'sr1':
+        return SR1(n)
+    raise ValueError(f"quasi_newton must be True, False, 'scalar' or 'sr1', got {choice!r}")
+
+
 def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto',
                    max_iter=200, gain_tol=1e-7, eta=0.1, eta_grow=0.75, plateau_rtol=0.05,
                    plateau_shrink=1e-3, plateau_max=1e-3, callback=None, rng=None,
@@ -1349,12 +1360,17 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     cause. The discriminator is whether `rho` goes negative as the radius SHRINKS. Here it was
     healthy at the working radius and negative only ABOVE it, which is the opposite pattern.
 
-    `quasi_newton` puts a BFGS second-order model under the SMOOTH branch (`douse.quasi_newton`).
-    The first-order branch there was steepest ascent pinned to the trust boundary, which is what
-    made the iteration count the binding constraint rather than the eigensolver. Curvature is
-    accumulated only across consecutive smooth iterates -- a cluster has no gradient to difference
-    -- and the matrix is kept but the chain broken whenever the model switches, the basis is
-    replanned, or a degeneracy move jumps the shape.
+    `quasi_newton` puts a second-order model on the two smooth scalars `lam_1` and the cluster
+    mean (`douse.quasi_newton`, `model_gain2`): `True` or `'scalar'` for the curvature along
+    the last step (`ScalarSecant`, the default), `'sr1'` for the full SR1 matrix, `False` for
+    none. SR1 WAS THE DEFAULT UNTIL 2026-10-15 AND IS WHAT COLLAPSED THE TRUST RADIUS on long
+    runs: its matrix for `lam_1` grew to 1e7 against a true Hessian of 2e2, the second-order
+    gain it fed `rho` was then off by orders of magnitude, and rejections cannot repair a
+    Hessian (`quasi_newton` module docstring has the measurement). The scalar secant cannot
+    leave the true Hessian's range, and over 100 iterates from a healthy state matched SR1 to
+    5e-6 in the objective. Curvature is accumulated across consecutive iterates and the chain
+    broken whenever the active cluster changes, the basis is replanned, or a degeneracy move
+    jumps the shape.
 
     Stops when the model's best FIRST-ORDER gain per unit radius falls below `gain_tol`, OR when
     that quantity stops depending on the radius at all -- see `plateau_rtol`.
@@ -1420,11 +1436,12 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
         lams, solver = evaluator.eigenvalues(p)
         st = _State(p=p, F=_ratio(lams, k), lams=lams, solver=solver, delta=float(delta0),
                     message=f'reached max_iter={max_iter}',
-                    # TWO Hessians, one per smooth scalar in `model_gain2`. SR1 rather than
-                    # BFGS: neither `lam_1` nor the cluster mean is convex along the path a run
-                    # takes, and `tr_subproblem` solves the indefinite subproblem exactly.
-                    H1=SR1(len(p)) if quasi_newton else None,
-                    Hmu=SR1(len(p)) if quasi_newton else None,
+                    # TWO curvature models, one per smooth scalar in `model_gain2`. Neither
+                    # `lam_1` nor the cluster mean is convex along the path a run takes, so
+                    # nothing here assumes definiteness (`tr_subproblem` solves the indefinite
+                    # subproblem exactly). The scalar secant is the default; SR1 blew up.
+                    H1=_curvature(quasi_newton, len(p)),
+                    Hmu=_curvature(quasi_newton, len(p)),
                     n_replans_seen=int(getattr(evaluator, 'n_replans', 0)),
                     degeneracy_moves=bool(degeneracy_moves))
         for it in range(1, max_iter + 1):

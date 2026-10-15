@@ -11,7 +11,7 @@ import pytest
 from scipy.optimize import minimize
 
 from douse.cluster_opt import model_gain, model_gain2, model_gain2_grad
-from douse.quasi_newton import SR1, BFGS, tr_subproblem
+from douse.quasi_newton import SR1, BFGS, ScalarSecant, tr_subproblem
 
 
 def _seed(*parts):
@@ -238,3 +238,62 @@ def test_model_gain2_refuses_a_step_that_drives_lam_1_negative():
     model = _fake_model('smooth', 1, 0, 6, rng)
     H1 = -1e6*np.eye(6)                                # enough curvature to sink the denominator
     assert model_gain2(model, 0.5*np.ones(6), H1, None) == -np.inf
+
+
+def _zigzag_pairs(H, cubic, n_pairs, rng):
+    """Gradient pairs of `0.5 p.Hp + cubic*sum(p^3)/3` along small steps that zigzag inside a
+    two-dimensional subspace, the pattern a trust-region crawl along a ridge produces."""
+    n = H.shape[0]
+    grad = lambda p: H @ p + cubic*p**2
+    hess = lambda p: H + 2*cubic*np.diag(p)
+    u, v = np.zeros(n), np.zeros(n)
+    u[0], v[1] = 1.0, 1.0
+    p = np.zeros(n)
+    for i in range(n_pairs):
+        s = 6e-3*(u*(1 + 0.05*rng.normal()) + ((-1)**i)*0.3*v*(1 + 0.05*rng.normal()))
+        yield s, grad(p + s) - grad(p), hess(p + 0.5*s)
+        p = p + s
+
+
+def test_scalar_secant_stays_inside_the_hessian_range():
+    """THE PROPERTY SR1 LACKED on 2026-10-15, when its matrix for `lam_1` grew to 1e7 against a
+    true Hessian of 2e2 and collapsed the trust radius (module docstring; the instrumented run
+    is `benchmarks/run/diagnostics/sr1_blowup_seed0_prefix_2026_10_15.jsonl`, `H1.normB` per
+    iterate). That blow-up needs the real run's pairs -- on this synthetic zigzag with a cubic
+    term SR1 learns the Hessian correctly -- so what is pinned here is the guarantee: the
+    scalar secant is a Rayleigh quotient of the average Hessian over the step, and cannot leave
+    the range of that Hessian's eigenvalues."""
+    rng = np.random.default_rng(3)
+    n = 8
+    A = rng.normal(size=(n, n))
+    H = 100*0.5*(A + A.T)
+    cubic = 2e3
+    sr1, sc = SR1(n), ScalarSecant(n)
+    for s, y, H_mid in _zigzag_pairs(H, cubic, 80, rng):
+        sr1.update(s, y)
+        sc.update(s, y)
+        lo, hi = np.linalg.eigvalsh(H_mid)[[0, -1]]      # the Hessian's range along THIS step
+        assert lo - 1e-6*abs(lo) <= sc.gamma <= hi + 1e-6*abs(hi), (sc.gamma, lo, hi)
+    assert sr1.n_updates == 80                          # SR1 is fine HERE; the run is the evidence
+
+
+def test_scalar_secant_is_exact_along_the_step_on_a_quadratic():
+    rng = np.random.default_rng(4)
+    n = 5
+    A = rng.normal(size=(n, n))
+    H = 0.5*(A + A.T)
+    grad = lambda p: H @ p
+    sc = ScalarSecant(n)
+    p = np.zeros(n)
+    for _ in range(6):
+        q = p + rng.normal(size=n)
+        sc.observe(q, grad(q))
+        s = q - p
+        if sc.ready:
+            assert sc.gamma == pytest.approx(float(s @ H @ s)/float(s @ s), rel=1e-12)
+            assert sc.B == pytest.approx(sc.gamma*np.eye(n))
+        p = q
+    sc.chain_broken()
+    assert sc.observe(p + 1, grad(p + 1)) is False and sc.ready
+    sc.reset()
+    assert not sc.ready and sc.gamma == 0.0
