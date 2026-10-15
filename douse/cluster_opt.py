@@ -814,6 +814,8 @@ class _Opts:
     sigma_abort: object
     sigma_abort_streak: int
     fam: object
+    window_factor: float = 2.5
+    window_floor: float = 1e-9
 
 
 @dataclass
@@ -845,6 +847,8 @@ class _State:
     n_discontinuity_repairs: int = 0
     n_degeneracy_moves: int = 0
     n_qn_steps: int = 0
+    n_windowed: int = 0
+    n_window_caps: int = 0
     message: str = ''
     success: bool = False
     resolution: float = np.nan
@@ -1030,6 +1034,7 @@ def _trial_step(st, o, ev, tally):
     TENTH ONE: a run of refusals at radii that keep halving says this iterate's neighbourhood
     cannot be indexed (measured: 30 refusals, 25 minutes, re-learning one fact), so a streak of
     `max_unresolved_streak` stops the run with the reason attached."""
+    windows = _warm_windows(st, o)
     q = st.p + st.d
     st.rho = -np.inf
     if not o.fam.is_valid(q) or (o.constraints is not None
@@ -1038,7 +1043,8 @@ def _trial_step(st, o, ev, tally):
         st.n_infeasible += 1
         return Outcome.CONTINUE
     try:
-        lams_q, solver_q = ev.eigenvalues(q)
+        lams_q, solver_q = (ev.eigenvalues(q) if windows is None
+                            else ev.eigenvalues(q, windows=windows))
     except ShapeRefusal as refusal:
         st.delta *= 0.5
         if isinstance(refusal, SolverRefusal):
@@ -1068,6 +1074,47 @@ def _trial_step(st, o, ev, tally):
         st.delta *= 0.5
         st.reseed(ev)
     return Outcome.CONTINUE
+
+
+def _warm_windows(st, o):
+    """Per-value half-widths for the trial's warm solve, from the step about to be taken:
+    `h_i = max(window_factor |m_i|, window_floor lam_i)` with `m_i` the level's first-order
+    move under the step (`SolvedShape.predicted_moves`), the factor covering the second-order
+    error the trust region controls through `rho`. THE STEP IS CAPPED so no window reaches
+    past half the gap to its neighbours: windows then stay disjoint except where levels are
+    genuinely close (the cluster, which the solver searches as one window). None when the
+    solved shape cannot predict moves (a backend without windows, or a fake): the warm solve
+    then searches the prefix as before. Decided with the user 2026-10-14; the measurement
+    behind it is `chladni/notes/warm_trace_2026-10-14.md`."""
+    predict = getattr(st.solver, 'predicted_moves', None)
+    if predict is None or st.d is None:
+        return None
+    lams = np.asarray(st.lams, dtype=float)
+    try:
+        dv = o.fam.d_vertices_dp(st.p) @ np.asarray(st.d, dtype=float)
+        moves = np.asarray(predict(dv), dtype=float)
+    except Exception:                                                 # noqa: BLE001
+        return None
+    if moves.shape != lams.shape or not np.all(np.isfinite(moves)):
+        return None
+    h = np.maximum(o.window_factor*np.abs(moves), o.window_floor*np.abs(lams))
+    # the cap: scale the step so that no window exceeds half the gap to a DISTINCT neighbour
+    if len(lams) > 1:
+        gaps = np.diff(lams)
+        distinct = gaps > o.window_floor*lams[1:]
+        allowed = np.full(len(lams), np.inf)
+        allowed[:-1][distinct] = np.minimum(allowed[:-1][distinct], 0.5*gaps[distinct])
+        allowed[1:][distinct] = np.minimum(allowed[1:][distinct], 0.5*gaps[distinct])
+        over = h/allowed
+        worst = float(np.max(over[np.isfinite(over)], initial=0.0))
+        if worst > 1.0:
+            scale = 1.0/worst
+            st.d = st.d*scale
+            st.gain = st.gain*scale            # first order; `rho` is measured against it
+            st.n_window_caps += 1
+            h = np.minimum(h, allowed)
+    st.n_windowed += 1
+    return h
 
 
 def _repair_discontinuity(st, o, ev, tally):
@@ -1208,6 +1255,7 @@ def _result(st, o, ev, tally, lams_tracked, F_tracked, verified):
                                                        getattr(ev, 'n_spurious_refusals', 0))),
                           n_degeneracy_moves=st.n_degeneracy_moves,
                           n_qn_steps=st.n_qn_steps, resolution=float(st.resolution),
+                          n_windowed=st.n_windowed, n_window_caps=st.n_window_caps,
                           n_curv_updates=((0, 0) if st.H1 is None
                                           else (st.H1.n_updates, st.Hmu.n_updates)),
                           n_curv_skipped=((0, 0) if st.H1 is None
@@ -1233,7 +1281,8 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                    plateau_shrink=1e-3, plateau_max=1e-3, callback=None, rng=None,
                    verify_final=True, constraints=None, degeneracy_moves=True,
                    quasi_newton=True, max_unresolved_streak=5, discontinuity_halvings=4,
-                   discontinuity_ratio=2.0, sigma_abort=1e-6, sigma_abort_streak=3):
+                   discontinuity_ratio=2.0, sigma_abort=1e-6, sigma_abort_streak=3,
+                   window_factor=2.5, window_floor=1e-9):
     """Trust-region ascent on `lam_k/lam_1`, valid through a degeneracy.
 
     `evaluator` must be a `SpectrumEvaluator` with `degenerate_tol=0` -- the guard that normally
@@ -1356,7 +1405,8 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
               max_unresolved_streak=max_unresolved_streak,
               discontinuity_halvings=discontinuity_halvings,
               discontinuity_ratio=discontinuity_ratio, sigma_abort=sigma_abort,
-              sigma_abort_streak=sigma_abort_streak, fam=evaluator.family)
+              sigma_abort_streak=sigma_abort_streak, fam=evaluator.family,
+              window_factor=float(window_factor), window_floor=float(window_floor))
     p = np.array(p0, dtype=float)
     tally = dict(n=0, seen=set())     # warnings seen inside the loop; see `_watch_warnings`
     with _watch_warnings(tally):

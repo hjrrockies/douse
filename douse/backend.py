@@ -87,7 +87,12 @@ class RunHealth:
 
 @runtime_checkable
 class SolvedShape(Protocol):
-    """One solved shape, as `douse.derivative` needs it."""
+    """One solved shape, as `douse.derivative` needs it.
+
+    Optional, not part of the protocol check: `predicted_moves(dv) -> (K,)`, the first-order
+    bound on each returned value's move under a vertex displacement `dv`. A solved shape that
+    has it lets the optimizer hand the next warm solve per-level windows (`_warm_windows` in
+    `cluster_opt`); one without it gets the prefix warm solve."""
 
     def dlams_dvertices(self, lams, n_vert) -> np.ndarray:
         """`(K, 2N)`: the simple-eigenvalue gradients, `[x_0..x_{N-1}, y_0..y_{N-1}]`. Raises
@@ -98,6 +103,7 @@ class SolvedShape(Protocol):
         the solver's levels do not hold exactly `mult` eigenvalues there."""
 
 
+
 @runtime_checkable
 class SpectrumBackend(Protocol):
     """A forward solver over a family of shapes, as the optimizers consume it."""
@@ -106,10 +112,12 @@ class SpectrumBackend(Protocol):
     n_eigs: int
     degenerate_tol: float
 
-    def eigenvalues(self, p):
-        """`(spectrum, solved)`: a `Spectrum` (levels; `unfolded` is the array, with the level at
-        `n_eigs` returned whole so `len >= n_eigs`) and a `SolvedShape`. Raises `ShapeRefusal`
-        and nothing else when the shape is the problem."""
+    def eigenvalues(self, p, windows=None):
+        """`(lams, solved)`: the unfolded values (the level at `n_eigs` returned whole, so
+        `len >= n_eigs`; `solved.spectrum` holds the levels) and a `SolvedShape`. Raises
+        `ShapeRefusal` and nothing else when the shape is the problem. `windows`, per-value
+        half-widths from `SolvedShape.predicted_moves`, lets a warm solve re-locate each level
+        in its own window instead of searching the prefix."""
 
     def reseed(self, p, spectrum):
         """Point warm tracking at `(p, spectrum)`: the accepted iterate after a rejected

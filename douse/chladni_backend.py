@@ -177,6 +177,22 @@ class ChladniSolver:
         Jv = family.d_vertices_dp(p)                            # (2N, n_p)
         return np.einsum("fij,fp->pij", H, Jv)
 
+    def predicted_moves(self, dv):
+        """How far each returned value can move, to first order, under the vertex displacement
+        `dv` (`(2N,)`, `[dx_0..dx_{N-1}, dy_0..dy_{N-1}]`): per unfolded value, the largest
+        |eigenvalue| of the level's Hadamard block contracted with `dv` -- the simple gradient
+        for a simple level, the spectral radius of the m x m directional-derivative matrix for a
+        multiple one. This is what sizes the warm solve's windows (`SpectrumBackend.eigenvalues
+        (p, windows=)`): the optimizer knows its step before it takes it."""
+        dv = np.asarray(dv, dtype=float)
+        out = []
+        for i in range(len(self.spec.levels)):
+            H = self.hadamard_vertices(i)                     # (2N, m, m)
+            M = np.tensordot(dv, H, axes=(0, 0))              # (m, m)
+            move = float(np.max(np.abs(np.linalg.eigvalsh(0.5 * (M + M.T)))))
+            out.extend([move] * int(self.spec.mult[i]))
+        return np.array(out)
+
     # The names `douse.derivative` dispatched on before the `SolvedShape` protocol (2026-10-14).
     chladni_dlams_dvertices = dlams_dvertices
     chladni_cluster_matrices = cluster_matrices_dvertices
@@ -280,9 +296,14 @@ class SpectrumEvaluator:
             self._planned = (self._plan_built_at.tobytes(), rec, time.perf_counter() - t0)
         return self._plan
 
-    def eigenvalues(self, p, seed=None):
+    def eigenvalues(self, p, seed=None, windows=None):
         """`(lams, solver)`; raises `ShapeRefusal` (and nothing else) when the shape is the
         problem, as `SpectrumEvaluator.eigenvalues` does.
+
+        `windows`: per-value half-widths for the warm solve, from a caller that bounded each
+        level's move before stepping (`ChladniSolver.predicted_moves`, `cluster_opt`); with
+        them chladni re-locates each level in its own window instead of searching the prefix
+        (`Eigenproblem.solve(..., windows=)`). Ignored on a cold solve.
 
         **Plan drift is re-planned, not refused.** A plan frozen at an earlier shape can stop
         meeting `prec` as the shape moves: a level goes unmet, the audit reads short or excess,
@@ -298,7 +319,7 @@ class SpectrumEvaluator:
         used: a warm start needs the previous SPECTRUM (its plan and levels), not just values."""
         p = np.asarray(p, dtype=float)
         dom, verts = self._domain(p)
-        spec, exc = self._solve(dom, self.plan(p), p, near=self._near())
+        spec, exc = self._solve(dom, self.plan(p), p, near=self._near(), windows=windows)
         if exc is not None and not self._planned_here(p):
             self.replan(p)
             self.n_replans += 1
@@ -418,7 +439,7 @@ class SpectrumEvaluator:
         return (self._plan_built_at is not None
                 and np.array_equal(self._plan_built_at, np.asarray(p, dtype=float)))
 
-    def _solve(self, dom, plan, p, near=None):
+    def _solve(self, dom, plan, p, near=None, windows=None):
         """`(spec, refusal_or_None)` for `dom` on `plan`, warm from `near` when it was solved on
         the same plan. A plan that cannot be realized here (a different corner count) is
         re-planned at `p` immediately."""
@@ -442,7 +463,9 @@ class SpectrumEvaluator:
             try:
                 with _quiet():
                     spec = Eigenproblem(dom).solve(self.n_eigs, prec=self.prec, plan=plan,
-                                                   near=near)
+                                                   near=near,
+                                                   windows=(windows if near is not None
+                                                            else None))
             except ValueError as e:
                 if "corner" not in str(e):
                     raise

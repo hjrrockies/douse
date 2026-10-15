@@ -31,3 +31,7 @@ def test_two_iterations_of_the_pipeline_on_a_rectangle():
         assert key in res
     assert np.isfinite(res.worst_sigma) and 0 < res.worst_sigma < 1e-8
     assert ev.n_tension_evals > 0 and ev.n_solves >= 1
+    # The trial solves were WINDOWED: the step bounded each level's move and chladni re-located
+    # the levels in their own windows (2026-10-14), traced as warm solves.
+    assert res.n_windowed >= 1
+    assert any(t.kind == "warm" for t in ev.trace), [t.kind for t in ev.trace]
