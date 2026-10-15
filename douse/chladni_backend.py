@@ -177,21 +177,47 @@ class ChladniSolver:
         Jv = family.d_vertices_dp(p)                            # (2N, n_p)
         return np.einsum("fij,fp->pij", H, Jv)
 
-    def predicted_moves(self, dv):
+    def predicted_moves(self, dv, factor=2.5, floor=0.25):
         """How far each returned value can move, to first order, under the vertex displacement
-        `dv` (`(2N,)`, `[dx_0..dx_{N-1}, dy_0..dy_{N-1}]`): per unfolded value, the largest
-        |eigenvalue| of the level's Hadamard block contracted with `dv` -- the simple gradient
-        for a simple level, the spectral radius of the m x m directional-derivative matrix for a
-        multiple one. This is what sizes the warm solve's windows (`SpectrumBackend.eigenvalues
-        (p, windows=)`): the optimizer knows its step before it takes it."""
+        `dv` (`(2N,)`, `[dx_0..dx_{N-1}, dy_0..dy_{N-1}]`): per unfolded value, the spectral
+        radius of its level's Hadamard block contracted with `dv`. This is what sizes the warm
+        solve's windows (`SpectrumBackend.eigenvalues(p, windows=)`).
+
+        NEAR-DEGENERATE LEVELS ARE PREDICTED TOGETHER. Degenerate perturbation theory: levels
+        closer than their own predicted moves mix under the step, and the branches move by the
+        eigenvalues of the JOINT block (cross terms included, `SolveRecord.hadamard([i, j])`),
+        not by each level's own. Measured on douse's N=6 k=2 optimum at a 3e-3 step: levels 3
+        and 4, 1e-3 apart, predicted individually as 0.32 and 0.13 and moved 0.12 and 0.32 --
+        the magnitudes on the wrong members -- so the windows missed and the solve went cold.
+        Levels whose gaps are within `factor` x the sum of their moves are grouped and every
+        member gets the group's spectral radius. `floor` x the largest move is a floor for
+        every level: a near-stationary level (predicted 2e-4, moved 7e-3 by second order)
+        still gets a window that holds it."""
         dv = np.asarray(dv, dtype=float)
-        out = []
-        for i in range(len(self.spec.levels)):
-            H = self.hadamard_vertices(i)                     # (2N, m, m)
-            M = np.tensordot(dv, H, axes=(0, 0))              # (m, m)
-            move = float(np.max(np.abs(np.linalg.eigvalsh(0.5 * (M + M.T)))))
-            out.extend([move] * int(self.spec.mult[i]))
-        return np.array(out)
+        n = len(self.spec.levels)
+        lam = np.asarray(self.spec.lam, dtype=float)
+        own = np.empty(n)
+        for i in range(n):
+            M = np.tensordot(dv, self.hadamard_vertices(i), axes=(0, 0))
+            own[i] = float(np.max(np.abs(np.linalg.eigvalsh(0.5 * (M + M.T)))))
+        # group adjacent levels whose gap is within reach of their joint motion
+        groups, start = [], 0
+        for i in range(1, n + 1):
+            if i == n or (lam[i] - lam[i - 1]) > factor * (own[i] + own[i - 1]):
+                groups.append(list(range(start, i)))
+                start = i
+        move = own.copy()
+        for g in groups:
+            if len(g) > 1:
+                key = tuple(g)
+                if key not in self._H:
+                    with _quiet():
+                        self._H[key] = self.record.hadamard(list(g), self._velocity())
+                M = np.tensordot(dv, self._H[key], axes=(0, 0))
+                radius = float(np.max(np.abs(np.linalg.eigvalsh(0.5 * (M + M.T)))))
+                move[g] = max(radius, float(np.max(own[g])))
+        move = np.maximum(move, floor * float(np.max(move, initial=0.0)))
+        return np.repeat(move, np.asarray(self.spec.mult, dtype=int))
 
     # The names `douse.derivative` dispatched on before the `SolvedShape` protocol (2026-10-14).
     chladni_dlams_dvertices = dlams_dvertices

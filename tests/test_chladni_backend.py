@@ -358,3 +358,25 @@ def test_the_planners_own_solve_is_the_first_answer_at_a_planned_shape():
     ev.eigenvalues(_p([0, L, L + 1j * H * 1.01, 1j * H], fam.perim))
     assert [t.kind for t in ev.trace] == ["plan", "plan"] and ev.n_solves == 2
     assert ev.n_tension_evals > n
+
+
+def test_near_degenerate_levels_are_predicted_from_their_joint_block():
+    """A nearly square rectangle: lam_2 and lam_3 are distinct levels 4e-3 apart. Under a step
+    that moves them more than that, the branches mix, and each level's own block attributes
+    the moves to the wrong member (measured on the N=6 k=2 optimum, 2026-10-14). Grouped,
+    both get the joint block's spectral radius, never less than their own."""
+    L, H = 1.0, 1.002
+    fam = VertexPolygon(4, perim=2 * (L + H))
+    ev = ChladniEvaluator(fam, n_eigs=3, prec=PREC, degenerate_tol=0.0, warn_gap=0.0)
+    p = _p([0, L, L + 1j * H, 1j * H], fam.perim)
+    lams, sol = ev.eigenvalues(p)
+    assert len(sol.spec.levels) == 3                          # three simple levels
+    d = 0.02 * np.array([1.0, -0.5, 0.25, -1.0])
+    dv = fam.d_vertices_dp(p) @ d
+    moves = sol.predicted_moves(dv)
+    own = np.array([abs(np.tensordot(dv, sol.hadamard_vertices(i), axes=(0, 0))[0, 0])
+                    for i in range(3)])
+    assert moves[1] == moves[2] and moves[1] >= max(own[1], own[2]) - 1e-12
+    assert moves[0] >= 0.25 * moves.max() - 1e-15
+    M = np.tensordot(dv, sol.record.hadamard([1, 2], sol._velocity()), axes=(0, 0))
+    assert moves[1] >= np.max(np.abs(np.linalg.eigvalsh(0.5 * (M + M.T)))) - 1e-12
