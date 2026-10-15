@@ -175,6 +175,12 @@ def test_a_ledger_row_says_which_code_and_solver_produced_it(monkeypatch):
     row = rm.run_one(4, 1, 0, max_iter=3, seed0=0, delta0=0.05)
     json.dumps(row)
     assert row['schema'] == 2 and row['backend'] == 'fake' and row['prec'] == 1e-10
+    assert 'spec' not in row
+    from douse import spec as S
+    import pathlib
+    sp = S.load(pathlib.Path(rm.__file__).resolve().parent / 'specs' / 'thesis_ratio_v0.toml')
+    row2 = rm.run_one(4, 1, 0, max_iter=3, seed0=0, delta0=0.05, spec=sp)
+    assert row2['spec'] == 'thesis_ratio_v0' and row2['spec_sha'] == sp.sha
     assert 'douse_sha' in row and 'chladni_sha' in row
     assert row['worst_bound'] == 1e-10 and row['worst_deficit'] == 0.05 and row['n_replans'] == 1
     assert row['trace'] == [dict(kind='cold', reason=None, rung=1, n_evals=150, seconds=2.0)]

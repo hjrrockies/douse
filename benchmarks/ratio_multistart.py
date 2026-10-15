@@ -63,6 +63,7 @@ from douse.cluster_opt import maximize_ratio
 from douse.evaluate import ShapeRefusal
 from douse.chladni_backend import _quiet
 from douse import ledger, runs
+from douse import spec as spec_mod
 
 try:
     from .rectangle_exact import best_rectangle
@@ -104,9 +105,14 @@ def start_line(row):
         return f'  start {row["start"]:3d}: FAILED  {row["error"][:88]}'
     d = row_deficit(row)
     flag = '  ** MISSED MODE? **' if d > spectral_guard.DEFICIT_TOL else ''
+    r = ledger.normalize(row)
+
+    def num(key):                       # a schema-2 row writes nan as None
+        v = r.get(key)
+        return float('nan') if v is None else float(v)
     return (f"  start {row['start']:3d}: F={row['fun']:.10f} nit={row['nit']} "
-            f"{row['seconds']:.0f}s bound={ledger.normalize(row).get('worst_bound') or float('nan'):.1e} "
-            f"res={row.get('resolution', float('nan')):.1e} "
+            f"{row['seconds']:.0f}s bound={num('worst_bound'):.1e} "
+            f"res={num('resolution'):.1e} "
             f"{'OK ' if row['success'] else '   '}{row['message'][:44]}{flag}")
 
 
@@ -136,33 +142,8 @@ def _sigma(row):
     return float('nan') if v is None else float(v)
 
 
-def _git_sha(path):
-    try:
-        out = subprocess.run(['git', '-C', str(path), 'rev-parse', '--short', 'HEAD'],
-                             capture_output=True, text=True, timeout=5)
-        return out.stdout.strip() or None
-    except Exception:                                                 # noqa: BLE001
-        return None
-
-
-def _provenance(ev):
-    """WHICH CODE WROTE THIS ROW. A cell is not always written by one version: `run_grid`
-    retries a crashed start on resume, and the backend changed under the grid on 2026-10-14.
-    The row says which solver, at what precision, from which commits."""
-    import douse
-    backend = getattr(ev, 'backend', None) or (
-        'chladni' if type(ev).__module__.endswith('chladni_backend') else 'lappy')
-    row = dict(backend=backend, prec=float(getattr(ev, 'prec', float('nan'))),
-               douse_sha=_git_sha(pathlib.Path(douse.__file__).resolve().parent.parent))
-    try:
-        import chladni
-        row['chladni_sha'] = _git_sha(pathlib.Path(chladni.__file__).resolve().parents[2])
-    except Exception:                                                 # noqa: BLE001
-        row['chladni_sha'] = None
-    return row
-
-
-def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_redraws=3):
+def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_redraws=3,
+            prec=1e-10, backend='chladni', spec=None):
     """One start. A start that cannot be SOLVED AT ALL is redrawn rather than lost.
 
     Measured over the 18-cell grid: **all nine crashed runs died at the start shape**, before a
@@ -194,7 +175,7 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
         # the cell's answer to 5e-10, with a first-order certificate at criticality 6.7e-08 --
         # and was then EXCLUDED on `worst_sigma = 5.0e-04`, a number belonging to a shape it never
         # optimized. Its own endpoint tensions are 7.0e-13 to 3.3e-12.
-        ev = runs.make_evaluator(N, k, n_eigs=n_eigs, fam=fam)
+        ev = runs.make_evaluator(N, k, n_eigs=n_eigs, fam=fam, prec=prec, backend=backend)
         idx = i if attempt == 0 else i + 1000*attempt
         p0 = param_vector(draw(N, idx, seed0), PERIM)
         try:
@@ -225,7 +206,7 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
                     seconds=round(time.perf_counter() - t0, 1),
                     deficit_tol=float(spectral_guard.DEFICIT_TOL),
                     **{k2: v2 for k2, v2 in ev.health().as_row().items() if k2 != 'trace'},
-                    **_provenance(ev))
+                    **spec_mod.provenance(ev, spec))
     v = fam.vertices(res.x)
     # THE ROW IS SCHEMA 2 (`douse.ledger`): the run's identity and provenance, the result, and
     # the backend's health under chladni's names, with the per-solve trace. Readers normalize
@@ -236,7 +217,7 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
         seconds=round(time.perf_counter() - t0, 1),
         edges=[float(t) for t in np.sort(dg.edge_lengths(v))],
         angles=[float(t) for t in np.sort(np.degrees(dg.interior_angles(v)))],
-        deficit_tol=float(spectral_guard.DEFICIT_TOL), **_provenance(ev))
+        deficit_tol=float(spectral_guard.DEFICIT_TOL), **spec_mod.provenance(ev, spec))
 
 
 def _cell(job):
@@ -251,14 +232,15 @@ def _cell(job):
     since a spawned child re-imports numpy and reads them then; `n_workers_default` is a module
     global read at call time, so it is set here.
     """
-    N, k, i, max_iter, seed0, delta0, n_eigs, threads, convex = job
+    threads = job.pop('threads', None)           # set per worker by the parent's environment
     # chladni's search is serial per solve and its LAPACK calls run on the BLAS pool; the parent
     # sets the BLAS thread variables before the pool is created (a spawned child reads them on
     # importing numpy). `threads` is kept in the job for that purpose and for the row.
     try:
-        return run_one(N, k, i, max_iter, seed0, delta0, n_eigs, convex=convex)
+        return run_one(**job)
     except Exception as exc:                                          # noqa: BLE001
-        return dict(N=N, k=k, start=i, ok=False, error=f'{type(exc).__name__}: {exc}',
+        return dict(N=job['N'], k=job['k'], start=job['i'], ok=False,
+                    error=f'{type(exc).__name__}: {exc}',
                     trace=traceback.format_exc()[-600:])
 
 
@@ -279,8 +261,12 @@ def group(rows, tol=1e-3):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--N', type=int, required=True)
-    ap.add_argument('--k', type=int, required=True, help='0-based: k=2 is lam_3/lam_1')
+    ap.add_argument('--spec', default=None,
+                    help='a run specification (TOML, `douse.spec`): the cells, starts, seed, '
+                         'budget, precision, backend and family come from it, every row cites '
+                         'it, and the flags below that it covers are ignored.')
+    ap.add_argument('--N', type=int, default=None)
+    ap.add_argument('--k', type=int, default=None, help='0-based: k=2 is lam_3/lam_1')
     ap.add_argument('--starts', type=int, default=12)
     ap.add_argument('--max-iter', type=int, default=400)
     ap.add_argument('--seed0', type=int, default=0)
@@ -299,7 +285,27 @@ def main():
     ap.add_argument('--threads-per-worker', type=int, default=None,
                     help='default: cpu_count // workers, floored at 1.')
     args = ap.parse_args()
+    spec = None
+    if args.spec:
+        spec = spec_mod.load(args.spec)
+        args.starts, args.seed0, args.max_iter = spec.starts, spec.seed0, spec.max_iter
+        args.delta0, args.n_eigs, args.convex = spec.delta0, spec.n_eigs, spec.convex
+        args.sigma_max = spec.sigma_max
+        cells = list(spec.cells)
+        print(f'spec {spec.name} ({spec.sha}, {spec.source}): {len(cells)} cell(s)', flush=True)
+    else:
+        if args.N is None or args.k is None:
+            ap.error('give --N and --k, or --spec')
+        cells = [(args.N, args.k)]
+    for N, k in cells:
+        args.N, args.k = N, k
+        _run_cell(args, spec)
 
+
+def _run_cell(args, spec=None):
+    """One `(N, k)` cell: resume its ledger, run the missing starts, print the summary."""
+    prec = spec.prec if spec is not None else 1e-10
+    backend = spec.backend if spec is not None else 'chladni'
     os.makedirs(OUT, exist_ok=True)
     path = os.path.join(OUT, f'N{args.N}_k{args.k}{"_convex" if args.convex else ""}.jsonl')
     done = {r['start'] for r in ledger.read_rows(path, dedupe=False)
@@ -316,8 +322,9 @@ def main():
         for var in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
                     'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS'):
             os.environ.setdefault(var, str(threads))
-        jobs = [(args.N, args.k, i, args.max_iter, args.seed0, args.delta0, args.n_eigs,
-                 threads, args.convex) for i in todo]
+        jobs = [dict(N=args.N, k=args.k, i=i, max_iter=args.max_iter, seed0=args.seed0,
+                     delta0=args.delta0, n_eigs=args.n_eigs, convex=args.convex, prec=prec,
+                     backend=backend, spec=spec, threads=threads) for i in todo]
         print(f'running {len(jobs)} start(s) on {args.workers} worker(s), '
               f'{threads} thread(s) each', flush=True)
         # ONE START PER PROCESS. Without `max_tasks_per_child` a worker is recycled across many
@@ -327,7 +334,7 @@ def main():
         # allocator fragmentation to the OS, which nothing inside the process can do. Re-import
         # costs a few seconds against starts that run 20-40 minutes.
         with ProcessPoolExecutor(max_workers=args.workers, max_tasks_per_child=1) as ex:
-            futs = {ex.submit(_cell, j): j[2] for j in jobs}
+            futs = {ex.submit(_cell, j): j['i'] for j in jobs}
             for fut in as_completed(futs):
                 row = fut.result()
                 # WRITTEN FROM THE PARENT ONLY, one row at a time, so concurrent workers cannot
@@ -348,7 +355,8 @@ def main():
         # mistake as the `_degeneracy_move` exception that hid an IndexError through three runs.
         try:
             row = run_one(args.N, args.k, i, args.max_iter, args.seed0, args.delta0,
-                          args.n_eigs, convex=args.convex)
+                          args.n_eigs, convex=args.convex, prec=prec, backend=backend,
+                          spec=spec)
         except Exception as exc:
             row = dict(N=args.N, k=args.k, start=i, convex=bool(args.convex), ok=False,
                        error=f'{type(exc).__name__}: {exc}',

@@ -205,6 +205,16 @@ def find_basins(good, agree_rtol=1e-6, shape_merge_tol=1e-2):
     return basins
 
 
+def _spec_mix(rows):
+    """`{spec@sha: count}` over the rows: which recipes wrote this cell (`douse.spec`). Rows
+    from before specs existed count under 'none'."""
+    mix = {}
+    for r in rows:
+        key = f"{r['spec']}@{r.get('spec_sha', '?')}" if r.get('spec') else 'none'
+        mix[key] = mix.get(key, 0) + 1
+    return mix
+
+
 def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5):
     """Best certified value in a cell, and how many starts agree with it."""
     rows = [ledger.normalize(r) for r in rows]
@@ -244,7 +254,7 @@ def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5):
                   and r['resolution'] <= res_max)
     if not good:
         return dict(best=None, n_total=len(rows), n_crashed=len(crashed),
-                    schema_mix=ledger.schema_mix(rows),
+                    schema_mix=ledger.schema_mix(rows), spec_mix=_spec_mix(rows),
                     n_skipped_mode=len(skipped), n_sharp=0, n_uncertified=len(uncertified),
                     n_drifted=len(drifted), n_certified=0, n_agree=0, n_near=0,
                     n_clean=len(clean),
@@ -262,7 +272,7 @@ def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5):
     basins = find_basins(good, agree_rtol)
     return dict(best=best, basins=basins, n_total=len(rows), n_crashed=len(crashed), n_clean=len(clean),
                 n_skipped_mode=len(skipped), n_sharp=n_sharp, n_uncertified=len(uncertified),
-                schema_mix=ledger.schema_mix(rows),
+                schema_mix=ledger.schema_mix(rows), spec_mix=_spec_mix(rows),
                 n_drifted=len(drifted), n_certified=len(good), n_agree=len(agreeing),
                 n_near=n_near, spread=spread, best_uncertified=None)
 
@@ -380,6 +390,11 @@ def main():
         for k2, v2 in c.get('schema_mix', {}).items():
             mix[k2] = mix.get(k2, 0) + v2
     print('\n  rows by ledger schema: ' + ', '.join(f'v{k2}: {v2}' for k2, v2 in sorted(mix.items())))
+    smix = {}
+    for *_, c in cells:
+        for k2, v2 in c.get('spec_mix', {}).items():
+            smix[k2] = smix.get(k2, 0) + v2
+    print('  rows by run spec: ' + ', '.join(f'{k2}: {v2}' for k2, v2 in sorted(smix.items())))
     print(f'\n  {cert} certified of {tot} run(s); {drift} excluded on worst_sigma, '
           f'{missed} on a missed mode, {crash} crashed, {unc} without a health statistic')
     print('  agree = certified starts that found the best value; CERTIFIED means the run')

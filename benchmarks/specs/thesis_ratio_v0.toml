@@ -1,0 +1,15 @@
+# The thesis grid, draft 0 (2026-10-15): max lam_k/lam_1 over N-gons of perimeter 4, Dirichlet.
+# Run with `python -m benchmarks.ratio_multistart --spec benchmarks/specs/thesis_ratio_v0.toml`.
+# Every row cites this file by name and content hash; edit it and the hash changes.
+name = "thesis_ratio_v0"
+notes = "N = 3..6, k = 2..4 (0-based k = 1..3); the cells the laptop can reach. N up to 12-16 and higher k wait on the cluster and the warm-window speed work."
+cells = [[3, 1], [3, 2], [3, 3], [4, 1], [4, 2], [4, 3], [5, 1], [5, 2], [5, 3], [6, 1], [6, 2], [6, 3]]
+starts = 8
+seed0 = 0
+max_iter = 400
+delta0 = 0.05
+prec = 1e-10
+backend = "chladni"
+family = "all"
+sigma_max = 1e-6
+perim = 4.0

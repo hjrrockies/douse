@@ -1,5 +1,7 @@
 # douse
 
+[![tests](https://github.com/hjrrockies/douse/actions/workflows/tests.yml/badge.svg)](https://github.com/hjrrockies/douse/actions/workflows/tests.yml)
+
 **D**omains **o**f **U**nknown **S**hape, from **E**igenvalues — shape optimization and inverse
 spectral problems, built on [`chladni`](../chladni).
 
@@ -144,6 +146,7 @@ differencing the solver.
 | `douse/errors.py` | the refusals every backend raises: `ShapeRefusal`, `SolverRefusal`, `UnresolvedSpectrum`, `DegenerateSpectrum` |
 | `douse/backend.py` | the seam: `SpectrumBackend` and `SolvedShape` protocols, `RunHealth` (the backend's statistics as a value, chladni's names) and `SolveTrace` |
 | `douse/ledger.py` | the ledger's schema (`SCHEMA = 2`): `normalize` reads rows of any era under both name sets, `read_rows`/`write_row`, `result_row` |
+| `douse/spec.py` | a run specification (TOML): the cells, starts, seed, budget, precision, backend and family of a sweep, content-hashed and cited by every row (`benchmarks/specs/`) |
 | `douse/runs.py` | one place that sets a run up: `make_evaluator`, `regular`, `perturbed`, `start_shape`, `convex_start_shape`, `constraints_for` |
 | `douse/spectral_guard.py` | the Weyl-count deficit (`weyl_deficit`, `weyl_report`, `DEFICIT_TOL`): is a returned set consecutive? |
 | `douse/sampling.py` | start shapes: `random_convex` and the samplers the multistart grid draws from |

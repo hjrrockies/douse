@@ -1,0 +1,43 @@
+name: tests
+
+# The default tier (`pytest`, slow deselected): ~230 tests including one real two-iteration
+# optimization on chladni. chladni is a path dependency (`../chladni`), so it is checked out
+# beside douse; `CHLADNI_REF` pins which chladni the suite runs against. lappy is not installed
+# (its tests skip), as in the development environment.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CHLADNI_REF: fix/douse-pipeline-2026-10-14
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: douse
+      - uses: actions/checkout@v4
+        with:
+          repository: hjrrockies/chladni
+          ref: ${{ env.CHLADNI_REF }}
+          path: chladni
+      - uses: astral-sh/setup-uv@v5
+      - name: Install
+        working-directory: douse
+        run: |
+          uv python install ${{ matrix.python }}
+          uv sync --extra test --python ${{ matrix.python }}
+      - name: Default tier
+        working-directory: douse
+        env:
+          OPENBLAS_NUM_THREADS: "1"
+          OMP_NUM_THREADS: "1"
+        run: uv run pytest -q -p no:cacheprovider
