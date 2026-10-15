@@ -56,10 +56,13 @@ aborts rungs early, hands back the accepted rung's solve (one solve per replan s
 declines wild geometry in microseconds; `benchmarks/diagnostics/warm_trace.py` measures where a
 k=2 run's solves go. The measurement's verdict (`chladni/notes/warm_trace_2026-10-14.md`): replans are 3-9% of a
 run and all `unmet`; the warm solve is the gap (65-70% of a run, ~90 evaluations each, because
-chladni's warm window is a full prefix). Next levers (decided 2026-10-14): step-controlled per-level warm windows -- the
-optimizer bounds each level's move from its Jacobian and the step (`h_i = max(c |g_i . d|,
-resolution_i)`), caps the step so windows stay disjoint, and chladni's `_solve_warm` refines
-the windows it is given; then cadence 10 -> 20, `log_j` once per distinct `(nu, k r)`. Session 5 (chladni's
+chladni's warm window is a full prefix). BUILT (douse `691c649`, chladni `fefad6a`): step-controlled per-level warm windows -- the
+optimizer bounds each level's move from its Jacobian and the step, caps the step so windows
+stay disjoint, and chladni's `track_levels` refines the windows it is given. Measured on the
+same three N=6 k=2 seeds (`chladni/notes/warm_trace_2026-10-14.md`): evaluations per warm
+solve 92 -> 61 (the refiner's ~15 per level), wall -22% and -51% on the two comparable seeds;
+all runs still hit the 80-iteration cap, so converged runs are needed for the 1e-9 check.
+Next: the refiner's cost per level, then cadence 10 -> 20, `log_j` once per distinct `(nu, k r)`. Session 5 (chladni's
 `search.solve` in named steps) not started.
 
 
