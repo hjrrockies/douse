@@ -1098,13 +1098,20 @@ def _warm_windows(st, o):
     if moves.shape != lams.shape or not np.all(np.isfinite(moves)):
         return None
     h = np.maximum(o.window_factor*np.abs(moves), o.window_floor*np.abs(lams))
-    # the cap: scale the step so that no window exceeds half the gap to a DISTINCT neighbour
+    # THE CAP KEEPS WINDOWS OFF LEVELS THEY ARE NOT PREDICTED TO REACH, AND NOTHING ELSE. Levels
+    # whose windows already overlap are a CLUSTER the solver searches as one merged window, so
+    # the cap must not hold them apart: a cap at half the gap to any distinct neighbour throttled
+    # every step to the gap as a run approached lam_3 = lam_4, and three 400-iterate runs sat at
+    # relative gaps of 1e-5 to 2e-4 while the prefix path reached the double at 1e-10 and a
+    # higher value (overnight 2026-10-15). So: group adjacent levels whose windows overlap, and
+    # cap a group's windows at half the gap to the nearest level OUTSIDE it.
     if len(lams) > 1:
         gaps = np.diff(lams)
-        distinct = gaps > o.window_floor*lams[1:]
+        joined = gaps <= h[:-1] + h[1:]                    # these pairs share a merged window
         allowed = np.full(len(lams), np.inf)
-        allowed[:-1][distinct] = np.minimum(allowed[:-1][distinct], 0.5*gaps[distinct])
-        allowed[1:][distinct] = np.minimum(allowed[1:][distinct], 0.5*gaps[distinct])
+        for i in np.flatnonzero(~joined):                   # a boundary between two groups
+            allowed[i] = min(allowed[i], 0.5*gaps[i])
+            allowed[i + 1] = min(allowed[i + 1], 0.5*gaps[i])
         over = h/allowed
         worst = float(np.max(over[np.isfinite(over)], initial=0.0))
         if worst > 1.0:

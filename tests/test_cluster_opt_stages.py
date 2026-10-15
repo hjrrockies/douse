@@ -189,3 +189,50 @@ def test_no_statistic_means_no_abort():
     for _ in range(5):
         assert _sigma_abort(st, _opts(), ev, dict(n=0, seen=set())) is Outcome.CONTINUE
     assert st.sigma_streak == 0
+
+
+# ── the warm windows and the step cap ─────────────────────────────────────────────────────────
+
+class _Predicting:
+    """A solved shape whose predicted moves are given."""
+    def __init__(self, moves):
+        self._moves = np.asarray(moves, float)
+
+    def predicted_moves(self, dv):
+        return self._moves
+
+
+class _FamJ:
+    def is_valid(self, p):
+        return True
+
+    def d_vertices_dp(self, p):
+        return np.eye(4)
+
+
+def _windows_state(lams, moves):
+    from douse.cluster_opt import _warm_windows
+    st = _state(lams=lams)
+    st.solver = _Predicting(moves)
+    st.d, st.gain = np.full(4, 0.1), 1.0
+    o = _opts(fam=_FamJ())
+    return _warm_windows(st, o), st
+
+
+def test_a_predicted_cluster_is_not_held_apart_by_the_cap():
+    """Two levels 1e-5 apart whose predicted windows overlap are a cluster the solver searches
+    as one merged window; the cap must not throttle the step to their gap (three 400-iterate
+    overnight runs stalled at exactly that, 2026-10-15)."""
+    h, st = _windows_state([20.0, 37.0, 65.0, 65.0 + 1e-5], [0.02, 0.01, 0.1, 0.1])
+    assert st.n_window_caps == 0 and np.allclose(st.d, 0.1)
+    assert h[2] == h[3] == pytest.approx(0.25) and h[2] + h[3] > 1e-5
+
+
+def test_a_window_reaching_a_distinct_level_caps_the_step():
+    """A window predicted to reach past half the gap to a level it does NOT overlap is capped,
+    and the step with it, so the windows stay disjoint from that level."""
+    h, st = _windows_state([20.0, 21.0, 65.0, 80.0], [0.02, 0.24, 0.1, 0.1])
+    # h = [0.05, 0.6, 0.25, 0.25]: the second window does not reach the first (0.65 < 1.0),
+    # so they are distinct, and 0.6 exceeds half their gap: capped to 0.5, the step with it.
+    assert st.n_window_caps == 1
+    assert h[1] == pytest.approx(0.5) and np.allclose(st.d, 0.1 * 0.5 / 0.6)
