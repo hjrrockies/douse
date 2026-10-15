@@ -139,9 +139,17 @@ def _jsonable(v):
     return str(v)
 
 
+# `rho` is the actual over the predicted reduction: two differences of nearly equal objective
+# values, so a last-bit difference between BLAS libraries (macOS Accelerate against the Linux
+# runner's OpenBLAS) that leaves every iterate, objective and radius within 1e-10 moves `rho` by
+# ~5e-10. It gets its own tolerance; everything else keeps 1e-10.
+_TOL = {"rho": 1e-6}
+
+
 def _compare(got, want, path=""):
     if isinstance(want, float) and isinstance(got, (float, int)):
-        assert abs(got - want) <= 1e-10 * max(1.0, abs(want)), (path, got, want)
+        tol = _TOL.get(path.rsplit(".", 1)[-1], 1e-10)
+        assert abs(got - want) <= tol * max(1.0, abs(want)), (path, got, want)
     elif isinstance(want, list):
         assert isinstance(got, list) and len(got) == len(want), (path, got, want)
         for i, (g, w) in enumerate(zip(got, want)):
