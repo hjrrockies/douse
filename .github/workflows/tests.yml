@@ -2,8 +2,9 @@ name: tests
 
 # The default tier (`pytest`, slow deselected): ~230 tests including one real two-iteration
 # optimization on chladni. chladni is a path dependency (`../chladni`), so it is checked out
-# beside douse; `CHLADNI_REF` pins which chladni the suite runs against. lappy is not installed
-# (its tests skip), as in the development environment.
+# beside douse; `CHLADNI_REF` pins which chladni the suite runs against. lappy is checked out
+# so its path source resolves, and not installed (its tests skip), as in the development
+# environment.
 on:
   push:
     branches: [main]
@@ -29,6 +30,12 @@ jobs:
           repository: hjrrockies/chladni
           ref: ${{ env.CHLADNI_REF }}
           path: chladni
+      # lappy is an OPTIONAL extra that is never installed here, but it is a path source in
+      # pyproject.toml and uv resolves path sources at sync time, so the path has to exist.
+      - uses: actions/checkout@v4
+        with:
+          repository: hjrrockies/lappy
+          path: lappy
       - uses: astral-sh/setup-uv@v5
       - name: Install
         working-directory: douse
