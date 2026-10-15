@@ -149,14 +149,14 @@ def _jsonable(v):
 _TOL = {"rho": 1e-6}
 
 
-def _compare(got, want, path=""):
+def _compare(got, want, path="", tol=1e-10):
     if isinstance(want, float) and isinstance(got, (float, int)):
-        tol = _TOL.get(path.rsplit(".", 1)[-1], 1e-10)
+        tol = max(tol, _TOL.get(path.rsplit(".", 1)[-1], 0.0))
         assert abs(got - want) <= tol * max(1.0, abs(want)), (path, got, want)
     elif isinstance(want, list):
         assert isinstance(got, list) and len(got) == len(want), (path, got, want)
         for i, (g, w) in enumerate(zip(got, want)):
-            _compare(g, w, f"{path}[{i}]")
+            _compare(g, w, f"{path}[{i}]", tol)
     elif isinstance(want, dict):
         # A result may GAIN keys without re-recording (the golden is a floor, not a ceiling);
         # it may never lose one or change one. Callback dicts are compared in full.
@@ -164,7 +164,7 @@ def _compare(got, want, path=""):
         if path.startswith("trace"):
             assert set(got) == set(want), (path, set(got) ^ set(want))
         for key in want:
-            _compare(got[key], want[key], f"{path}.{key}")
+            _compare(got[key], want[key], f"{path}.{key}", tol)
     else:
         assert got == want, (path, got, want)
 
@@ -192,12 +192,14 @@ def _structural(trace, result, golden):
     but moves the second cluster-mode step (the cluster block's eigenvectors are undetermined
     at the square's double), after which the run takes 22-29 iterates instead of 18 to the
     same optimum. Linux CI runners show the same departure. So: the prefix through the first
-    cluster-mode iterate replays exactly; after it, the mode sequence, the optimum, the
-    counters that must be zero and a bound on the iterate count are checked."""
+    cluster-mode iterate replays to 1e-7 (under noise of 1e-16 to 1e-12 it moves by at most
+    2e-9, the fake's central-difference floor; a CI runner showed 6e-10); after it, the mode
+    sequence, the optimum, the counters that must be zero and a bound on the iterate count
+    are checked."""
     gt = golden["trace"]
     first = next(i for i, t in enumerate(gt) if t["mode"] == "cluster")
     assert len(trace) > first, (len(trace), first)
-    _compare(trace[:first + 1], gt[:first + 1], "trace")
+    _compare(trace[:first + 1], gt[:first + 1], "trace", tol=1e-7)
     modes = [t["mode"] for t in trace]
     assert modes == ["smooth"] * first + ["cluster"] * (len(modes) - first), modes
     assert len(trace) <= 2 * len(gt), (len(trace), len(gt))
