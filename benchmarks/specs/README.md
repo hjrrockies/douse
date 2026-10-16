@@ -10,3 +10,16 @@ identity (`douse_sha`, `chladni_sha`) is recorded beside the spec, not inside it
 | spec | what |
 |---|---|
 | `thesis_ratio_v0.toml` | the cells the laptop can reach: N = 3..6, k = 2..4, 8 starts, 400 iterations, 1e-10 |
+
+## On the cluster (Slurm)
+
+`python -m benchmarks.slurm <spec> [--dry-run]` writes one array job per cell
+(`benchmarks/run/slurm/<spec name>/<cell>.sbatch`): `--array=0-(starts-1)`, one start per task,
+BLAS threads pinned to 1, each task appending to its own ledger `<cell>/task_<i>.jsonl`. It never
+submits; it prints the `sbatch` lines. `summarize_grid --dir benchmarks/run/slurm/<spec name>`
+pools the task ledgers per cell. Run `python -m benchmarks.env_check` on a new machine first.
+
+A spec may name its per-task resources -- `slurm_mem` (`"4G"`), `slurm_time` (`"24:00:00"`),
+`slurm_partition`, `slurm_account`, all strings as `sbatch` takes them. They say where a spec
+runs, not what it computes, so they are NOT part of the content hash: adding them leaves
+`spec_sha` unchanged. Without them the jobs get 4G and 24 hours; `--mem`/`--time` override.

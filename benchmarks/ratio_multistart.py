@@ -284,6 +284,14 @@ def main():
                          'are throttled to match (see _cell).')
     ap.add_argument('--threads-per-worker', type=int, default=None,
                     help='default: cpu_count // workers, floored at 1.')
+    ap.add_argument('--start-index', type=int, default=None,
+                    help='run only this start (0-based, below --starts): one Slurm array task '
+                         '(benchmarks/slurm.py). Resumes like any other start.')
+    ap.add_argument('--out', default=None,
+                    help='where the ledger goes: a DIRECTORY for the cell ledgers (default '
+                         'run/ratio_multistart/), or a FILE ending .jsonl for a single cell, as '
+                         'a per-task ledger N<N>_k<k>/task_<i>.jsonl that summarize_grid --dir '
+                         'pools.')
     args = ap.parse_args()
     spec = None
     if args.spec:
@@ -292,11 +300,21 @@ def main():
         args.delta0, args.n_eigs, args.convex = spec.delta0, spec.n_eigs, spec.convex
         args.sigma_max = spec.sigma_max
         cells = list(spec.cells)
+        if args.N is not None or args.k is not None:
+            # ONE CELL OF A SPEC (a Slurm array job is one cell): it must be in the spec, or the
+            # rows would cite a recipe that does not contain them.
+            if (args.N, args.k) not in cells:
+                ap.error(f'--N {args.N} --k {args.k} is not a cell of spec {spec.name}')
+            cells = [(args.N, args.k)]
         print(f'spec {spec.name} ({spec.sha}, {spec.source}): {len(cells)} cell(s)', flush=True)
     else:
         if args.N is None or args.k is None:
             ap.error('give --N and --k, or --spec')
         cells = [(args.N, args.k)]
+    if args.start_index is not None and not 0 <= args.start_index < args.starts:
+        ap.error(f'--start-index {args.start_index} is outside 0..{args.starts - 1}')
+    if args.out and args.out.endswith('.jsonl') and len(cells) != 1:
+        ap.error('--out FILE.jsonl takes one cell; give a directory for several')
     for N, k in cells:
         args.N, args.k = N, k
         _run_cell(args, spec)
@@ -306,14 +324,18 @@ def _run_cell(args, spec=None):
     """One `(N, k)` cell: resume its ledger, run the missing starts, print the summary."""
     prec = spec.prec if spec is not None else 1e-10
     backend = spec.backend if spec is not None else 'chladni'
-    os.makedirs(OUT, exist_ok=True)
-    path = os.path.join(OUT, f'N{args.N}_k{args.k}{"_convex" if args.convex else ""}.jsonl')
+    out = getattr(args, 'out', None) or OUT
+    name = f'N{args.N}_k{args.k}{"_convex" if args.convex else ""}.jsonl'
+    path = out if out.endswith('.jsonl') else os.path.join(out, name)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     done = {r['start'] for r in ledger.read_rows(path, dedupe=False)
             if r.get('ok', True) and r.get('start') is not None}  # a crash is retried on resume
     if done:
         print(f'resuming {path}: {len(done)} start(s) already recorded', flush=True)
 
     todo = [i for i in range(args.starts) if i not in done]
+    if getattr(args, 'start_index', None) is not None:
+        todo = [i for i in todo if i == args.start_index]
 
     if args.workers > 1 and todo:
         # THE BLAS VARIABLES MUST BE SET BEFORE THE POOL EXISTS. A spawned child re-imports numpy

@@ -1,8 +1,11 @@
 """One table for the whole sweep: what `max lam_k/lam_1` is, and how well it is known.
 
     uv run python -m benchmarks.summarize_grid [--sigma-max 1e-6] [--res-max 1e-4]
+        [--basin-rtol 1e-6] [--dir run/ratio_multistart | --dir <slurm out>]
 
-Reads every ledger in `run/ratio_multistart/` and reports, per `(N, k)` cell: the best certified
+Reads every ledger in `run/ratio_multistart/` (or `--dir`: a directory of cell ledgers
+`N6_k2.jsonl`, of per-task ledgers `N6_k2/task_3.jsonl` as `benchmarks/slurm.py` lays them out,
+or both, pooled per cell) and reports, per `(N, k)` cell: the best certified
 value, the resolution it is certified to, how many independent starts agree with it, and the
 shape. This is the form the results want to be quoted in, and it is deliberately NOT "the largest
 `F` anyone saw" -- that number is available from any single run and means nothing on its own.
@@ -110,6 +113,44 @@ def load(path):
     return ledger.read_rows(path)              # normalized: every row carries both name sets
 
 
+def cell_ledgers(root):
+    """`{cell: [paths]}` for the ledgers under `root`, the cell being a ledger's stem.
+
+    Two layouts, pooled: a cell ledger `root/N6_k2.jsonl` as `ratio_multistart` writes by
+    default, and per-task ledgers `root/N6_k2/*.jsonl` as `benchmarks/slurm.py` lays out an
+    array job (one start per task, one file per task, so no two tasks share a file). Only
+    directories named like a cell are descended into, so archives beside the ledgers
+    (`pre_plateau_fix/`, `rerun/`, ...) are not swept into the answer.
+    """
+    cells = {}
+    for path in sorted(glob.glob(os.path.join(root, 'N*_k*.jsonl'))):
+        cells.setdefault(os.path.basename(path)[:-len('.jsonl')], []).append(path)
+    for d in sorted(glob.glob(os.path.join(root, 'N*_k*'))):
+        if os.path.isdir(d):
+            cells.setdefault(os.path.basename(d), []).extend(
+                sorted(glob.glob(os.path.join(d, '*.jsonl'))))
+    return {c: ps for c, ps in cells.items() if ps}
+
+
+def load_cell(paths):
+    """The rows of one cell pooled over its ledgers, deduped by start across them (the last
+    file in sorted order wins, as the last row within a file does -- `load`)."""
+    by_start, loose = {}, []
+    for path in paths:
+        for r in load(path):
+            if r.get('start') is None:
+                loose.append(r)
+            else:
+                by_start[r['start']] = r
+    return [by_start[i] for i in sorted(by_start)] + loose
+
+
+def basin_line(basins):
+    """`F x count (start s)` per basin, best first: the column beside the table."""
+    return ' | '.join(f"{b['fun']:.10f} x{len(b['rows'])} (s{b['best'].get('start', '?')})"
+                      for b in basins)
+
+
 def row_deficit(r):
     """`worst_weyl_deficit` for a row, RECOMPUTED from `x` and `lams` when it is absent.
 
@@ -164,12 +205,15 @@ def find_basins(good, agree_rtol=1e-6, shape_merge_tol=1e-2):
     calibrated on it. The fingerprint keeps one job: flagging rows that agree in `F` but are NOT
     the same shape, which is the genuine collision and is reported rather than merged.
     """
+    # CHAINED, in sorted order: a row joins the basin of its NEIGHBOUR in `F` when the two agree
+    # to `agree_rtol` (relative), so a basin is a run of values with no gap wider than the
+    # tolerance. Comparing against the basin's best instead made membership depend on which
+    # end of a tight cluster happened to certify sharpest.
     basins = []
     for r in sorted(good, key=lambda r: -r['fun']):
-        for b in basins:
-            if abs(r['fun'] - b['fun']) <= agree_rtol*abs(b['fun']):
-                b['rows'].append(r)
-                break
+        if basins and abs(r['fun'] - basins[-1]['rows'][-1]['fun']) \
+                <= agree_rtol*abs(basins[-1]['rows'][-1]['fun']):
+            basins[-1]['rows'].append(r)
         else:
             basins.append(dict(fun=r['fun'], rows=[r]))
     # NEITHER KEY WORKS ALONE, and both failures were measured. Keying on the SHAPE split N=6
@@ -215,7 +259,7 @@ def _spec_mix(rows):
     return mix
 
 
-def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5):
+def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5, basin_rtol=1e-6):
     """Best certified value in a cell, and how many starts agree with it."""
     rows = [ledger.normalize(r) for r in rows]
     crashed = [r for r in rows if not r.get('ok', True)]
@@ -269,7 +313,7 @@ def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5):
     # other. Resolution is about how sharply a point is pinned; agreement is about whether the
     # starts found the SAME point, and conflating them throws away the globality evidence.
     n_near = sum(abs(r['fun'] - best['fun']) <= near_rtol*abs(best['fun']) for r in clean)
-    basins = find_basins(good, agree_rtol)
+    basins = find_basins(good, basin_rtol)
     return dict(best=best, basins=basins, n_total=len(rows), n_crashed=len(crashed), n_clean=len(clean),
                 n_skipped_mode=len(skipped), n_sharp=n_sharp, n_uncertified=len(uncertified),
                 schema_mix=ledger.schema_mix(rows), spec_mix=_spec_mix(rows),
@@ -281,20 +325,25 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--sigma-max', type=float, default=1e-6)
     ap.add_argument('--res-max', type=float, default=1e-4)
-    ap.add_argument('--dir', default=LEDGERS)
+    ap.add_argument('--dir', default=LEDGERS,
+                    help='ledger directory: cell ledgers N<N>_k<k>.jsonl and/or per-task '
+                         'ledgers N<N>_k<k>/*.jsonl (benchmarks/slurm.py), pooled per cell')
+    ap.add_argument('--basin-rtol', type=float, default=1e-6,
+                    help='certified endpoints whose F values chain within this relative '
+                         'tolerance are one basin')
     ap.add_argument('--verify', action='store_true',
                     help='re-solve each reported best shape on a FRESH plan and flag disagreement '
                          '(catches a missed eigenvalue, which `worst_sigma` cannot). One solve '
                          'per cell.')
     args = ap.parse_args()
 
-    paths = sorted(glob.glob(os.path.join(args.dir, 'N*_k*.jsonl')))
-    if not paths:
+    found = cell_ledgers(args.dir)
+    if not found:
         print(f'no ledgers in {args.dir}')
         return
     cells = []
-    for path in paths:
-        rows = load(path)
+    for name, paths in found.items():
+        rows = load_cell(paths)
         if not rows:
             continue
         # A CONVEX CELL IS A DIFFERENT QUESTION, not more rows for the same one. `--convex`
@@ -302,14 +351,15 @@ def main():
         # unconstrained cell of the same `(N, k)` would silently mix a constrained optimum into
         # an unconstrained answer. Keyed and labelled separately instead.
         N, k = rows[0]['N'], rows[0]['k']
-        conv = bool(rows[0].get('convex', False)) or path.endswith('_convex.jsonl')
-        cells.append((N, k, conv, summarize(rows, args.sigma_max, args.res_max)))
+        conv = bool(rows[0].get('convex', False)) or name.endswith('_convex')
+        cells.append((N, k, conv, summarize(rows, args.sigma_max, args.res_max,
+                                            basin_rtol=args.basin_rtol)))
     cells.sort(key=lambda c: (c[0], c[1], c[2]))
 
     print(f'{len(cells)} cell(s) from {args.dir}\n')
     print('   N   k  family   max lam_k/lam_1     spread   resolution  agree near cert/tot'
-          ' sharp  oracle (N=4)')
-    print('  ' + '-'*101)
+          ' sharp  basins: F x count (best start)   oracle (N=4)')
+    print('  ' + '-'*130)
     for N, k, conv, s in cells:
         fam = 'convex' if conv else 'all   '
         if s['best'] is None:
@@ -328,7 +378,7 @@ def main():
         print(f"  {N:2d}  {k+1:2d}  {fam}  {b['fun']:16.10f}  {s['spread']:8.1e}  "
               f"{b['resolution']:10.2e}  {s['n_agree']:2d}/{s['n_certified']:<2d} "
               f"{s['n_near']:2d}/{s['n_clean']:<2d} {s['n_certified']}/{s['n_total']}"
-              f" {s['n_sharp']:2d}/{s['n_certified']:<2d}{oracle}")
+              f" {s['n_sharp']:2d}/{s['n_certified']:<2d}  {basin_line(s['basins'])}{oracle}")
 
     print('\n  shapes of the best certified point in each cell:')
     for N, k, conv, s in cells:
@@ -349,7 +399,8 @@ def main():
             print(f"  N={N:2d} k={k+1:2d}{' convex' if conv else ''}:")
             for b in s['basins']:
                 ang = np.array2string(np.asarray(b['best']['angles']), precision=2)
-                print(f"      {b['fun']:15.10f}  {len(b['rows'])} start(s)  angles {ang}")
+                print(f"      {b['fun']:15.10f}  {len(b['rows'])} start(s), best start "
+                      f"{b['best'].get('start', '?')}  angles {ang}")
             # NEARLY EQUAL F AT GENUINELY DIFFERENT SHAPES is the one case worth a second look --
             # two distinct maximizers with the same ratio, which is either a symmetry of the
             # problem or something more interesting. Reported, never merged.
@@ -404,6 +455,9 @@ def main():
     print('          floor, so thresholding it certifies by geometry rather than by optimality.')
     print('  near  = ALL clean starts within 1e-5 of it -- the same shape found less sharply,')
     print('          which is the globality evidence; resolution is a separate question.')
+    print(f'  basins = certified F values chained within {args.basin_rtol:.0e} relative, '
+          'merged when the shape agrees;')
+    print('          count and the start of the best member, best basin first.')
     print('  spread = how far apart the agreeing certified starts ended in F (the uncertainty).')
     print('  resolution = first-order optimality residual; F error goes as its SQUARE, so these')
     print('  differ by orders of magnitude and the resolution is NOT an error bar on F.')
