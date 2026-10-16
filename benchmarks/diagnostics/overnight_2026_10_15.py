@@ -9,6 +9,17 @@ warm solves instead of 10). Rows (schema 2, with the per-solve trace) go to
 
 The questions: do the two warm paths agree at the optimum to 1e-9 (the plan's open check), how
 much wall each saves, and what the cadence buys.
+
+Settings ending `_ss` (added 2026-10-16) are the same three paths rerun on the scalar-secant
+curvature model, the default since douse `eeae9e1`; the unsuffixed rows were on SR1 and stay
+for comparison. The path is read from the prefix of the name (`prefix*`, `cadence20*`, else
+windowed). Baseline commands, three at a time:
+
+    uv run python benchmarks/diagnostics/overnight_2026_10_15.py --settings windowed_ss --seeds 0 1 2
+    uv run python benchmarks/diagnostics/overnight_2026_10_15.py --settings prefix_ss --seeds 0 1 2
+    uv run python benchmarks/diagnostics/overnight_2026_10_15.py --settings cadence20_ss --seeds 0 1 2
+
+(each `--seeds` list runs in sequence; launch one process per seed to run three at once).
 """
 import argparse
 import os
@@ -54,9 +65,9 @@ def run_one(seed, setting, max_iter):
     fam = runs.family_for(N)
     ev = runs.make_evaluator(N, k, fam=fam)
     cadence = EP.WARM_COLD_EVERY
-    if setting == 'cadence20':
+    if setting.startswith('cadence20'):
         EP.WARM_COLD_EVERY = 20
-    evaluator = _PrefixEvaluator(ev) if setting == 'prefix' else ev
+    evaluator = _PrefixEvaluator(ev) if setting.startswith('prefix') else ev
     t0 = time.perf_counter()
     try:
         res = maximize_ratio(evaluator, param_vector(runs.perturbed(N, 0.08, seed), runs.PERIM),
@@ -72,29 +83,43 @@ def run_one(seed, setting, max_iter):
     return row
 
 
+def _stop(r):
+    """'budget' when the run used every iterate, else 'rule' (it stopped on its own test)."""
+    return 'budget' if r['nit'] >= r.get('max_iter', 10**9) else 'rule'
+
+
 def report():
     rows = ledger.read_rows(OUT, dedupe=False)
     by = {}
     for r in rows:
         by.setdefault(r['start'], {})[r['setting']] = r
-    print(f"{'seed':>4} {'setting':>10} {'F':>14} {'nit':>4} {'s':>6} {'warm':>5} {'cold':>5} "
-          f"{'replan':>6} {'evals':>7}  stop")
+    print(f"{'seed':>4} {'setting':>12} {'F':>14} {'nit':>4} {'s':>6} {'warm':>5} {'cold':>5} "
+          f"{'replan':>6} {'evals':>7} {'ev/it':>6} {'stop':>6}  message")
     for seed in sorted(by):
         for setting, r in sorted(by[seed].items()):
             tr = r.get('trace', [])
             kinds = {}
             for t in tr:
                 kinds[t['kind']] = kinds.get(t['kind'], 0) + 1
-            print(f"{seed:4d} {setting:>10} {r['fun']:14.10f} {r['nit']:4d} {r['seconds']:6.0f} "
+            ev = r.get('n_tension_evals', 0)
+            print(f"{seed:4d} {setting:>12} {r['fun']:14.10f} {r['nit']:4d} {r['seconds']:6.0f} "
                   f"{kinds.get('warm', 0):5d} {kinds.get('cold', 0):5d} "
-                  f"{kinds.get('replan', 0):6d} {r.get('n_tension_evals', 0):7d}  "
-                  f"{'ok' if r['success'] else '--'} {r['message'][:40]}")
-        # against the LATEST windowed setting (windowed2 is the fixed step cap, 271e740)
-        wins = [k for k in by[seed] if k.startswith('windowed')]
-        if 'prefix' in by[seed] and wins:
-            w = sorted(wins)[-1]
-            a, b = by[seed]['prefix']['fun'], by[seed][w]['fun']
-            print(f"     prefix vs {w}: |dF| = {abs(a - b):.2e}")
+                  f"{kinds.get('replan', 0):6d} {ev:7d} {ev / max(r['nit'], 1):6.1f} "
+                  f"{_stop(r):>6}  {r['message'][:40]}")
+        # prefix against the matching windowed setting: SR1 rows against the latest SR1
+        # windowed run (windowed2 is the fixed step cap, 271e740), `_ss` rows against `_ss`
+        s = by[seed]
+        pairs = []
+        wins = sorted(k for k in s if k.startswith('windowed') and not k.endswith('_ss'))
+        if 'prefix' in s and wins:
+            pairs.append(('prefix', wins[-1]))
+        if 'prefix_ss' in s and 'windowed_ss' in s:
+            pairs.append(('prefix_ss', 'windowed_ss'))
+        if 'cadence20_ss' in s and 'windowed_ss' in s:
+            pairs.append(('cadence20_ss', 'windowed_ss'))
+        for a, b in pairs:
+            print(f"     {a} vs {b}: |dF| = {abs(s[a]['fun'] - s[b]['fun']):.2e}  "
+                  f"wall {s[a]['seconds']:.0f}s vs {s[b]['seconds']:.0f}s")
 
 
 def main():
