@@ -1,0 +1,7 @@
+F=3.1976339806 at the endpoint (ledger 3.1976339806)
+delta=1e-02 cluster cluster=(2, 4) slope=2.202e-02 gain=+2.202e-04 actual=-1.001e-04 rho=-0.455 feasible=True
+delta=1e-03 cluster cluster=(2, 4) slope=2.202e-02 gain=+2.202e-05 actual=+1.877e-05 rho=+0.853 feasible=True
+delta=1e-04 cluster cluster=(2, 4) slope=2.202e-02 gain=+2.202e-06 actual=+2.170e-06 rho=+0.985 feasible=True
+delta=1e-05 cluster cluster=(2, 4) slope=2.202e-02 gain=+2.202e-07 actual=+2.198e-07 rho=+0.998 feasible=True
+delta=1e-06 cluster cluster=(2, 4) slope=2.202e-02 gain=+2.202e-08 actual=+2.202e-08 rho=+1.000 feasible=True
+delta=1e-07 cluster cluster=(2, 4) slope=2.202e-02 gain=+2.202e-09 actual=+2.199e-09 rho=+0.999 feasible=True

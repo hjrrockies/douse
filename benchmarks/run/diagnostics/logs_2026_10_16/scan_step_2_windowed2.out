@@ -1,0 +1,11 @@
+F0=3.1922335937 model slope 3.682e-04
+  t=1.0e-05  dF=+1.229e-09  linear=+3.682e-09
+  t=2.0e-05  dF=+2.131e-09  linear=+7.363e-09
+  t=5.0e-05  dF=+3.687e-09  linear=+1.841e-08
+  t=8.0e-05  dF=+2.960e-09  linear=+2.945e-08
+  t=1.0e-04  dF=+9.179e-10  linear=+3.682e-08
+  t=1.5e-04  dF=-1.054e-08  linear=+5.522e-08
+  t=2.0e-04  dF=-3.204e-08  linear=+7.363e-08
+  t=3.0e-04  dF=-1.074e-07  linear=+1.104e-07
+  t=5.0e-04  dF=-3.918e-07  linear=+1.841e-07
+fit dF = 2.406e-04 t + -2.042e+00 t^2 -> max at t*=5.89e-05, gain left 7.09e-09; residual rms 2.5e-09

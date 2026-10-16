@@ -39,6 +39,12 @@ place, so it was built differently -- see the two entries below.
 
 ## Where things stand
 
+**2026-10-15/16: the stall analysis.** The trust-radius collapse was the SR1 secant Hessian; the
+scalar secant is the default (`eeae9e1`). Findings, definitions and commands in
+`docs/stall_analysis_2026_10_15.md`; the tools in `benchmarks/diagnostics/` (README). Open: the
+crawl along a curved `lam_3 = lam_4` ridge (a secant of the cluster block), the stop in
+objective units, basin counts in the summary.
+
 **2026-10-14, later: the follow-up plan, sessions 1-3 done, 4 in progress**
 (`~/.claude/plans/can-you-do-a-compressed-whisper.md` has the full plan). Session 1: a fast
 end-to-end run in the default tier (`tests/test_pipeline_fast.py`), a golden trace of
