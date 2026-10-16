@@ -15,9 +15,9 @@ curvature model, the default since douse `eeae9e1`; the unsuffixed rows were on 
 for comparison. The path is read from the prefix of the name (`prefix*`, `cadence20*`, else
 windowed). Baseline commands, three at a time:
 
-    uv run python benchmarks/diagnostics/overnight_2026_10_15.py --settings windowed_ss --seeds 0 1 2
-    uv run python benchmarks/diagnostics/overnight_2026_10_15.py --settings prefix_ss --seeds 0 1 2
-    uv run python benchmarks/diagnostics/overnight_2026_10_15.py --settings cadence20_ss --seeds 0 1 2
+    uv run python -m benchmarks.diagnostics.overnight_2026_10_15 --settings windowed_ss --seeds 0 1 2
+    uv run python -m benchmarks.diagnostics.overnight_2026_10_15 --settings prefix_ss --seeds 0 1 2
+    uv run python -m benchmarks.diagnostics.overnight_2026_10_15 --settings cadence20_ss --seeds 0 1 2
 
 (each `--seeds` list runs in sequence; launch one process per seed to run three at once).
 """
@@ -31,32 +31,10 @@ from douse import ledger, runs
 from douse.cluster_opt import maximize_ratio
 from douse.polygon import param_vector
 
+from benchmarks.diagnostics.endpoint import PrefixEvaluator
+
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'run',
                    'diagnostics', 'overnight_2026_10_15.jsonl')
-
-
-class _NoPrediction:
-    """Wrap a solved shape so the optimizer cannot predict moves: the prefix warm path."""
-
-    def __init__(self, inner):
-        self._inner = inner
-
-    def __getattr__(self, name):
-        if name in ('predicted_moves',):
-            raise AttributeError(name)
-        return getattr(self._inner, name)
-
-
-class _PrefixEvaluator:
-    def __init__(self, inner):
-        self._inner = inner
-
-    def eigenvalues(self, p, **kw):
-        lams, solved = self._inner.eigenvalues(p, **kw)
-        return lams, _NoPrediction(solved)
-
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
 
 
 def run_one(seed, setting, max_iter):
@@ -67,7 +45,7 @@ def run_one(seed, setting, max_iter):
     cadence = EP.WARM_COLD_EVERY
     if setting.startswith('cadence20'):
         EP.WARM_COLD_EVERY = 20
-    evaluator = _PrefixEvaluator(ev) if setting.startswith('prefix') else ev
+    evaluator = PrefixEvaluator(ev) if setting.startswith('prefix') else ev
     t0 = time.perf_counter()
     try:
         res = maximize_ratio(evaluator, param_vector(runs.perturbed(N, 0.08, seed), runs.PERIM),

@@ -29,3 +29,30 @@ Two things these encode that are easy to get wrong, both learned the hard way:
   iterate to record its spectrum. That doubled the cost of the run, and -- the real damage --
   advanced the evaluator's continuation seed, so the trajectory being "reproduced" was not the
   recorded one. Log from a wrapper around `eigenvalues`, where the spectrum is already in hand.
+
+## 2026-10-15/16: the stall-analysis tools
+
+Written during the 2026-10-15 stall analysis and made reproducible on 2026-10-16. Unlike the
+scripts above these are a small package: run them from the douse root as modules
+(`uv run python -m benchmarks.diagnostics.<tool> ...`). The ones that start from a ledger
+endpoint take `seed setting` (a row's `start` and `setting`, default ledger
+`benchmarks/run/diagnostics/overnight_2026_10_15.jsonl`, `--ledger` for another) and build the
+evaluator through `endpoint.py`, which uses `douse.ledger` and `douse.runs`. Each core function
+runs on the fake rectangle in `tests/test_diagnostics_tools.py`. Each docstring gives the exact
+command behind its numbers in `docs/stall_analysis_2026_10_15.md`.
+
+| tool | question it answers |
+|---|---|
+| `endpoint.py` | (shared) ledger row -> `Endpoint(fam, ev, cons, p, k, row)`; the `prefix` warm path (`PrefixEvaluator`) |
+| `probe_stall.py` | **Is a stopped run at an optimum?** Predicted vs actual gain along the model step at radii 1e-2..1e-7 |
+| `scan_step.py` | **How much gain is left?** The objective along the step, a parabola fit, the gain bound `s^2/4|c|` |
+| `replay.py` | **Does a restart climb?** `maximize_ratio` from an endpoint with fresh state, `--path windowed|prefix`, `--qn scalar|sr1|none` |
+| `instrumented_run.py` | **Why did the radius collapse?** A from-start run logging gains, curvature state and `rho` per iterate; `--show LOG` prints one |
+| `fd_hessian.py` | **Are the gradients good enough to difference?** Central-difference Hessians of `lam_1` and the cluster mean, with their asymmetry |
+| `warm_grad.py` | **Do warm solves change the gradients?** Both warm paths against a cold solve at one point |
+| `overnight_2026_10_15.py` | The three-seed N=6 k=2 comparison driver and its `--report` (settings `windowed`, `prefix`, `windowed2` on SR1; `*_ss` on the scalar secant) |
+
+Retired with the staging scripts: the `cap` and `bb` monkeypatches of `SR1.update`. `bb` is
+what `douse.quasi_newton.ScalarSecant` now is (`--qn scalar`); `cap` (skip an update when
+`|w|^2/|den| > 10 ||B||`) never fired on the 100-iterate seed 0 stretch and tracked stock SR1 to
+every printed digit (3.1981306846 for both).
