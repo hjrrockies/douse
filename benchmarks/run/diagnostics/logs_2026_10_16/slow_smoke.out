@@ -1,0 +1,9 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.7, pytest-9.1.1, pluggy-1.6.0
+rootdir: /Users/hringer/projects/python/douse
+configfile: pytest.ini
+collected 13 items / 12 deselected / 1 selected
+
+tests/test_diagnostics_tools.py .                                        [100%]
+
+================= 1 passed, 12 deselected in 103.73s (0:01:43) =================
