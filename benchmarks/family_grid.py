@@ -313,11 +313,27 @@ def collect(spec, out):
              f'{len(missing)} missing, status {st}',
              f'  Weyl deficit > 0.5 (a mode probably missed): {bad_def}',
              f'  ok rows with an unmet level: {unmet}',
+             _bound_line(rows),
              f'  rows from another spec_sha, ignored: {foreign}']
     if walls.size:
         lines.append(f'  wall per point: median {np.median(walls):.1f}s, max {walls.max():.1f}s, '
                      f'total {walls.sum()/3600:.2f} CPU-h')
     return rows, '\n'.join(lines)
+
+
+def _bound_line(rows):
+    """The worst RELATIVE level bound per row (chladni's `bound` is absolute, Moler-Payne), as
+    a distribution: the accuracy the grid actually has, which on flat shapes is short of `prec`
+    and not flagged by the Weyl deficit (2026-10-26: 1e-8..1e-5 at height 0.10-0.15)."""
+    worst = np.array([max(np.divide(r['bound'], r['lam'])) for r in rows.values()
+                      if r.get('bound')], dtype=float)
+    if not worst.size:
+        return '  worst relative level bound per row: none'
+    q = np.quantile(worst, [0.5, 0.9, 1.0])
+    edges = (1e-9, 1e-7, 1e-5, 1e-3)
+    counts = [int(np.count_nonzero(worst <= e)) for e in edges]
+    return (f'  worst relative level bound per row: median {q[0]:.0e}, 90% {q[1]:.0e}, max {q[2]:.0e}; '
+            + ', '.join(f'<= {e:.0e}: {c}' for e, c in zip(edges, counts)) + f' of {worst.size}')
 
 
 def to_arrays(spec, rows):

@@ -41,7 +41,7 @@ def test_tasks_partition_the_grid_and_scheduling_is_not_content(tmp_path):
     T = spec.tasks
     ids = sorted(i for t in range(T) for i in range(t, n, T))
     assert ids == list(range(n))
-    src = TRI.read_text().replace('tasks = 200', 'tasks = 7').replace('"12:00:00"', '"1:00:00"')
+    src = TRI.read_text().replace('tasks = 200', 'tasks = 7').replace('"8:00:00"', '"1:00:00"')
     (tmp_path / 'r.toml').write_text(src)
     assert fg.load(tmp_path / 'r.toml').sha == spec.sha
     (tmp_path / 'typo.toml').write_text(src + 'n_eig = 3\n')
