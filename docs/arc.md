@@ -47,7 +47,7 @@ spec; swap `triangle_pilot_v0` for `triangle_grid_v0` (2462 triangles, h = 0.01,
 Write the sbatch (never submits), look at it, submit:
 
 ```bash
-uv run python -m benchmarks.family_grid slurm benchmarks/specs/triangle_pilot_v0.toml --account <account> --partition <partition>
+uv run python -m benchmarks.family_grid slurm benchmarks/specs/triangle_pilot_v0.toml --account <account> --partition <partition> --runner .venv/bin/python
 ```
 
 ```bash
@@ -79,6 +79,8 @@ rsync -av <pid>@<cluster>:thesis/douse/benchmarks/run/family_grid/ benchmarks/ru
 
 ## Notes
 
+- `--runner .venv/bin/python` (the venv `uv sync` built) rather than `uv run`: a hundred tasks
+  starting at once would each re-check the lock on the shared filesystem.
 - One CPU per task, BLAS threads pinned to 1: each point is one serial solve; a BLAS sizing
   itself from the node oversubscribes it.
 - Cost, M-series Mac, 2026-10-26, eight solves at once: ~5 s for triangles with angles pi/n,
