@@ -1,0 +1,14 @@
+# Triangles: the first 15 Dirichlet eigenvalues over a grid of apex positions (2026-10-26).
+# Vertices 0, 1, a + i b with the unit base the longest side and a <= 1/2: one triangle per
+# similarity class. Run with `python -m benchmarks.family_grid slurm <this file>` (see
+# docs/arc.md); every row cites this file's name and content hash.
+name = "triangle_grid_v0"
+family = "triangle"
+h = 0.01
+n_eigs = 15
+prec = 1e-10
+min_angle_deg = 10.0
+tasks = 200
+notes = "Antunes-style survey of lam_1..lam_15 over triangles. Scheduling keys are not hashed."
+slurm_mem = "4G"
+slurm_time = "12:00:00"
