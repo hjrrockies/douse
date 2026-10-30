@@ -1,0 +1,21 @@
+# v1 (2026-10-30): triangle_grid_v0 with chladni's opt-in coarse bracketing
+# (`Eigenproblem(coarse_bracket=True)`, chladni PR #20), which took the sharp apex line from
+# 0/15 to 15/15 met levels at 1e-10. Needs chladni main at or after e1ebaf8.
+#
+# Triangles: the first 15 Dirichlet eigenvalues over a grid of apex positions (2026-10-26).
+# Vertices 0, 1, a + i b with the unit base the longest side and a <= 1/2: one triangle per
+# similarity class. Run with `python -m benchmarks.family_grid slurm <this file>` (see
+# docs/arc.md); every row cites this file's name and content hash.
+name = "triangle_grid_v1"
+family = "triangle"
+h = 0.01
+n_eigs = 15
+prec = 1e-10
+min_angle_deg = 10.0
+coarse_bracket = true
+tasks = 200
+notes = "Antunes-style survey of lam_1..lam_15 over triangles. Scheduling keys are not hashed."
+slurm_mem = "4G"
+slurm_time = "12:00:00"  # v0 guessed 8 h; coarse bracketing costs ~+14% evaluations, sharp points more
+slurm_account = "siallocation"
+slurm_partition = "normal_q"   # TinkerCliffs; check with `sinfo -s`

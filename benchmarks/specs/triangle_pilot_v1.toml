@@ -1,0 +1,21 @@
+# v1 (2026-10-30): triangle_pilot_v0 with chladni's opt-in coarse bracketing
+# (`Eigenproblem(coarse_bracket=True)`, chladni PR #20), which took the sharp apex line from
+# 0/15 to 15/15 met levels at 1e-10. Needs chladni main at or after e1ebaf8.
+#
+# Pilot for triangle_grid_v0 (2026-10-26): the same recipe on a coarse lattice, one point per
+# task, to check the ARC install and map where chladni falls short of prec before the full grid.
+# Local probes: most triangles meet 1e-10 (relative bounds ~1e-10), but (0.1, 0.25) came back
+# with 0 of 15 levels met (relative bounds 1e-3..5e-2) and flat ones miss the margin at ~3e-9.
+name = "triangle_pilot_v1"
+family = "triangle"
+h = 0.05
+n_eigs = 15
+prec = 1e-10
+min_angle_deg = 10.0
+coarse_bracket = true
+tasks = 107
+notes = "One point per task; wall per task <= ~20 min on the flattest points."
+slurm_mem = "4G"
+slurm_time = "2:00:00"
+slurm_account = "siallocation"
+slurm_partition = "normal_q"   # TinkerCliffs; check with `sinfo -s`

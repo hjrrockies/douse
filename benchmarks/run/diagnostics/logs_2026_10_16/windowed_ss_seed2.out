@@ -1,0 +1,17 @@
+windowed_ss seed 2: F=3.1922402821 nit=400 8829s success=False reached max_iter=400
+seed      setting              F  nit      s  warm  cold replan   evals  ev/it   stop  message
+   0       prefix   3.1976339806  223   3396   202    25      2   25730  115.4   rule  trust radius collapsed to 5.68e-15
+   0     windowed   3.1948684789  400   3794   358    39      2   30260   75.7 budget  reached max_iter=400
+   0    windowed2   3.1981352262  400   4711   362    35      2   33022   82.6 budget  reached max_iter=400
+   0  windowed_ss   3.1981364800  336   4344   302    33      2   27773   82.7   rule  criticality plateaued at 0.000118 (radiu
+     prefix vs windowed2: |dF| = 5.01e-04  wall 3396s vs 4711s
+   1       prefix   3.1978574621  400   5052   316    35      3   38083   95.2 budget  reached max_iter=400
+   1     windowed   3.1910351231  400   3616   362    36      1   30135   75.3 budget  reached max_iter=400
+   1    windowed2   3.1978712517  400   4433   321    37      4   30745   76.9 budget  reached max_iter=400
+   1  windowed_ss   3.1980180939  400   4770   315    41      6   29801   74.5 budget  reached max_iter=400
+     prefix vs windowed2: |dF| = 1.38e-05  wall 5052s vs 4433s
+   2       prefix   3.1933571937  400   7385   347    46      6   43969  109.9 budget  reached max_iter=400
+   2     windowed   3.1946388857  400   3990   358    40      1   31980   80.0 budget  reached max_iter=400
+   2    windowed2   3.1922335937  276   5422   248    28      3   23719   85.9   rule  criticality plateaued at 0.000828 (radiu
+   2  windowed_ss   3.1922402821  400   8829   358    38      3   35891   89.7 budget  reached max_iter=400
+     prefix vs windowed2: |dF| = 1.12e-03  wall 7385s vs 5422s

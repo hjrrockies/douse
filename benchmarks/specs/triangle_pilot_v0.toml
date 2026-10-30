@@ -1,0 +1,14 @@
+# Pilot for triangle_grid_v0 (2026-10-26): the same recipe on a coarse lattice, one point per
+# task, to check the ARC install and map where chladni falls short of prec before the full grid.
+# Local probes: most triangles meet 1e-10 (relative bounds ~1e-10), but (0.1, 0.25) came back
+# with 0 of 15 levels met (relative bounds 1e-3..5e-2) and flat ones miss the margin at ~3e-9.
+name = "triangle_pilot_v0"
+family = "triangle"
+h = 0.05
+n_eigs = 15
+prec = 1e-10
+min_angle_deg = 10.0
+tasks = 107
+notes = "One point per task; wall per task <= ~20 min on the flattest points."
+slurm_mem = "4G"
+slurm_time = "2:00:00"

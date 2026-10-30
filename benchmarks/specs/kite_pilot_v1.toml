@@ -1,0 +1,17 @@
+# Pilot (2026-10-30): lam_1..lam_15 over the kite family on a coarse lattice, before
+# choosing the production spacing (h = 0.02 is the likely one). Same solver recipe as
+# triangle_pilot_v1: prec 1e-10, chladni's coarse bracketing, 10-degree angle floor.
+# Family: vertices 0, a-ib, 1, a+ib; axis [0, 1], a <= 1/2 (a = 1/2 is the rhombus).
+name = "kite_pilot_v1"
+family = "kite"
+h = 0.05
+n_eigs = 15
+prec = 1e-10
+min_angle_deg = 10.0
+coarse_bracket = true
+tasks = 100
+notes = "Several points per task (strided); collect prints measured CPU-hours."
+slurm_mem = "4G"
+slurm_time = "8:00:00"
+slurm_account = "siallocation"
+slurm_partition = "normal_q"
