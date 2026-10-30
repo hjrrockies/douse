@@ -29,6 +29,11 @@ git clone https://github.com/hjrrockies/lappy.git
 cd ~/projects/thesis/douse && git checkout claude/intelligent-turing-9278ef && uv sync
 ```
 
+`.python-version` pins Python 3.12 (CI tests 3.11-3.13), and uv downloads it if the cluster
+lacks it. Without the pin uv takes the newest Python it finds, and on a release newer than the
+dependencies' wheels (3.15 on TinkerCliffs, 2026-10-30) it compiles cvxpy's `sparsediffpy`
+from source and fails on BLAS.
+
 The branches are temporary: chladni's `diag/triangle-apex-planner` is PR #19 plus the opt-in
 `coarse_bracket` path (chladni PR #20) that the v1 specs use, and the douse branch is PR #2.
 Once those merge, clone both at `main`.
