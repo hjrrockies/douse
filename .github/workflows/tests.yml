@@ -21,6 +21,11 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.11", "3.12", "3.13"]
+    # `.python-version` pins 3.12 for ARC and local use; UV_PYTHON overrides it for every uv
+    # call here, so `uv run` stays on the matrix's interpreter and the environment `uv sync`
+    # built (otherwise it switches to 3.12, rebuilds without the test extra, and has no pytest).
+    env:
+      UV_PYTHON: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@v4
         with:
