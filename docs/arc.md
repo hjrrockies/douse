@@ -21,13 +21,17 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ```bash
 mkdir -p ~/thesis && cd ~/thesis
 git clone https://github.com/hjrrockies/douse.git
-git clone -b fix/douse-pipeline-2026-10-14 https://github.com/hjrrockies/chladni.git
+git clone -b diag/triangle-apex-planner https://github.com/hjrrockies/chladni.git
 git clone https://github.com/hjrrockies/lappy.git
 ```
 
 ```bash
-cd ~/thesis/douse && git checkout <the branch with benchmarks/family_grid.py> && uv sync
+cd ~/thesis/douse && git checkout claude/intelligent-turing-9278ef && uv sync
 ```
+
+The branches are temporary: chladni's `diag/triangle-apex-planner` is PR #19 plus the opt-in
+`coarse_bracket` path (chladni PR #20) that the v1 specs use, and the douse branch is PR #2.
+Once those merge, clone both at `main`.
 
 Then the environment check, on a COMPUTE node (it solves the unit square and checks the LAPACK
 route gsvd4py found; a failed solve here means nothing downstream is worth submitting):
@@ -38,20 +42,20 @@ srun -A <account> -p <partition> -t 0:15:00 --mem=2G uv run python -m benchmarks
 
 ## The triangle grid: pilot first
 
-`triangle_pilot_v0.toml` is the same recipe on 107 triangles (h = 0.05), one per task, ~20 min
+`triangle_pilot_v1.toml` is the same recipe on 107 triangles (h = 0.05), one per task, ~20 min
 wall. Run it first: it checks the install on real nodes and maps where chladni falls short of
 `prec` (see Accuracy below) for ~1/25 of the full grid's cost. Every command below takes either
-spec; swap `triangle_pilot_v0` for `triangle_grid_v0` (2462 triangles, h = 0.01, 200 tasks of
+spec; swap `triangle_pilot_v1` for `triangle_grid_v1` (2462 triangles, h = 0.01, 200 tasks of
 ~13 points) once the pilot's `collect` looks right.
 
 Write the sbatch (never submits), look at it, submit:
 
 ```bash
-uv run python -m benchmarks.family_grid slurm benchmarks/specs/triangle_pilot_v0.toml --account <account> --partition <partition> --runner .venv/bin/python
+uv run python -m benchmarks.family_grid slurm benchmarks/specs/triangle_pilot_v1.toml --account <account> --partition <partition> --runner .venv/bin/python
 ```
 
 ```bash
-sbatch benchmarks/run/family_grid/triangle_pilot_v0/triangle_pilot_v0.sbatch
+sbatch benchmarks/run/family_grid/triangle_pilot_v1/triangle_pilot_v1.sbatch
 ```
 
 Watch, then pool and plot once tasks finish (both are safe to run on partial results):
@@ -61,11 +65,11 @@ squeue -u $USER
 ```
 
 ```bash
-uv run python -m benchmarks.family_grid collect benchmarks/specs/triangle_pilot_v0.toml
+uv run python -m benchmarks.family_grid collect benchmarks/specs/triangle_pilot_v1.toml
 ```
 
 ```bash
-uv run python -m benchmarks.family_grid plot benchmarks/specs/triangle_pilot_v0.toml
+uv run python -m benchmarks.family_grid plot benchmarks/specs/triangle_pilot_v1.toml
 ```
 
 A task that died (time limit, node failure) is resubmitted by index and resumes its own ledger:
@@ -85,7 +89,7 @@ rsync -av <pid>@<cluster>:thesis/douse/benchmarks/run/family_grid/ benchmarks/ru
   itself from the node oversubscribes it.
 - Cost, M-series Mac, 2026-10-26, eight solves at once: ~5 s for triangles with angles pi/n,
   15 s-6 min for generic ones (it is NOT a simple function of the smallest angle), 6-15 min at
-  height 0.10-0.15. Rough total for triangle_grid_v0: 70-150 CPU-h; the pilot's `collect`
+  height 0.10-0.15. Rough total for triangle_grid_v1: 70-150 CPU-h; the pilot's `collect`
   prints the measured figure. Peak memory per task is not measured yet; `seff <jobid>` after
   the pilot says, and the full grid's `slurm_mem` should be set from it.
 - ACCURACY. `bound` in a row is chladni's ABSOLUTE Moler-Payne bound; `collect` reports it

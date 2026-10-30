@@ -49,6 +49,18 @@ def test_tasks_partition_the_grid_and_scheduling_is_not_content(tmp_path):
         fg.load(tmp_path / 'typo.toml')
 
 
+def test_coarse_bracket_is_content_only_when_set(tmp_path):
+    v0 = fg.load(TRI)
+    assert not v0.coarse_bracket and 'coarse_bracket' not in v0.content()
+    src = TRI.read_text()
+    (tmp_path / 'off.toml').write_text(src + 'coarse_bracket = false\n')
+    (tmp_path / 'on.toml').write_text(src + 'coarse_bracket = true\n')
+    assert fg.load(tmp_path / 'off.toml').sha == v0.sha
+    assert fg.load(tmp_path / 'on.toml').sha != v0.sha
+    v1 = fg.load(TRI.with_name('triangle_grid_v1.toml'))
+    assert v1.coarse_bracket and fg.points(v1) == fg.points(v0)
+
+
 def test_sbatch_is_one_array_over_the_tasks():
     spec = fg.load(TRI)
     text = fg.sbatch_text(spec, 'benchmarks/specs/triangle_grid_v0.toml', 'out', '4G',

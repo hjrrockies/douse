@@ -124,6 +124,7 @@ class GridSpec:
     n_eigs: int = 15
     prec: float = 1e-10
     min_angle_deg: float = 10.0
+    coarse_bracket: bool = False
     tasks: int = 100
     notes: str = ''
     slurm_mem: str | None = None
@@ -139,6 +140,8 @@ class GridSpec:
     def content(self):
         """What the rows depend on: everything but scheduling, notes and the file's path."""
         skip = set(SCHEDULING) | {'source', 'notes', 'tasks'}
+        if not self.coarse_bracket:
+            skip.add('coarse_bracket')        # specs written before the key keep their hash
         return {k: getattr(self, k) for k in self.__dataclass_fields__ if k not in skip}
 
     @property
@@ -200,7 +203,9 @@ def solve_point(spec, pid, a, b):
         warnings.simplefilter('always')
         try:
             dom = Polygon(v, bc='dir')
-            _, rec = Eigenproblem(dom).plan_and_solve(spec.n_eigs, prec=spec.prec)
+            ep = (Eigenproblem(dom, coarse_bracket=True) if spec.coarse_bracket
+                  else Eigenproblem(dom))
+            _, rec = ep.plan_and_solve(spec.n_eigs, prec=spec.prec)
             s = rec.spectrum
             unf = np.asarray(s.unfolded, dtype=float)
             row.update(status='ok' if len(unf) >= spec.n_eigs and not s.declined else 'short',
