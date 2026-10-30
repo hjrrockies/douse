@@ -186,32 +186,32 @@ def test_a_fallback_to_the_planners_last_rung_is_suspect_and_an_earlier_one_is_n
     assert fg.suspect(repaired) == []                    # a clean repair is kept, whatever its rung
 
 
-def test_a_repair_that_agrees_with_a_rung_only_original_keeps_the_original(tmp_path):
-    """Grid id 2055: flagged only for the last-rung precaution; the repair agreed on all stored
-    values to 7.6e-12 but was itself flagged for lam_16, beyond them. The original is kept. A
-    repair that DISAGREES (a phantom's) never corroborates, and an original with evidence of a
-    defect is never kept this way."""
+def test_an_original_without_evidence_is_kept_over_a_repair_with_a_defect(tmp_path):
+    """Grid ids 2055 and 276: re-solved only for the last-rung precaution, and both repairs came
+    back with a defect (2055: an uncertified lam_15 = lam_16 double, values agreeing; 276: a
+    duplicate, values off by 6..18%). The originals had none, and both were right. A clean
+    repair still replaces the original, and an original WITH evidence is never kept."""
     spec = fg.load(SPECS / 'triangle_pilot_v1.toml')
     n = spec.n_eigs
     lam = [10.0*(k + 1) for k in range(n)]
     last = 'planner: no rung met prec=1e-10; returning rung 4 of 4, the one with the most levels met'
     orig = _row(0, lam, flags=[last], sha=spec.sha)
-    rep_bad = _row(0, lam[:-1] + [lam[-1]], mult=[1]*(n - 1) + [2], bound=[1e-9]*(n - 1) + [lam[-1]],
-                   sha=spec.sha, repair_of=['planner fell back to its last rung'])
-    rep_bad['unfolded'] = lam[:]                                   # same stored values
-    assert fg.suspect(rep_bad) == [f'unresolved level {n}']
-    assert fg.corroborates(rep_bad, orig, n)
-    off = dict(rep_bad, unfolded=lam[:3] + [x*1.05 for x in lam[3:]])  # disagrees above level 3
-    assert not fg.corroborates(off, orig, n)
+    dup = lam[:4] + [lam[3] + 1e-7] + lam[4:-1]                    # level 4 found twice
+    worse = _row(0, dup, bound=[1e-9]*3 + [1e-5, 1e-5] + [1e-9]*(n - 5),
+                 sha=spec.sha, repair_of=['planner fell back to its last rung'])
+    assert fg.suspect(worse) == ['overlapping levels 4,5']
+    assert fg.keeps_original(worse, orig)
+    clean = _row(0, lam, sha=spec.sha, repair_of=['planner fell back to its last rung'])
+    assert not fg.keeps_original(clean, orig)
     defect = _row(0, lam, flags=[last, 'count audit: excess'], sha=spec.sha)
-    assert not fg.corroborates(rep_bad, defect, n)
+    assert not fg.keeps_original(worse, defect)
 
     with open(tmp_path / 'task_0.jsonl', 'w') as fh:
         fh.write(json.dumps(orig) + '\n')
     (tmp_path / 'repair').mkdir()
     with open(tmp_path / 'repair' / 'task_0.jsonl', 'w') as fh:
-        fh.write(json.dumps(rep_bad) + '\n')
+        fh.write(json.dumps(worse) + '\n')
     rows, rep = fg.collect(spec, tmp_path)
-    assert rows[0].get('corroborated') and not fg.suspect(rows[0])
-    assert 'originals kept where the repair agrees to 1e-08: 1' in rep
+    assert rows[0].get('original_kept') and not fg.suspect(rows[0])
+    assert 'originals kept over a repair with a defect: 1' in rep
     assert list(fg.to_arrays(spec, rows)[4]) == [0]
