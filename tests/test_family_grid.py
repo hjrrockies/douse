@@ -8,6 +8,7 @@ import pytest
 
 fg = pytest.importorskip('benchmarks.family_grid')
 SPECS = pathlib.Path(__file__).resolve().parent.parent / 'benchmarks' / 'specs'
+PARA = SPECS / 'parallelogram_pilot_v1.toml'
 TRI = SPECS / 'triangle_grid_v0.toml'
 
 
@@ -59,6 +60,21 @@ def test_coarse_bracket_is_content_only_when_set(tmp_path):
     assert fg.load(tmp_path / 'on.toml').sha != v0.sha
     v1 = fg.load(TRI.with_name('triangle_grid_v1.toml'))
     assert v1.coarse_bracket and fg.points(v1) == fg.points(v0)
+
+
+
+def test_min_height_drops_the_thin_rows_and_is_content_only_when_set(tmp_path):
+    src = PARA.read_text()
+    pilot = fg.load(PARA)
+    assert 'min_height' not in pilot.content()
+    (tmp_path / 'zero.toml').write_text(src + 'min_height = 0.0\n')
+    (tmp_path / 'floor.toml').write_text(src + 'min_height = 0.1\n')
+    assert fg.load(tmp_path / 'zero.toml').sha == pilot.sha
+    floor = fg.load(tmp_path / 'floor.toml')
+    assert floor.sha != pilot.sha
+    kept = fg.points(floor)
+    assert kept == [p for p in fg.points(pilot) if p[1] >= 0.1 - 1e-12]
+    assert (0.0, 0.1) in kept and len(kept) < len(fg.points(pilot))
 
 
 def test_sbatch_is_one_array_over_the_tasks():

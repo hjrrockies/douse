@@ -15,7 +15,8 @@ with the exception, never dropped, and `collect` counts it.
 
 THE GRID IS A FUNCTION OF THE SPEC. Points are a lattice of spacing `h` over the family's
 parameter box, kept when they lie in the family's fundamental domain (one representative per
-similarity class) and every interior angle is at least `min_angle_deg`. Point `id` is the index
+similarity class), every interior angle is at least `min_angle_deg` and the second parameter
+(the height) is at least `min_height`. Point `id` is the index
 in that list, so a task, a resubmission and `collect` all agree on it without a shared file.
 
 ONE LEDGER PER TASK, `<out>/task_<i>.jsonl`, task `i` of `T` solving points `i, i+T, i+2T, ...`.
@@ -137,6 +138,10 @@ class GridSpec:
     prec: float = 1e-10
     min_angle_deg: float = 10.0
     coarse_bracket: bool = False
+    # A floor on the family's SECOND parameter (`b`, or `h` for the trapezoid: the height). The
+    # thinnest shapes cost most and trip the count audit's elongation false alarm (2026-10-30:
+    # parallelogram/trapezoid pilots, height <= 0.1 was ~5% of points and 36-49% of CPU).
+    min_height: float = 0.0
     tasks: int = 100
     notes: str = ''
     slurm_mem: str | None = None
@@ -154,6 +159,8 @@ class GridSpec:
         skip = set(SCHEDULING) | {'source', 'notes', 'tasks'}
         if not self.coarse_bracket:
             skip.add('coarse_bracket')        # specs written before the key keep their hash
+        if not self.min_height:
+            skip.add('min_height')            # likewise
         return {k: getattr(self, k) for k in self.__dataclass_fields__ if k not in skip}
 
     @property
@@ -184,7 +191,7 @@ def points(spec):
     for b in b0 + spec.h*np.arange(n_b + 1):
         for a in a0 + spec.h*np.arange(n_a + 1):
             a, b = float(round(a, 12)), float(round(b, 12))
-            if not fam['ok'](a, b):
+            if not fam['ok'](a, b) or b < spec.min_height - 1e-12:
                 continue
             if interior_angles_deg(fam['vertices'](a, b)).min() < spec.min_angle_deg:
                 continue

@@ -1,0 +1,22 @@
+# Production (2026-10-30): lam_1..lam_15 over the parallelogram family at h = 0.02.
+# From parallelogram_pilot_v1 (1e-10), two changes:
+#  - prec 1e-9. On the slowest thin pilot points it was at least as accurate as 1e-10 (the
+#    parallelogram's worst bound fell from 3.6e-5 to 5e-9) and faster where timed (34 min vs 2.6 h).
+#  - min_height = 0.12: height (b) above 0.1. Height <= 0.1 was ~5% of the pilot's points and
+#    36-49% of its CPU, and those slivers (10:1 and thinner) trip the count audit's
+#    elongation false alarm even when their values are right.
+# Family: vertices 0, 1, 1+a+ib, a+ib; unit base the longer side (a = 0 is the rectangle family, exact).
+name = "parallelogram_grid_v1"
+family = "parallelogram"
+h = 0.02
+n_eigs = 15
+prec = 1e-9
+min_angle_deg = 10.0
+coarse_bracket = true
+min_height = 0.12
+tasks = 300
+notes = "1682 points; ~310 CPU-h from the pilot's 1e-10 times (an upper bound); worst kept pilot point 2.2 h."
+slurm_mem = "1G"
+slurm_time = "12:00:00"
+slurm_account = "siallocation"
+slurm_partition = "normal_q"
