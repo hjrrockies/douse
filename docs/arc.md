@@ -19,14 +19,14 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 ```bash
-mkdir -p ~/thesis && cd ~/thesis
+mkdir -p ~/projects/thesis && cd ~/projects/thesis
 git clone https://github.com/hjrrockies/douse.git
 git clone -b diag/triangle-apex-planner https://github.com/hjrrockies/chladni.git
 git clone https://github.com/hjrrockies/lappy.git
 ```
 
 ```bash
-cd ~/thesis/douse && git checkout claude/intelligent-turing-9278ef && uv sync
+cd ~/projects/thesis/douse && git checkout claude/intelligent-turing-9278ef && uv sync
 ```
 
 The branches are temporary: chladni's `diag/triangle-apex-planner` is PR #19 plus the opt-in
@@ -78,7 +78,7 @@ A task that died (time limit, node failure) is resubmitted by index and resumes 
 Bring results home (ledgers are JSONL, a few MB):
 
 ```bash
-rsync -av <pid>@<cluster>:thesis/douse/benchmarks/run/family_grid/ benchmarks/run/family_grid/
+rsync -av <pid>@<cluster>:projects/thesis/douse/benchmarks/run/family_grid/ benchmarks/run/family_grid/
 ```
 
 ## Notes
