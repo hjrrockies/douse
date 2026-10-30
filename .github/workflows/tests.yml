@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 env:
-  CHLADNI_REF: fix/douse-pipeline-2026-10-14
+  CHLADNI_REF: main
 
 jobs:
   tests:

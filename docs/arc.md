@@ -34,9 +34,9 @@ lacks it. Without the pin uv takes the newest Python it finds, and on a release 
 dependencies' wheels (3.15 on TinkerCliffs, 2026-10-30) it compiles cvxpy's `sparsediffpy`
 from source and fails on BLAS.
 
-The branches are temporary: chladni's `diag/triangle-apex-planner` is PR #19 plus the opt-in
-`coarse_bracket` path (chladni PR #20) that the v1 specs use, and the douse branch is PR #2.
-Once those merge, clone both at `main`.
+The branches are temporary: chladni's `diag/triangle-apex-planner` is chladni `main` plus the
+opt-in `coarse_bracket` path (chladni PR #20) that the v1 specs use, and the douse branch is
+douse PR #2. Once those merge, clone both at `main`.
 
 Then the environment check, on a COMPUTE node (it solves the unit square and checks the LAPACK
 route gsvd4py found; a failed solve here means nothing downstream is worth submitting):
