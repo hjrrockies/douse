@@ -18,3 +18,5 @@ tasks = 107
 notes = "One point per task; wall per task <= ~20 min on the flattest points."
 slurm_mem = "4G"
 slurm_time = "2:00:00"
+slurm_account = "siallocation"
+slurm_partition = "normal_q"   # TinkerCliffs; check with `sinfo -s`

@@ -18,3 +18,5 @@ tasks = 200
 notes = "Antunes-style survey of lam_1..lam_15 over triangles. Scheduling keys are not hashed."
 slurm_mem = "4G"
 slurm_time = "12:00:00"  # v0 guessed 8 h; coarse bracketing costs ~+14% evaluations, sharp points more
+slurm_account = "siallocation"
+slurm_partition = "normal_q"   # TinkerCliffs; check with `sinfo -s`
