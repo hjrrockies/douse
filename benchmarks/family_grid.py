@@ -290,6 +290,13 @@ def run(spec, task, ntasks, out, limit=None):
 
 # ---- suspect rows and their repair -------------------------------------------------------------
 
+# A level whose error bound exceeds this fraction of its value was never located: a phantom.
+# The full triangle grid (2026-10-30, 2305 rows) has NO row with a worst relative bound between
+# 1e-5 and 1e-3 -- real levels sit at or below 3e-6, the phantoms at 0.3..18 -- so the cut is
+# not a tuning knob.
+UNRESOLVED_REL = 1e-4
+
+
 def suspect(row):
     """Why a row's spectrum cannot be trusted as is: `[]` for a clean row.
 
@@ -299,7 +306,10 @@ def suspect(row):
       false alarms (four fat triangles in the pilot), which the mean-cut audit does not;
     * `overlapping levels` -- two adjacent levels, both reported SIMPLE, closer together than
       the sum of their error bounds. A real double comes back as one level of multiplicity 2,
-      so two simple levels that the bounds cannot separate are one eigenvalue found twice.
+      so two simple levels that the bounds cannot separate are one eigenvalue found twice;
+    * `unresolved level` -- a level whose error bound exceeds `UNRESOLVED_REL` of its value: not
+      an eigenvalue at all (full triangle grid: 10 rows, bounds 0.3..18 x the level, three of them
+      invisible to the count audit, one a well-shaped 45-50-85 degree triangle).
     """
     why = []
     if row.get('status') != 'ok':
@@ -310,6 +320,10 @@ def suspect(row):
     for i in range(len(lam) - 1):
         if mult[i] == 1 and mult[i + 1] == 1 and lam[i + 1] - lam[i] <= bound[i] + bound[i + 1]:
             why.append(f'overlapping levels {i + 1},{i + 2}')
+            break
+    for i in range(len(lam)):
+        if bound[i] > UNRESOLVED_REL*abs(lam[i]):
+            why.append(f'unresolved level {i + 1}')
             break
     return why
 
@@ -411,7 +425,7 @@ def collect(spec, out):
     unmet = sum(1 for r in rows.values() if r['status'] == 'ok' and not all(r['met']))
     lines = [f'# {spec.name} @ {spec.sha}: {len(rows)}/{len(pts)} point(s) solved, '
              f'{len(missing)} missing, status {st}',
-             f'  suspect rows (count audit, or two simple levels within their bounds): '
+             f'  suspect rows (count audit, duplicated or unresolved levels): '
              f'{len(flagged)}; repaired {len(repaired)}, awaiting repair {len(pending)}, '
              f'still suspect after repair {len([i for i in still if i in repaired])}'
              + (f' -> run `repair`' if pending else '')

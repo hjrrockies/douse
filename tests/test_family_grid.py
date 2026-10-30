@@ -135,7 +135,7 @@ def test_collect_prefers_a_repaired_row_and_leaves_out_one_still_suspect(tmp_pat
         fh.write(json.dumps(_row(0, [10.0, 20.0, 30.0, 40.0], sha=spec.sha)) + '\n')   # fixed
     rows, rep = fg.collect(spec, tmp_path)
     assert rows[0].get('repaired') and rows[0]['lam'] == [10.0, 20.0, 30.0, 40.0]
-    assert 'suspect rows (count audit, or two simple levels within their bounds): 2; ' \
+    assert 'suspect rows (count audit, duplicated or unresolved levels): 2; ' \
            'repaired 1, awaiting repair 1' in rep
     _, _, _, _, ids = fg.to_arrays(spec, rows)
     assert list(ids) == [0, 2]                                # id 1 is still suspect: left out
@@ -147,3 +147,13 @@ def test_the_repair_job_is_its_own_array_over_its_own_ledgers():
                           None, None, '.venv/bin/python', cmd='repair', ntasks=4)
     assert '#SBATCH --array=0-3' in text and '--output=out/repair/logs/' in text
     assert 'family_grid repair benchmarks/specs/triangle_pilot_v1.toml' in text and '--ntasks 4' in text
+
+
+def test_a_level_whose_bound_is_as_large_as_itself_is_not_an_eigenvalue():
+    """Full triangle grid: phantom levels with bounds 0.3..18 x their value, three of them
+    invisible to the count audit. Real levels -- even the flat strip's, short of prec -- stay
+    far below the cut."""
+    phantom = _row(0, [10.0, 20.0, 30.0], bound=[1e-9, 1e-9, 9.9])          # the top level
+    assert fg.suspect(phantom) == ['unresolved level 3']
+    short_of_prec = _row(0, [10.0, 20.0, 30.0], bound=[3e-7, 1e-6, 3e-6])   # rel <= 1e-7
+    assert fg.suspect(short_of_prec) == []
