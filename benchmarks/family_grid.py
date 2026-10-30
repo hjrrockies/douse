@@ -29,7 +29,9 @@ other -- one eigenvalue reported twice, which shifts every level above it by one
 triangle pilot, 2026-10-30: apex (0.15, 0.20), 1729.019 twice, 1e-10 apart with bounds of 1e-5,
 and lam_9..lam_15 all one slot off). `repair` re-solves only those rows with `extra` more
 eigenvalues (which removed that duplicate) into `<out>/repair/`, and `collect`, `to_arrays` and
-`plot` prefer a repaired row and leave out any row still suspect after its repair.
+`plot` prefer a repaired row and leave out any row still suspect after its repair -- except
+where the original was suspect only for the last-rung precaution and the repair agrees with it on
+every stored eigenvalue (`corroborates`): then the original is kept, marked `corroborated`.
 
 SCALE IS NOT NORMALIZED IN THE SOLVE. Every family fixes one length (a unit base); rows carry
 `area` and `perim`, and `collect`/`plot` report `lam*area` (or perimeter^2) so the scale is a
@@ -297,6 +299,12 @@ def run(spec, task, ntasks, out, limit=None):
 # not a tuning knob.
 UNRESOLVED_REL = 1e-4
 
+# A repair CORROBORATES an original row when the two solves agree on every stored eigenvalue to
+# this relative tolerance. Grid id 2055 (2026-10-30): agreement 7.6e-12, the repair itself flagged
+# only for lam_16 (beyond the stored 15) sitting on top of lam_15.
+CORROBORATE_REL = 1e-8
+_RUNG_ONLY = ['planner fell back to its last rung']
+
 # chladni's planner flag when no rung met prec: '... returning rung 4 of 4, the one with ...'
 _FALLBACK = re.compile(r'returning rung (\d+) of (\d+)')
 
@@ -318,8 +326,9 @@ def suspect(row):
       LAST one. On the full triangle grid that outcome was suspect by the rules above in 11 of
       18 rows (61%), against 0 of 1960 rows where a rung met `prec` and 2 of 327 that fell back
       to an earlier rung; re-solving the other 7 is cheaper than trusting their bounds. Not
-      applied to a repaired row (`repair_of`): the re-solve is the second look, and it is judged
-      on the evidence rules above only, so a clean repair is never dropped for its rung.
+      applied to a repaired row (`repair_of`) or a corroborated one: the re-solve is the second
+      look, and it is judged on the evidence rules above only, so a clean repair is never
+      dropped for its rung.
     """
     why = []
     if row.get('status') != 'ok':
@@ -335,7 +344,8 @@ def suspect(row):
         if bound[i] > UNRESOLVED_REL*abs(lam[i]):
             why.append(f'unresolved level {i + 1}')
             break
-    for f in ([] if row.get('repair_of') is not None else row.get('flags', ())):
+    second_look = row.get('repair_of') is not None or row.get('corroborated')
+    for f in ([] if second_look else row.get('flags', ())):
         m = _FALLBACK.search(str(f))
         if m and m.group(1) == m.group(2):
             why.append('planner fell back to its last rung')
@@ -422,16 +432,39 @@ def sbatch_text(spec, spec_path, out, mem, time_, partition, account, runner, cm
 
 # ---- collect / plot ---------------------------------------------------------------------------
 
+def corroborates(repair_row, original, n_eigs):
+    """Does a repair confirm the original row, even if the repair is itself still suspect?
+
+    Only when the original was suspect for the last-rung PRECAUTION alone (no evidence of a
+    defect) and the two independent solves agree on all `n_eigs` stored eigenvalues to
+    `CORROBORATE_REL`. A repair that disagrees -- a phantom's, off by 3..27% above the bad
+    level -- never corroborates."""
+    if suspect(original) != _RUNG_ONLY:
+        return False
+    a, b = original.get('unfolded') or [], repair_row.get('unfolded') or []
+    if len(a) < n_eigs or len(b) < n_eigs:
+        return False
+    a, b = np.asarray(a[:n_eigs], dtype=float), np.asarray(b[:n_eigs], dtype=float)
+    return bool(np.all(np.abs(a - b) <= CORROBORATE_REL*np.abs(a)))
+
+
 def collect(spec, out):
     """Pool the task ledgers: `(rows by id, report text)`. Rows from another spec_sha are refused;
-    a row in `<out>/repair/` replaces the primary row for its id (marked `repaired`)."""
+    a row in `<out>/repair/` replaces the primary row for its id (marked `repaired`), unless the
+    repair is still suspect and `corroborates` the original, which is then kept (marked
+    `corroborated`)."""
     pts = points(spec)
     rows, foreign = _load(spec, out)
     flagged = sorted(i for i, r in rows.items() if suspect(r))
     repaired, f2 = _load(spec, pathlib.Path(out)/'repair')
     foreign += f2
+    corroborated = []
     for i, r in repaired.items():
-        rows[i] = dict(r, repaired=True)
+        if i in rows and suspect(r) and corroborates(r, rows[i], spec.n_eigs):
+            rows[i] = dict(rows[i], corroborated=True)
+            corroborated.append(i)
+        else:
+            rows[i] = dict(r, repaired=True)
     still = sorted(i for i, r in rows.items() if suspect(r))
     st = {}
     for r in rows.values():
@@ -445,6 +478,8 @@ def collect(spec, out):
              f'  suspect rows (count audit, duplicated or unresolved levels, last-rung fallback): '
              f'{len(flagged)}; repaired {len(repaired)}, awaiting repair {len(pending)}, '
              f'still suspect after repair {len([i for i in still if i in repaired])}'
+             + (f' (originals kept where the repair agrees to {CORROBORATE_REL:g}: '
+                f'{len(corroborated)})' if corroborated else '')
              + (f' -> run `repair`' if pending else '')
              + (f'; left out of arrays and plots: ids {still[:12]}{"..." if len(still) > 12 else ""}'
                 if still else ''),
