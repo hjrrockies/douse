@@ -12,6 +12,7 @@ identity (`douse_sha`, `chladni_sha`) is recorded beside the spec, not inside it
 | `thesis_ratio_v0.toml` | the cells the laptop can reach: N = 3..6, k = 2..4, 8 starts, 400 iterations, 1e-10 |
 | `triangle_pilot_v0.toml`, `triangle_grid_v0.toml` | `family_grid`: lam_1..15 over triangles, h = 0.05 / 0.01, 1e-10 |
 | `triangle_pilot_v1.toml`, `triangle_grid_v1.toml` | the same with chladni's `coarse_bracket` (sharp triangles certify); use these |
+| `{parallelogram,isosceles_trapezoid,kite}_pilot_v1.toml` | the quadrilateral families at h = 0.05 (290 / 592 / 192 points), same recipe, to set the production spacing |
 
 ## On the cluster (Slurm)
 
