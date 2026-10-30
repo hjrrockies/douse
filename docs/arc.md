@@ -79,6 +79,20 @@ uv run python -m benchmarks.family_grid plot benchmarks/specs/triangle_pilot_v1.
 A task that died (time limit, node failure) is resubmitted by index and resumes its own ledger:
 `sbatch --array=17 <the .sbatch>`. `collect` lists how many points are missing.
 
+When every task has finished, `collect` also counts SUSPECT rows: chladni's count audit fired,
+or two adjacent simple levels sit within their own error bounds (one eigenvalue reported twice,
+which shifts every level above it; one row in the 107-point triangle pilot). Re-solve just those,
+with five more eigenvalues each, as a small array job, then `collect` again; plots and arrays use
+the repaired rows and leave out any row still suspect:
+
+```bash
+uv run python -m benchmarks.family_grid slurm benchmarks/specs/triangle_pilot_v1.toml --repair 4 --runner .venv/bin/python --mem 1G --time 2:00:00
+```
+
+```bash
+sbatch benchmarks/run/family_grid/triangle_pilot_v1/repair/triangle_pilot_v1_repair.sbatch
+```
+
 Bring results home (ledgers are JSONL, a few MB):
 
 ```bash

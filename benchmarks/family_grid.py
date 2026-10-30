@@ -4,6 +4,7 @@
     python -m benchmarks.family_grid run    benchmarks/specs/triangle_grid_v0.toml --task 0 --ntasks 1 [--limit 3]
     python -m benchmarks.family_grid slurm  benchmarks/specs/triangle_grid_v0.toml [--dry-run]
     python -m benchmarks.family_grid collect benchmarks/specs/triangle_grid_v0.toml
+    python -m benchmarks.family_grid repair  benchmarks/specs/triangle_grid_v0.toml [--task 0 --ntasks 1]
     python -m benchmarks.family_grid plot    benchmarks/specs/triangle_grid_v0.toml
 
 A FORWARD SWEEP, NO OPTIMIZER. Each grid point is one cold `plan_and_solve(n_eigs)`; the row
@@ -21,6 +22,14 @@ ONE LEDGER PER TASK, `<out>/task_<i>.jsonl`, task `i` of `T` solving points `i, 
 The stride interleaves the expensive points (small angles, which pile up at one edge of the
 domain) across tasks instead of handing them all to the last one. Rerunning a task skips the
 ids its file already has, so a killed task is resubmitted as is (`sbatch --array=i ...`).
+
+SUSPECT ROWS ARE REPAIRED, NOT TRUSTED (`suspect`, `repair`). A row is suspect when chladni's
+count audit fired, or when two adjacent SIMPLE levels lie within their own error bounds of each
+other -- one eigenvalue reported twice, which shifts every level above it by one index (the
+triangle pilot, 2026-10-30: apex (0.15, 0.20), 1729.019 twice, 1e-10 apart with bounds of 1e-5,
+and lam_9..lam_15 all one slot off). `repair` re-solves only those rows with `extra` more
+eigenvalues (which removed that duplicate) into `<out>/repair/`, and `collect`, `to_arrays` and
+`plot` prefer a repaired row and leave out any row still suspect after its repair.
 
 SCALE IS NOT NORMALIZED IN THE SOLVE. Every family fixes one length (a unit base); rows carry
 `area` and `perim`, and `collect`/`plot` report `lam*area` (or perimeter^2) so the scale is a
@@ -186,8 +195,22 @@ def default_out(spec):
 
 # ---- solve ------------------------------------------------------------------------------------
 
-def solve_point(spec, pid, a, b):
-    """One row: the cold solve at one grid point. Never raises."""
+def _keep_levels(mults, n):
+    """How many leading levels cover the first `n` eigenvalues (a multiple level that straddles
+    `n` is kept whole)."""
+    total = 0
+    for i, m in enumerate(mults):
+        if total >= n:
+            return i
+        total += m
+    return len(mults)
+
+
+def solve_point(spec, pid, a, b, n_solve=None):
+    """One row: the cold solve at one grid point. Never raises.
+
+    `n_solve` (a repair) solves for more eigenvalues than the spec stores; the row keeps the
+    levels covering the first `n_eigs` and records `n_solved`."""
     from chladni.eigenproblem import Eigenproblem
     from chladni.geometry import Polygon
     from douse.spectral_guard import weyl_deficit
@@ -205,13 +228,17 @@ def solve_point(spec, pid, a, b):
             dom = Polygon(v, bc='dir')
             ep = (Eigenproblem(dom, coarse_bracket=True) if spec.coarse_bracket
                   else Eigenproblem(dom))
-            _, rec = ep.plan_and_solve(spec.n_eigs, prec=spec.prec)
+            n = int(n_solve or spec.n_eigs)
+            _, rec = ep.plan_and_solve(n, prec=spec.prec)
             s = rec.spectrum
             unf = np.asarray(s.unfolded, dtype=float)
+            levels = s.levels[:_keep_levels([int(L.mult) for L in s.levels], spec.n_eigs)]
+            if n != spec.n_eigs:
+                row['n_solved'] = n
             row.update(status='ok' if len(unf) >= spec.n_eigs and not s.declined else 'short',
-                       lam=[float(L.lam) for L in s.levels], mult=[int(L.mult) for L in s.levels],
-                       bound=[float(L.bound) for L in s.levels],
-                       met=[bool(L.met) for L in s.levels],
+                       lam=[float(L.lam) for L in levels], mult=[int(L.mult) for L in levels],
+                       bound=[float(L.bound) for L in levels],
+                       met=[bool(L.met) for L in levels],
                        unfolded=unf[:spec.n_eigs].tolist(),
                        declined=bool(s.declined), reason=str(s.reason),
                        flags=[str(f) for f in s.flags],
@@ -261,42 +288,36 @@ def run(spec, task, ntasks, out, limit=None):
               f"deficit {row.get('weyl_deficit', float('nan')):.2f}", flush=True)
 
 
-# ---- slurm ------------------------------------------------------------------------------------
+# ---- suspect rows and their repair -------------------------------------------------------------
 
-def sbatch_text(spec, spec_path, out, mem, time_, partition, account, runner):
-    lines = ['#!/bin/bash',
-             f'#SBATCH --job-name=grid_{spec.name}',
-             f'#SBATCH --array=0-{spec.tasks - 1}',
-             '#SBATCH --ntasks=1',
-             '#SBATCH --cpus-per-task=1',
-             f'#SBATCH --mem={mem}',
-             f'#SBATCH --time={time_}']
-    if partition:
-        lines.append(f'#SBATCH --partition={partition}')
-    if account:
-        lines.append(f'#SBATCH --account={account}')
-    lines += [f'#SBATCH --output={out}/logs/task_%a_%A.out',
-              '',
-              f'# spec {spec.name} @ {spec.sha}: {spec.family}, h={spec.h}, '
-              f'{len(points(spec))} point(s) over {spec.tasks} task(s).',
-              '# Generated by benchmarks/family_grid.py; submit from the douse checkout.',
-              'set -euo pipefail',
-              'cd "${DOUSE_ROOT:-$SLURM_SUBMIT_DIR}"', '']
-    lines += [f'export {v}=1' for v in BLAS_VARS]
-    lines += ['',
-              f'{runner} -m benchmarks.family_grid run {shlex.quote(spec_path)} '
-              f'--task ${{SLURM_ARRAY_TASK_ID}} --ntasks {spec.tasks} --out {shlex.quote(out)}',
-              '']
-    return '\n'.join(lines)
+def suspect(row):
+    """Why a row's spectrum cannot be trusted as is: `[]` for a clean row.
+
+    * `status` -- not `ok` (an error, a short spectrum);
+    * `count audit` -- chladni's count audit fired (`short`: a level missing; `excess`: one
+      counted twice). The worst-cut `weyl_deficit` is NOT used: on complete spectra it raises
+      false alarms (four fat triangles in the pilot), which the mean-cut audit does not;
+    * `overlapping levels` -- two adjacent levels, both reported SIMPLE, closer together than
+      the sum of their error bounds. A real double comes back as one level of multiplicity 2,
+      so two simple levels that the bounds cannot separate are one eigenvalue found twice.
+    """
+    why = []
+    if row.get('status') != 'ok':
+        why.append(f"status {row.get('status')}")
+    if any(str(f).startswith('count audit') for f in row.get('flags', ())):
+        why.append('count audit')
+    lam, mult, bound = row.get('lam') or [], row.get('mult') or [], row.get('bound') or []
+    for i in range(len(lam) - 1):
+        if mult[i] == 1 and mult[i + 1] == 1 and lam[i + 1] - lam[i] <= bound[i] + bound[i + 1]:
+            why.append(f'overlapping levels {i + 1},{i + 2}')
+            break
+    return why
 
 
-# ---- collect / plot ---------------------------------------------------------------------------
-
-def collect(spec, out):
-    """Pool the task ledgers: `(rows by id, report text)`. Rows from another spec_sha are refused."""
-    pts = points(spec)
+def _load(spec, folder):
+    """`(rows by id, foreign count)` from every `task_*.jsonl` in `folder`."""
     rows, foreign = {}, 0
-    for path in sorted(pathlib.Path(out).glob('task_*.jsonl')):
+    for path in sorted(pathlib.Path(folder).glob('task_*.jsonl')):
         with open(path) as fh:
             for line in fh:
                 if not line.strip():
@@ -306,17 +327,96 @@ def collect(spec, out):
                     foreign += 1
                     continue
                 rows[r['id']] = r
+    return rows, foreign
+
+
+def repair(spec, out, task=0, ntasks=1, extra=5, limit=None):
+    """Re-solve the suspect rows of the primary ledgers with `extra` more eigenvalues, into
+    `<out>/repair/task_<task>.jsonl`. A row already repaired is not repeated, and a repair that
+    is itself suspect is kept as written (collect leaves it out): no loop."""
+    rows, _ = _load(spec, out)
+    done = set(_load(spec, pathlib.Path(out)/'repair')[0])
+    bad = sorted(i for i, r in rows.items() if suspect(r))
+    mine = [i for i in bad[task::ntasks] if i not in done]
+    if limit is not None:
+        mine = mine[:limit]
+    path = pathlib.Path(out)/'repair'/f'task_{task}.jsonl'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    prov = spec_mod.provenance()
+    prov['prec'] = spec.prec
+    print(f'# {spec.name} @ {spec.sha}: {len(bad)} suspect row(s), {len(done)} already repaired; '
+          f'task {task}/{ntasks} re-solves {len(mine)} with n_eigs + {extra} -> {path}', flush=True)
+    for i in mine:
+        old = rows[i]
+        row = solve_point(spec, i, old['a'], old['b'], n_solve=spec.n_eigs + extra)
+        row.update(prov, task=task, ntasks=ntasks, repair_of=suspect(old))
+        with open(path, 'a') as fh:
+            fh.write(json.dumps(row) + '\n')
+        print(f"  id {i:5d} ({old['a']:.4f}, {old['b']:.4f}) was {suspect(old)} -> "
+              f"{row['status']} {suspect(row) or 'clean'} {row['wall']:7.1f}s", flush=True)
+
+
+# ---- slurm ------------------------------------------------------------------------------------
+
+def sbatch_text(spec, spec_path, out, mem, time_, partition, account, runner, cmd='run',
+                ntasks=None):
+    ntasks = ntasks or spec.tasks
+    logs = f'{out}/logs' if cmd == 'run' else f'{out}/{cmd}/logs'
+    lines = ['#!/bin/bash',
+             f'#SBATCH --job-name={"grid" if cmd == "run" else cmd}_{spec.name}',
+             f'#SBATCH --array=0-{ntasks - 1}',
+             '#SBATCH --ntasks=1',
+             '#SBATCH --cpus-per-task=1',
+             f'#SBATCH --mem={mem}',
+             f'#SBATCH --time={time_}']
+    if partition:
+        lines.append(f'#SBATCH --partition={partition}')
+    if account:
+        lines.append(f'#SBATCH --account={account}')
+    lines += [f'#SBATCH --output={logs}/task_%a_%A.out',
+              '',
+              (f'# spec {spec.name} @ {spec.sha}: {spec.family}, h={spec.h}, '
+               f'{len(points(spec))} point(s) over {ntasks} task(s).' if cmd == 'run' else
+               f'# spec {spec.name} @ {spec.sha}: re-solve the suspect rows over {ntasks} task(s).'),
+              '# Generated by benchmarks/family_grid.py; submit from the douse checkout.',
+              'set -euo pipefail',
+              'cd "${DOUSE_ROOT:-$SLURM_SUBMIT_DIR}"', '']
+    lines += [f'export {v}=1' for v in BLAS_VARS]
+    lines += ['',
+              f'{runner} -m benchmarks.family_grid {cmd} {shlex.quote(spec_path)} '
+              f'--task ${{SLURM_ARRAY_TASK_ID}} --ntasks {ntasks} --out {shlex.quote(out)}',
+              '']
+    return '\n'.join(lines)
+
+
+# ---- collect / plot ---------------------------------------------------------------------------
+
+def collect(spec, out):
+    """Pool the task ledgers: `(rows by id, report text)`. Rows from another spec_sha are refused;
+    a row in `<out>/repair/` replaces the primary row for its id (marked `repaired`)."""
+    pts = points(spec)
+    rows, foreign = _load(spec, out)
+    flagged = sorted(i for i, r in rows.items() if suspect(r))
+    repaired, f2 = _load(spec, pathlib.Path(out)/'repair')
+    foreign += f2
+    for i, r in repaired.items():
+        rows[i] = dict(r, repaired=True)
+    still = sorted(i for i, r in rows.items() if suspect(r))
     st = {}
     for r in rows.values():
         st[r['status']] = st.get(r['status'], 0) + 1
     missing = [i for i in range(len(pts)) if i not in rows]
-    defs = np.array([r.get('weyl_deficit', np.nan) for r in rows.values()], dtype=float)
     walls = np.array([r['wall'] for r in rows.values()], dtype=float)
-    bad_def = int(np.count_nonzero(defs > 0.5))
+    pending = [i for i in flagged if i not in repaired]
     unmet = sum(1 for r in rows.values() if r['status'] == 'ok' and not all(r['met']))
     lines = [f'# {spec.name} @ {spec.sha}: {len(rows)}/{len(pts)} point(s) solved, '
              f'{len(missing)} missing, status {st}',
-             f'  Weyl deficit > 0.5 (a mode probably missed): {bad_def}',
+             f'  suspect rows (count audit, or two simple levels within their bounds): '
+             f'{len(flagged)}; repaired {len(repaired)}, awaiting repair {len(pending)}, '
+             f'still suspect after repair {len([i for i in still if i in repaired])}'
+             + (f' -> run `repair`' if pending else '')
+             + (f'; left out of arrays and plots: ids {still[:12]}{"..." if len(still) > 12 else ""}'
+                if still else ''),
              f'  ok rows with an unmet level: {unmet}',
              _bound_line(rows),
              f'  rows from another spec_sha, ignored: {foreign}']
@@ -342,8 +442,9 @@ def _bound_line(rows):
 
 
 def to_arrays(spec, rows):
-    """`params (n, 2)`, `lam (n, n_eigs)` (NaN where absent), `area`, `perim`, `ids`."""
-    ids = sorted(i for i, r in rows.items() if r['status'] in ('ok', 'short'))
+    """`params (n, 2)`, `lam (n, n_eigs)` (NaN where absent), `area`, `perim`, `ids`. Rows still
+    suspect (after any repair) are left out."""
+    ids = sorted(i for i, r in rows.items() if r['status'] in ('ok', 'short') and not suspect(r))
     P = np.array([[rows[i]['a'], rows[i]['b']] for i in ids]).reshape(-1, 2)
     L = np.full((len(ids), spec.n_eigs), np.nan)
     for j, i in enumerate(ids):
@@ -420,16 +521,19 @@ def plot(spec, out, scale='area'):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest='cmd', required=True)
-    for name in ('points', 'run', 'slurm', 'collect', 'plot'):
+    for name in ('points', 'run', 'slurm', 'collect', 'repair', 'plot'):
         p = sub.add_parser(name)
         p.add_argument('spec')
         p.add_argument('--out', default=None,
                        help='ledger directory, relative to the douse checkout '
                             '(default benchmarks/run/family_grid/<spec name>)')
-        if name == 'run':
+        if name in ('run', 'repair'):
             p.add_argument('--task', type=int, default=0)
             p.add_argument('--ntasks', type=int, default=1)
             p.add_argument('--limit', type=int, default=None, help='solve at most this many')
+        if name == 'repair':
+            p.add_argument('--extra', type=int, default=5,
+                           help='eigenvalues to solve beyond n_eigs (default 5)')
         if name == 'slurm':
             p.add_argument('--mem', default=None)
             p.add_argument('--time', default=None)
@@ -437,6 +541,8 @@ def main(argv=None):
             p.add_argument('--account', default=None)
             p.add_argument('--runner', default='uv run python')
             p.add_argument('--dry-run', action='store_true')
+            p.add_argument('--repair', type=int, default=None, metavar='NTASKS',
+                           help='write the repair job instead, over NTASKS array tasks')
         if name == 'plot':
             p.add_argument('--scale', choices=('area', 'perim'), default='area')
     args = ap.parse_args(argv)
@@ -452,6 +558,9 @@ def main(argv=None):
     if args.cmd == 'run':
         run(spec, args.task, args.ntasks, out, args.limit)
         return 0
+    if args.cmd == 'repair':
+        repair(spec, out, args.task, args.ntasks, args.extra, args.limit)
+        return 0
     if args.cmd == 'collect':
         print(collect(spec, out)[1])
         return 0
@@ -464,9 +573,12 @@ def main(argv=None):
     time_ = args.time or spec.slurm_time or '24:00:00'
     spec_path = str(pathlib.Path(args.spec).resolve().relative_to(PACKAGE_ROOT)) \
         if pathlib.Path(args.spec).resolve().is_relative_to(PACKAGE_ROOT) else args.spec
+    cmd = 'repair' if args.repair else 'run'
     text = sbatch_text(spec, spec_path, out, mem, time_, args.partition or spec.slurm_partition,
-                       args.account or spec.slurm_account, args.runner)
-    path = pathlib.Path(out)/f'{spec.name}.sbatch'
+                       args.account or spec.slurm_account, args.runner, cmd=cmd,
+                       ntasks=args.repair)
+    path = (pathlib.Path(out)/f'{spec.name}.sbatch' if cmd == 'run'
+            else pathlib.Path(out)/'repair'/f'{spec.name}_repair.sbatch')
     if args.dry_run:
         print(text)
         return 0
@@ -474,7 +586,8 @@ def main(argv=None):
     (dest.parent/'logs').mkdir(parents=True, exist_ok=True)
     dest.write_text(text)
     print(f'# wrote {path}. Submit by hand, from the douse checkout:\nsbatch {path}\n'
-          f'# then: uv run python -m benchmarks.family_grid plot {spec_path}')
+          f'# then: uv run python -m benchmarks.family_grid '
+          f'{"plot" if cmd == "run" else "collect"} {spec_path}')
     return 0
 
 
