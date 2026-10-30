@@ -103,3 +103,40 @@ def test_the_crossing_solve_declines_when_there_is_no_crossing():
                                + np.arange(1, _n_modes_for(k) + 1)[None, :]**2/(2.0 - Lx)**2)
                      ).ravel())
         assert s[k + 1] - s[k] < 1e-9*s[k], f'k={k}: modes {k} and {k+1} should coincide at Lx'
+
+
+# ---- gaps ----------------------------------------------------------------------------------------
+
+def test_the_first_gap_is_the_ratio_minus_one():
+    """`(lam_2 - lam_1)/lam_1 = lam_2/lam_1 - 1`, so K = 1 is the square at exactly 3/2."""
+    from fractions import Fraction
+    from benchmarks.rectangle_exact import best_gap
+    r = best_gap(1)
+    assert r['value'] == Fraction(3, 2) and r['t'] == 1
+
+
+def test_the_second_gap_is_the_35_over_11_rectangle():
+    """Derived by hand: at `H^2/L^2 = 8/3` the (1,2) mode is 20/11 lam_1 and the (1,3)/(3,1)
+    double is 35/11 lam_1, so `(lam_3 - lam_2)/lam_1 = 15/11` -- the same rectangle as the
+    ratio problem's k = 3 answer, pinned at `lam_3 = lam_4`."""
+    from fractions import Fraction
+    from benchmarks.rectangle_exact import best_gap
+    r = best_gap(2)
+    assert r['value'] == Fraction(15, 11) and r['t'] == Fraction(3, 8)
+    assert r['upper_double'] and not r['lower_double']
+
+
+@pytest.mark.parametrize('K', range(1, 11))
+def test_no_grid_point_beats_the_exact_gap(K):
+    """The exact maximum is an upper bound on a dense float scan with a much larger mode
+    truncation, and the scan comes within its resolution of it (the maximum is a kink, so a
+    grid approaches it from below)."""
+    from benchmarks.rectangle_exact import best_gap
+    r = best_gap(K)
+    t = np.concatenate([np.linspace(1e-4, 1, 100001), [float(r['t'])]])[:, None, None]
+    m = np.arange(1, 50)
+    nu = ((m[None, :, None]**2 + m[None, None, :]**2*t)/(1 + t)).reshape(len(t), -1)
+    nu = np.sort(np.partition(nu, K, axis=1)[:, :K + 1], axis=1)
+    g = nu[:, K] - nu[:, K - 1]
+    assert g.max() <= float(r['value'])*(1 + 1e-12)
+    assert g[-1] == pytest.approx(float(r['value']), rel=1e-12)     # attained at the reported t
