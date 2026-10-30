@@ -1,0 +1,17 @@
+# Production (2026-10-30): lam_1..lam_15 over the kite family, the kite_pilot_v1 recipe at
+# h = 0.02. The pilot came back clean (192/192 points, every level met at 1e-10, no suspect
+# rows; 17 CPU-h, mean 320 s and max 38 min per point on ARC), so the recipe is unchanged.
+# Family: vertices 0, a-ib, 1, a+ib; axis [0, 1], a <= 1/2 (a = 1/2 is the rhombus).
+name = "kite_grid_v1"
+family = "kite"
+h = 0.02
+n_eigs = 15
+prec = 1e-10
+min_angle_deg = 10.0
+coarse_bracket = true
+tasks = 200
+notes = "1181 points, ~6 per task (strided); ~105 CPU-h from the pilot's mean."
+slurm_mem = "4G"
+slurm_time = "8:00:00"
+slurm_account = "siallocation"
+slurm_partition = "normal_q"
