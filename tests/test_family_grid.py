@@ -157,3 +157,20 @@ def test_a_level_whose_bound_is_as_large_as_itself_is_not_an_eigenvalue():
     assert fg.suspect(phantom) == ['unresolved level 3']
     short_of_prec = _row(0, [10.0, 20.0, 30.0], bound=[3e-7, 1e-6, 3e-6])   # rel <= 1e-7
     assert fg.suspect(short_of_prec) == []
+
+
+def test_slurm_mail_is_one_notice_per_array_and_comes_from_the_environment(monkeypatch):
+    """END,FAIL -- never ARRAY_TASKS, which mails every task. The address is never in a spec
+    (public repository): `--mail`, else `$DOUSE_SLURM_MAIL`, else no mail lines at all."""
+    from benchmarks.slurm import mail_address, mail_lines
+    spec = fg.load(SPECS / 'triangle_pilot_v1.toml')
+    monkeypatch.delenv('DOUSE_SLURM_MAIL', raising=False)
+    assert mail_address() is None and mail_lines(None) == []
+    plain = fg.sbatch_text(spec, 's.toml', 'out', '1G', '1:00:00', None, None, 'py')
+    assert '--mail' not in plain
+    monkeypatch.setenv('DOUSE_SLURM_MAIL', 'someone@example.edu')
+    text = fg.sbatch_text(spec, 's.toml', 'out', '1G', '1:00:00', None, None, 'py',
+                          mail=mail_address())
+    assert '#SBATCH --mail-type=END,FAIL' in text and '#SBATCH --mail-user=someone@example.edu' in text
+    assert 'ARRAY_TASKS' not in text
+    assert mail_address('other@example.edu') == 'other@example.edu'

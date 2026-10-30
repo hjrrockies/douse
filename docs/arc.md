@@ -37,6 +37,14 @@ from source and fails on BLAS.
 chladni is cloned at `main`, which has the opt-in `coarse_bracket` path (chladni PR #20) that
 the v1 specs use. The douse branch is douse PR #2; once it merges, use douse `main`.
 
+To be mailed when a job ends or a task fails (one mail per array, not per task), set the
+address once on the cluster; both job generators read it (`--mail` overrides). It is kept out of
+the specs because the repository is public:
+
+```bash
+echo 'export DOUSE_SLURM_MAIL=<pid>@vt.edu' >> ~/.bashrc && source ~/.bashrc
+```
+
 Then the environment check, on a COMPUTE node (it solves the unit square and checks the LAPACK
 route gsvd4py found; a failed solve here means nothing downstream is worth submitting):
 

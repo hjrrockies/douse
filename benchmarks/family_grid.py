@@ -373,7 +373,7 @@ def repair(spec, out, task=0, ntasks=1, extra=5, limit=None):
 # ---- slurm ------------------------------------------------------------------------------------
 
 def sbatch_text(spec, spec_path, out, mem, time_, partition, account, runner, cmd='run',
-                ntasks=None):
+                ntasks=None, mail=None):
     ntasks = ntasks or spec.tasks
     logs = f'{out}/logs' if cmd == 'run' else f'{out}/{cmd}/logs'
     lines = ['#!/bin/bash',
@@ -387,6 +387,8 @@ def sbatch_text(spec, spec_path, out, mem, time_, partition, account, runner, cm
         lines.append(f'#SBATCH --partition={partition}')
     if account:
         lines.append(f'#SBATCH --account={account}')
+    from benchmarks.slurm import mail_lines
+    lines += mail_lines(mail)
     lines += [f'#SBATCH --output={logs}/task_%a_%A.out',
               '',
               (f'# spec {spec.name} @ {spec.sha}: {spec.family}, h={spec.h}, '
@@ -553,6 +555,8 @@ def main(argv=None):
             p.add_argument('--time', default=None)
             p.add_argument('--partition', default=None)
             p.add_argument('--account', default=None)
+            p.add_argument('--mail', default=None,
+                           help='mail END/FAIL notices here (default: $DOUSE_SLURM_MAIL, else none)')
             p.add_argument('--runner', default='uv run python')
             p.add_argument('--dry-run', action='store_true')
             p.add_argument('--repair', type=int, default=None, metavar='NTASKS',
@@ -587,10 +591,11 @@ def main(argv=None):
     time_ = args.time or spec.slurm_time or '24:00:00'
     spec_path = str(pathlib.Path(args.spec).resolve().relative_to(PACKAGE_ROOT)) \
         if pathlib.Path(args.spec).resolve().is_relative_to(PACKAGE_ROOT) else args.spec
+    from benchmarks.slurm import mail_address
     cmd = 'repair' if args.repair else 'run'
     text = sbatch_text(spec, spec_path, out, mem, time_, args.partition or spec.slurm_partition,
                        args.account or spec.slurm_account, args.runner, cmd=cmd,
-                       ntasks=args.repair)
+                       ntasks=args.repair, mail=mail_address(args.mail))
     path = (pathlib.Path(out)/f'{spec.name}.sbatch' if cmd == 'run'
             else pathlib.Path(out)/'repair'/f'{spec.name}_repair.sbatch')
     if args.dry_run:
