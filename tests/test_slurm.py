@@ -54,12 +54,13 @@ def test_the_dry_run_on_v0_prints_one_array_job_per_cell(capsys, monkeypatch):
     assert v0.sha in out
 
 
-def test_spec_resources_are_used_and_flags_win(tmp_path):
+def test_spec_resources_are_used_and_flags_win(tmp_path, monkeypatch):
+    monkeypatch.delenv('DOUSE_SLURM_MAIL', raising=False)
     (tmp_path / 'r.toml').write_text(V0.read_text() + 'slurm_mem = "8G"\nslurm_time = "2:00:00"\n'
                                      'slurm_partition = "normal_q"\n')
     spec = S.load(tmp_path / 'r.toml')
     res = sl.resources(spec)
-    assert res == dict(mem='8G', time='2:00:00', partition='normal_q', account=None)
+    assert res == dict(mem='8G', time='2:00:00', partition='normal_q', account=None, mail=None)
     assert sl.resources(spec, mem='16G')['mem'] == '16G'
     text = sl.script(spec, 6, 2, 'r.toml', 'out', res)
     assert '#SBATCH --mem=8G' in text and '#SBATCH --partition=normal_q' in text

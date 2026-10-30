@@ -37,6 +37,14 @@ from source and fails on BLAS.
 chladni is cloned at `main`, which has the opt-in `coarse_bracket` path (chladni PR #20) that
 the v1 specs use. The douse branch is douse PR #2; once it merges, use douse `main`.
 
+To be mailed when a job ends or a task fails (one mail per array, not per task), set the
+address once on the cluster; both job generators read it (`--mail` overrides). It is kept out of
+the specs because the repository is public:
+
+```bash
+echo 'export DOUSE_SLURM_MAIL=<pid>@vt.edu' >> ~/.bashrc && source ~/.bashrc
+```
+
 Then the environment check, on a COMPUTE node (it solves the unit square and checks the LAPACK
 route gsvd4py found; a failed solve here means nothing downstream is worth submitting):
 
@@ -78,6 +86,20 @@ uv run python -m benchmarks.family_grid plot benchmarks/specs/triangle_pilot_v1.
 
 A task that died (time limit, node failure) is resubmitted by index and resumes its own ledger:
 `sbatch --array=17 <the .sbatch>`. `collect` lists how many points are missing.
+
+When every task has finished, `collect` also counts SUSPECT rows: chladni's count audit fired,
+or two adjacent simple levels sit within their own error bounds (one eigenvalue reported twice,
+which shifts every level above it; one row in the 107-point triangle pilot). Re-solve just those,
+with five more eigenvalues each, as a small array job, then `collect` again; plots and arrays use
+the repaired rows and leave out any row still suspect:
+
+```bash
+uv run python -m benchmarks.family_grid slurm benchmarks/specs/triangle_pilot_v1.toml --repair 4 --runner .venv/bin/python --mem 1G --time 2:00:00
+```
+
+```bash
+sbatch benchmarks/run/family_grid/triangle_pilot_v1/repair/triangle_pilot_v1_repair.sbatch
+```
 
 Bring results home (ledgers are JSONL, a few MB):
 

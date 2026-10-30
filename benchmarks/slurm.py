@@ -52,12 +52,30 @@ def _rel(path, root):
         return str(path)
 
 
-def resources(spec, mem=None, time=None, partition=None, account=None):
-    """`{mem, time, partition, account}`: a flag wins, then the spec, then the default."""
+def mail_address(flag=None):
+    """Where Slurm mails END/FAIL notices: `--mail`, else `$DOUSE_SLURM_MAIL`, else nobody.
+
+    An environment variable rather than a spec key because the specs are in a public repository
+    and an address is personal: set it once in the cluster's `~/.bashrc`."""
+    return flag or os.environ.get('DOUSE_SLURM_MAIL') or None
+
+
+def mail_lines(address):
+    """`--mail-type=END,FAIL`: one mail when the whole array ends and one per failed task --
+    never `ARRAY_TASKS`, which mails every task of every array."""
+    if not address:
+        return []
+    return ['#SBATCH --mail-type=END,FAIL', f'#SBATCH --mail-user={address}']
+
+
+def resources(spec, mem=None, time=None, partition=None, account=None, mail=None):
+    """`{mem, time, partition, account, mail}`: a flag wins, then the spec (or for mail the
+    environment), then the default."""
     return dict(mem=mem or spec.slurm_mem or DEFAULT_MEM,
                 time=time or spec.slurm_time or DEFAULT_TIME,
                 partition=partition or spec.slurm_partition,
-                account=account or spec.slurm_account)
+                account=account or spec.slurm_account,
+                mail=mail_address(mail))
 
 
 def script(spec, N, k, spec_path, out, res, runner='uv run python'):
@@ -76,6 +94,7 @@ def script(spec, N, k, spec_path, out, res, runner='uv run python'):
         lines.append(f"#SBATCH --partition={res['partition']}")
     if res['account']:
         lines.append(f"#SBATCH --account={res['account']}")
+    lines += mail_lines(res.get('mail'))
     # Slurm does not create the log directory and a missing one fails the task silently, so it
     # is created when the scripts are written (`main`), not here.
     lines += [f'#SBATCH --output={out}/logs/{cell}_%A_%a.out',
@@ -106,6 +125,8 @@ def main(argv=None):
     ap.add_argument('--time', default=None, help='override the spec (sbatch --time)')
     ap.add_argument('--partition', default=None)
     ap.add_argument('--account', default=None)
+    ap.add_argument('--mail', default=None,
+                    help='mail END/FAIL notices here (default: $DOUSE_SLURM_MAIL, else none)')
     ap.add_argument('--runner', default='uv run python',
                     help="how a task runs Python in the douse checkout (default: 'uv run python')")
     ap.add_argument('--dry-run', action='store_true', help='print the scripts; write nothing')
@@ -115,7 +136,7 @@ def main(argv=None):
     root = spec_mod.PACKAGE_ROOT
     out = args.out or f'benchmarks/run/slurm/{spec.name}'
     spec_path = _rel(args.spec, root)
-    res = resources(spec, args.mem, args.time, args.partition, args.account)
+    res = resources(spec, args.mem, args.time, args.partition, args.account, args.mail)
     print(f'# spec {spec.name} @ {spec.sha}: {len(spec.cells)} cell(s) x {spec.starts} start(s); '
           f"mem {res['mem']}, time {res['time']} per task"
           + ('' if spec.slurm_mem and spec.slurm_time else
