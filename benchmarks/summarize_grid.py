@@ -81,8 +81,7 @@ def revalidate(row, n_extra=3):
 
     N, k = row['N'], row['k']
     fam = VertexPolygon(N, perim=PERIM)
-    ev = SpectrumEvaluator(fam, n_eigs=k + 1 + n_extra, warn_gap=0.0, degenerate_tol=0.0,
-                           lam_max_window=max(8, 2*k + 6), replan_tol=1e-9)
+    ev = SpectrumEvaluator(fam, n_eigs=k + 1 + n_extra, warn_gap=0.0, degenerate_tol=0.0)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         lams, _ = ev.eigenvalues(np.array(row['x'], dtype=float))
@@ -222,8 +221,12 @@ def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5):
     """Best certified value in a cell, and how many starts agree with it."""
     crashed = [r for r in rows if not r.get('ok', True)]
     ok = [r for r in rows if r.get('ok', True)]
-    drifted = [r for r in ok if r['worst_sigma'] > sigma_max]
-    clean = [r for r in ok if r['worst_sigma'] <= sigma_max]
+    # A ROW WITHOUT `worst_sigma` IS UNCERTIFIED, not invisible: `nan` fails both comparisons
+    # below, and every chladni row used to fall out of every count here (2026-10-14).
+    sig = lambda r: float(r.get('worst_sigma', float('nan')))               # noqa: E731
+    uncertified = [r for r in ok if not np.isfinite(sig(r))]
+    drifted = [r for r in ok if sig(r) > sigma_max]
+    clean = [r for r in ok if sig(r) <= sigma_max]
     # A NON-CONSECUTIVE TRACKED SET IS NOT A RESULT, and `worst_sigma` above cannot see one:
     # the 2.6203 run had sigma = 1e-09. Dropped here rather than merely reported, because a
     # value promoted out of this function is quoted.
@@ -250,7 +253,7 @@ def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5):
                   and r['resolution'] <= res_max)
     if not good:
         return dict(best=None, n_total=len(rows), n_crashed=len(crashed),
-                    n_skipped_mode=len(skipped), n_sharp=0,
+                    n_skipped_mode=len(skipped), n_sharp=0, n_uncertified=len(uncertified),
                     n_drifted=len(drifted), n_certified=0, n_agree=0, n_near=0,
                     n_clean=len(clean),
                     best_uncertified=(max((r['fun'] for r in clean), default=None)))
@@ -266,7 +269,7 @@ def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5):
     n_near = sum(abs(r['fun'] - best['fun']) <= near_rtol*abs(best['fun']) for r in clean)
     basins = find_basins(good, agree_rtol)
     return dict(best=best, basins=basins, n_total=len(rows), n_crashed=len(crashed), n_clean=len(clean),
-                n_skipped_mode=len(skipped), n_sharp=n_sharp,
+                n_skipped_mode=len(skipped), n_sharp=n_sharp, n_uncertified=len(uncertified),
                 n_drifted=len(drifted), n_certified=len(good), n_agree=len(agreeing),
                 n_near=n_near, spread=spread, best_uncertified=None)
 
@@ -309,7 +312,8 @@ def main():
         if s['best'] is None:
             got = (f"{s['best_uncertified']:.10f}" if s['best_uncertified'] is not None else '-')
             print(f"  {N:2d}  {k+1:2d}  {fam}  {got:>16s}   NONE CERTIFIED    -   "
-                  f"0/{s['n_total']-s['n_crashed']-s['n_drifted']}/{s['n_total']}")
+                  f"0/{s['n_total']-s['n_crashed']-s['n_drifted']-s['n_uncertified']}/"
+                  f"{s['n_total']}")
             continue
         b = s['best']
         oracle = ''
@@ -377,8 +381,9 @@ def main():
     total = lambda key: sum(s[key] for *_, s in cells)                 # noqa: E731
     tot, cert = total('n_total'), total('n_certified')
     crash, drift, missed = total('n_crashed'), total('n_drifted'), total('n_skipped_mode')
+    unc = total('n_uncertified')
     print(f'\n  {cert} certified of {tot} run(s); {drift} excluded on worst_sigma, '
-          f'{missed} on a missed mode, {crash} crashed')
+          f'{missed} on a missed mode, {crash} crashed, {unc} without a health statistic')
     print('  agree = certified starts that found the best value; CERTIFIED means the run')
     print('          stopped on a first-order certificate (gain_tol or the plateau test).')
     print(f'  sharp = of those, how many reached resolution <= {args.res_max:.0e}. A REPORTED')

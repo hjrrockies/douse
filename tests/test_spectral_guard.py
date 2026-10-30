@@ -118,10 +118,12 @@ def test_distinct_levels_collapses_degenerate_copies():
 
 # ── the evaluator carries it ─────────────────────────────────────────────────
 
+@pytest.mark.lappy
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_the_evaluator_records_the_worst_deficit_over_a_run():
     """`worst_weyl_deficit` has to be tracked the way `worst_sigma` is, or a caller cannot filter
     on it after the fact."""
-    from douse import SpectrumEvaluator
+    from douse import LappySpectrumEvaluator as SpectrumEvaluator
     fam = VertexPolygon(4, perim=PERIM)
     ev = SpectrumEvaluator(fam, n_eigs=3, warn_gap=0.0, degenerate_tol=0.0, replan_tol=1e-9)
     assert ev.worst_weyl_deficit == -np.inf and ev.n_weyl_flags == 0

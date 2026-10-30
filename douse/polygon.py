@@ -26,8 +26,33 @@ answer. Use `param_vector` to build an initial guess and never again inside a lo
 """
 import numpy as np
 
-from lappy import Polygon
-from lappy.utils import edge_lengths, polygon_area, polygon_perimeter
+
+# Geometry helpers, lappy's conventions exactly (`lappy/utils.py`), so douse no longer imports
+# lappy for them (2026-10-14).
+def _complex_form(pts):
+    pts = np.asarray(pts)
+    if np.iscomplexobj(pts):
+        return pts
+    if pts.ndim == 2 and pts.shape[1] == 2:
+        return pts[:, 0] + 1j*pts[:, 1]
+    return pts.astype(complex)
+
+
+def edge_lengths(vertices):
+    """Edge lengths, edge i running from vertex i to vertex i+1."""
+    v = _complex_form(vertices)
+    return np.abs(np.roll(v, -1) - v)
+
+
+def polygon_area(vertices):
+    """Signed area by the shoelace formula: positive for counter-clockwise vertices."""
+    v = _complex_form(vertices)
+    x, y = v.real, v.imag
+    return 0.5*np.sum((x - np.roll(x, -1))*(y + np.roll(y, -1)))
+
+
+def polygon_perimeter(vertices):
+    return float(np.sum(edge_lengths(vertices)))
 
 __all__ = ['polygon_vertices', 'd_vertices_dp', 'param_vector', 'gauge_vector',
            'perimeter_gradient', 'VertexPolygon', 'n_params', 'n_vertices']
@@ -213,7 +238,7 @@ class VertexPolygon:
     owns *a* domain and its conventions; this owns *families* of them.
 
         fam = VertexPolygon(4)
-        dom = fam(p)                 # a lappy.Polygon
+        dom = fam(p)                 # a chladni Polygon (Dirichlet)
         J   = fam.d_vertices_dp(p)   # (2n, 2n-4)
     """
 
@@ -245,9 +270,10 @@ class VertexPolygon:
         return d_vertices_dp(self._check(p), self.perim)
 
     def __call__(self, p, **kwargs):
-        """The `lappy.Polygon` for `p`.
+        """The `chladni.geometry.Polygon` for `p`, Dirichlet unless `bc` is given (chladni is
+        douse's backend since 2026-10-14; `lappy_domain` gives the deprecated lappy one).
 
-        Orientation is checked here rather than left to `lappy`, because the message matters to
+        Orientation is checked here rather than left to the solver, because the message matters to
         an optimizer: a counter-clockwise polygon and its mirror image are both valid shapes with
         the same spectrum, but only one of them is in this parametrization's range.
         """
@@ -257,6 +283,17 @@ class VertexPolygon:
                 'this p gives a clockwise polygon, which is outside the parametrization\'s '
                 'range. Its mirror image has the same spectrum and is inside; `param_vector` '
                 'produces the right orientation from any simple polygon.')
+        from chladni.geometry import Polygon
+        kwargs.setdefault("bc", "dir")
+        return Polygon(vertices, **kwargs)
+
+    def lappy_domain(self, p, **kwargs):
+        """The `lappy.Polygon` for `p`. DEPRECATED: for the lappy backend only (douse[lappy])."""
+        from lappy import Polygon
+        vertices = self.vertices(p)
+        if polygon_area(vertices) < 0:
+            raise ValueError('this p gives a clockwise polygon, which is outside the '
+                             'parametrization\'s range')
         return Polygon(vertices, **kwargs)
 
     def is_valid(self, p):

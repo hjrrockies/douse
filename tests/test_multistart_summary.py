@@ -21,14 +21,14 @@ def row(start, fun, sigma=1e-10, deficit=0.0, ok=True):
 
 
 def test_a_drifted_basis_is_excluded_from_the_grouping():
-    _, drifted, _, good = rm.partition([row(0, 2.53), row(1, 3.63, sigma=6.3e-04)], 1e-6)
+    _, drifted, _, good, _ = rm.partition([row(0, 2.53), row(1, 3.63, sigma=6.3e-04)], 1e-6)
     assert [r['start'] for r in drifted] == [1]
     assert [r['start'] for r in good] == [0]
 
 
 def test_a_missed_mode_is_excluded_THOUGH_ITS_SIGMA_IS_PRISTINE():
     """The 2.6203 failure exactly: sigma = 1.3e-09, clean by every basis measure, mode missing."""
-    _, drifted, skipped, good = rm.partition(
+    _, drifted, skipped, good, _ = rm.partition(
         [row(0, 2.53), row(2, 2.6203171651, sigma=1.3e-09, deficit=1.01)], 1e-6)
     assert drifted == []
     assert [r['start'] for r in skipped] == [2]
@@ -36,10 +36,24 @@ def test_a_missed_mode_is_excluded_THOUGH_ITS_SIGMA_IS_PRISTINE():
 
 
 def test_a_crashed_row_is_counted_and_not_grouped():
-    crashed, _, _, good = rm.partition(
+    crashed, _, _, good, _ = rm.partition(
         [row(0, 2.53), dict(N=6, k=1, start=1, ok=False, error='EigensolverFailure')], 1e-6)
     assert [r['start'] for r in crashed] == [1]
     assert [r['start'] for r in good] == [0]
+
+
+def test_a_row_without_a_health_statistic_is_reported_not_dropped():
+    """`nan > x` and `nan <= x` are both False, so a row with no `worst_sigma` used to fall out
+    of every bucket and every count -- which every chladni row did until the backend grew the
+    statistic (2026-10-14). Both summaries now name it UNCERTIFIED."""
+    from benchmarks import summarize_grid as sg
+    rows = [row(0, 2.53), row(1, 2.52, sigma=float('nan')), {**row(2, 2.51), 'worst_sigma': None}]
+    rows[2]['worst_sigma'] = float('nan')
+    crashed, drifted, skipped, good, uncertified = rm.partition(rows, 1e-6)
+    assert [r['start'] for r in uncertified] == [1, 2]
+    assert [r['start'] for r in good] == [0] and not crashed and not drifted
+    s = sg.summarize(rows, sigma_max=1e-6, res_max=1e-4)
+    assert s['n_uncertified'] == 2 and s['n_certified'] == 1 and s['n_total'] == 3
 
 
 def test_the_two_gates_are_the_ones_summarize_grid_uses():

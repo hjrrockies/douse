@@ -50,92 +50,35 @@ import warnings
 
 import numpy as np
 
-from lappy import Eigenproblem, basis_plan as BP
-from lappy.asymp import weyl_est
-
 from . import spectral_guard
 from .spectral_guard import weyl_report
-from lappy.core import EigensolverFailure, SourcesInsideDomain
-from lappy.mps import MPSEigensolver
+from .errors import DegenerateSpectrum, ShapeRefusal, SolverRefusal, UnresolvedSpectrum
 
 from .derivative import dlams_dp
 
-__all__ = ['SpectrumEvaluator', 'ObjectiveFunction', 'DegenerateSpectrum',
-           'ShapeRefusal', 'SolverRefusal', 'UnresolvedSpectrum']
+try:                                    # lappy is an optional, deprecated extra (douse[lappy])
+    from lappy import Eigenproblem, basis_plan as BP
+    from lappy.asymp import weyl_est
+    from lappy.core import EigensolverFailure, SourcesInsideDomain
+    from lappy.mps import MPSEigensolver
+    HAVE_LAPPY = True
+except ImportError:                     # the names the lappy evaluator's except clauses need
+    HAVE_LAPPY = False
+
+    class EigensolverFailure(Exception):
+        """Placeholder: lappy is not installed."""
+
+    class SourcesInsideDomain(ValueError):
+        """Placeholder: lappy is not installed."""
+
+__all__ = ['SpectrumEvaluator', 'LappySpectrumEvaluator', 'ObjectiveFunction',
+           'DegenerateSpectrum', 'ShapeRefusal', 'SolverRefusal', 'UnresolvedSpectrum']
 
 
-class ShapeRefusal(RuntimeError):
-    """The solver could not produce a usable spectrum at this shape.
-
-    ONE class for every way a wild shape can defeat the forward solver, because the caller's
-    response is the same for all of them: `maximize_ratio` treats the trial as UNREACHABLE --
-    shrink the radius, count it, try a smaller step, stop on a streak -- exactly as it already
-    treated `UnresolvedSpectrum`. Measured cost of not having it: five runs killed MID-RUN by
-    `EigensolverFailure` and one by the `FundamentalBasis` interior-source guard, every one of
-    them making progress at the time.
-
-    The distinction the two subclasses keep is diagnostic, not procedural. `UnresolvedSpectrum`
-    means a spectrum was computed and cannot be trusted to be `lam_1 .. lam_K`;
-    `SolverRefusal` means no spectrum came back at all.
-    """
-
-
-class SolverRefusal(ShapeRefusal):
-    """`lappy` declined to solve at this shape, and the shape is the reason.
-
-    Wraps `EigensolverFailure` (`bracket_mins`: "f has too many local minima" -- a tension curve
-    with no usable structure) and `SourcesInsideDomain` (the frozen plan's sources are no longer
-    exterior, i.e. the shape has moved out of the plan's reach). The original is kept as
-    `__cause__`, so a ledger row still records which one it was.
-
-    Deliberately raised only from `eigenvalues`, where `p` names a specific trial shape. The same
-    exception out of a fixed-shape call is a bug and should propagate.
-    """
-
-
-class UnresolvedSpectrum(ShapeRefusal):
-    """The returned set is not `lam_1 .. lam_K`, and a full solve did not repair it.
-
-    Raised rather than returned, because every consumer of `eigenvalues` reads the array as the
-    consecutive spectrum and there is no value of it that is honest here. A caller that can
-    treat a shape as unreachable -- `maximize_ratio` rejects the trial step and shrinks -- should
-    catch this; a caller that cannot should let it propagate and record the traceback. Catch
-    `ShapeRefusal` to cover this and `SolverRefusal` together, which is what both callers want.
-    """
-
-
-class DegenerateSpectrum(RuntimeError):
-    """Two tracked eigenvalues have merged, so the simple-eigenvalue gradient is meaningless.
-
-    At a multiple eigenvalue `lam` is only DIRECTIONALLY differentiable: the modes that emerge
-    under a perturbation `V` are the eigenvalues of `M(V)_ij = -int (du_i/dn)(du_j/dn)(V.n) ds`,
-    and `lappy.weighted_integral(..., mult=m)` returns exactly that matrix. What the
-    simple-eigenvalue path returns instead is built from `eigenfunction_coef(lam, mult=1)`, which
-    hands back an ARBITRARY vector out of the m-dimensional eigenspace -- so it is not a bad
-    approximation to the right answer, it is a different quantity.
-
-    Measured at the unit square, where lam_2 = lam_3 = 5 pi^2 exactly:
-
-        parameter      true directional derivatives      simple-eigenvalue path
-        p[0]              -14.222,  +14.222                  +14.032,  +14.032
-        p[2]              -32.847,  +32.847                   +9.212,   +9.212
-        p[3]              -29.609,  +29.609                   -4.820,   -4.820
-
-    Identical for both modes, wrong by factors of three to six, and carrying no sign that two
-    branches exist at all. Hence a raise rather than a warning: an optimizer that continued here
-    would follow a confident wrong gradient, and in a long run a warning is just noise.
-
-    Note the true splits are symmetric about zero -- `tr M = 0` in these directions -- which is
-    the general fact that SYMMETRIC functions of a cluster stay smooth even where the individual
-    eigenvalues do not. `lam_2 + lam_3` has an honest gradient at the square. Rephrasing an
-    objective in terms of the whole cluster is often cheaper than handling the nonsmoothness.
-    """
-
-
-class SpectrumEvaluator:
+class LappySpectrumEvaluator:
     """`p -> (lam_1..lam_K, d lam/dp)` for a fixed family, on a frozen basis plan.
 
-        ev = SpectrumEvaluator(VertexPolygon(4, perim=4.0), n_eigs=3)
+        ev = LappySpectrumEvaluator(VertexPolygon(4, perim=4.0), n_eigs=3)
         lams, J = ev(p)
 
     `target` sizes the basis and `prec` the eigenvalue search. The defaults are tighter than
@@ -147,6 +90,14 @@ class SpectrumEvaluator:
                  lam_max_window=6, warn_gap=1e-3, degenerate_tol=1e-6,
                  track_ttol=1e-8, use_track_set=True, replan_tol=1e-9, enforce_weyl=True,
                  spurious_tol=1e-4):
+        """DEPRECATED (2026-10-14): douse's default backend is chladni, `SpectrumEvaluator`.
+        This lappy evaluator needs the `douse[lappy]` extra and is kept so older results
+        reproduce."""
+        if not HAVE_LAPPY:
+            raise ImportError("LappySpectrumEvaluator needs lappy: install the douse[lappy] extra")
+        warnings.warn("LappySpectrumEvaluator is deprecated: douse's backend is chladni "
+                      "(`SpectrumEvaluator`). Kept so lappy results reproduce.",
+                      DeprecationWarning, stacklevel=2)
         self.family = family
         self.n_eigs = int(n_eigs)
         self.target = float(target)
@@ -212,7 +163,7 @@ class SpectrumEvaluator:
         self.min_gap = np.inf
 
     def __repr__(self):
-        return (f'SpectrumEvaluator({self.family!r}, n_eigs={self.n_eigs}, '
+        return (f'LappySpectrumEvaluator({self.family!r}, n_eigs={self.n_eigs}, '
                 f'target={self.target:.0e})')
 
     def plan(self, p):
@@ -225,7 +176,7 @@ class SpectrumEvaluator:
         if self._plan is None:
             at = self._plan_at if self._plan_at is not None else np.asarray(p, dtype=float)
             self._plan_built_at = np.array(at, dtype=float)
-            dom = self.family(at)
+            dom = self.family.lappy_domain(at)
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 self._plan = BP.plan_basis(dom, weyl_est(self.lam_max_window, dom),
@@ -234,7 +185,7 @@ class SpectrumEvaluator:
 
     def solver(self, p):
         """A solver for `family(p)`, on the frozen plan."""
-        dom = self.family(p)
+        dom = self.family.lappy_domain(p)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             return dom, MPSEigensolver.from_domain(
@@ -600,6 +551,7 @@ class ObjectiveFunction:
         self.invalid_value = float(invalid_value)
         self.history = []
         self.n_invalid = 0
+        self.n_refused = 0           # `ShapeRefusal`s returned as `invalid_value`
 
     def __repr__(self):
         return f'ObjectiveFunction({self.evaluator!r}, {self.objective!r})'
@@ -612,8 +564,27 @@ class ObjectiveFunction:
                                      grad_norm=0.0, valid=False))
             return self.invalid_value, np.zeros_like(p)
 
-        lams, dlams = self.evaluator(p)
+        try:
+            lams, dlams = self.evaluator(p)
+        except ShapeRefusal as exc:
+            # The solver could not certify this shape. The same answer as an inadmissible `p`:
+            # a line search backs off from `inf`, which is the honest value of an objective that
+            # cannot be evaluated. Counted and recorded, so a run that keeps hitting refusals
+            # is visible in `history` rather than in a traceback (2026-10-14).
+            self.n_refused += 1
+            self.history.append(dict(p=p.copy(), lams=None, value=self.invalid_value,
+                                     grad_norm=0.0, valid=False, refused=str(exc)))
+            return self.invalid_value, np.zeros_like(p)
+        # The evaluator may return more than `n_eigs` values (a multiple level at the top is
+        # returned whole); the objective sees exactly the count it declared.
+        K = self.objective.n_eigs
+        lams, dlams = np.asarray(lams, dtype=float)[:K], np.asarray(dlams, dtype=float)[:K]
         val, grad = self.objective(lams, dlams)
         self.history.append(dict(p=p.copy(), lams=lams.copy(), value=float(val),
                                  grad_norm=float(np.linalg.norm(grad)), valid=True))
         return float(val), np.asarray(grad, dtype=float)
+
+
+# The default backend (2026-10-14): chladni. `SpectrumEvaluator` is `chladni_backend`'s evaluator;
+# `LappySpectrumEvaluator` above is the deprecated lappy one.
+from .chladni_backend import SpectrumEvaluator  # noqa: E402
