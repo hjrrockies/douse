@@ -135,7 +135,7 @@ def test_collect_prefers_a_repaired_row_and_leaves_out_one_still_suspect(tmp_pat
         fh.write(json.dumps(_row(0, [10.0, 20.0, 30.0, 40.0], sha=spec.sha)) + '\n')   # fixed
     rows, rep = fg.collect(spec, tmp_path)
     assert rows[0].get('repaired') and rows[0]['lam'] == [10.0, 20.0, 30.0, 40.0]
-    assert 'suspect rows (count audit, duplicated or unresolved levels): 2; ' \
+    assert 'suspect rows (count audit, duplicated or unresolved levels, last-rung fallback): 2; ' \
            'repaired 1, awaiting repair 1' in rep
     _, _, _, _, ids = fg.to_arrays(spec, rows)
     assert list(ids) == [0, 2]                                # id 1 is still suspect: left out
@@ -174,3 +174,13 @@ def test_slurm_mail_is_one_notice_per_array_and_comes_from_the_environment(monke
     assert '#SBATCH --mail-type=END,FAIL' in text and '#SBATCH --mail-user=someone@example.edu' in text
     assert 'ARRAY_TASKS' not in text
     assert mail_address('other@example.edu') == 'other@example.edu'
+
+
+def test_a_fallback_to_the_planners_last_rung_is_suspect_and_an_earlier_one_is_not():
+    """Full triangle grid: 61% of last-rung fallbacks were broken, 0.6% of earlier ones."""
+    last = 'planner: no rung met prec=1e-10; returning rung 4 of 4, the one with the most levels met'
+    early = 'planner: no rung met prec=1e-10; returning rung 2 of 4, the one with the most levels met'
+    assert fg.suspect(_row(0, [1.0, 2.0], flags=[last])) == ['planner fell back to its last rung']
+    assert fg.suspect(_row(0, [1.0, 2.0], flags=[early])) == []
+    repaired = _row(0, [1.0, 2.0], flags=[last], repair_of=['planner fell back to its last rung'])
+    assert fg.suspect(repaired) == []                    # a clean repair is kept, whatever its rung

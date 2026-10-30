@@ -40,6 +40,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shlex
 import sys
 import time
@@ -296,6 +297,9 @@ def run(spec, task, ntasks, out, limit=None):
 # not a tuning knob.
 UNRESOLVED_REL = 1e-4
 
+# chladni's planner flag when no rung met prec: '... returning rung 4 of 4, the one with ...'
+_FALLBACK = re.compile(r'returning rung (\d+) of (\d+)')
+
 
 def suspect(row):
     """Why a row's spectrum cannot be trusted as is: `[]` for a clean row.
@@ -309,7 +313,13 @@ def suspect(row):
       so two simple levels that the bounds cannot separate are one eigenvalue found twice;
     * `unresolved level` -- a level whose error bound exceeds `UNRESOLVED_REL` of its value: not
       an eigenvalue at all (full triangle grid: 10 rows, bounds 0.3..18 x the level, three of them
-      invisible to the count audit, one a well-shaped 45-50-85 degree triangle).
+      invisible to the count audit, one a well-shaped 45-50-85 degree triangle);
+    * `planner fell back to its last rung` -- no rung met `prec` and the planner returned its
+      LAST one. On the full triangle grid that outcome was suspect by the rules above in 11 of
+      18 rows (61%), against 0 of 1960 rows where a rung met `prec` and 2 of 327 that fell back
+      to an earlier rung; re-solving the other 7 is cheaper than trusting their bounds. Not
+      applied to a repaired row (`repair_of`): the re-solve is the second look, and it is judged
+      on the evidence rules above only, so a clean repair is never dropped for its rung.
     """
     why = []
     if row.get('status') != 'ok':
@@ -324,6 +334,11 @@ def suspect(row):
     for i in range(len(lam)):
         if bound[i] > UNRESOLVED_REL*abs(lam[i]):
             why.append(f'unresolved level {i + 1}')
+            break
+    for f in ([] if row.get('repair_of') is not None else row.get('flags', ())):
+        m = _FALLBACK.search(str(f))
+        if m and m.group(1) == m.group(2):
+            why.append('planner fell back to its last rung')
             break
     return why
 
@@ -427,7 +442,7 @@ def collect(spec, out):
     unmet = sum(1 for r in rows.values() if r['status'] == 'ok' and not all(r['met']))
     lines = [f'# {spec.name} @ {spec.sha}: {len(rows)}/{len(pts)} point(s) solved, '
              f'{len(missing)} missing, status {st}',
-             f'  suspect rows (count audit, duplicated or unresolved levels): '
+             f'  suspect rows (count audit, duplicated or unresolved levels, last-rung fallback): '
              f'{len(flagged)}; repaired {len(repaired)}, awaiting repair {len(pending)}, '
              f'still suspect after repair {len([i for i in still if i in repaired])}'
              + (f' -> run `repair`' if pending else '')
