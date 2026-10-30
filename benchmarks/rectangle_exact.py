@@ -1,6 +1,12 @@
 """`max lam_k/lam_1` over RECTANGLES of fixed perimeter, exactly, for every `k`. No eigensolver.
 
     uv run python -m benchmarks.rectangle_exact [--kmax 60] [--perim 4.0]
+    uv run python -m benchmarks.rectangle_exact --gap [--kmax 31]
+
+`--gap` tabulates `max (lam_{K+1} - lam_K)/lam_1` instead, in exact rational arithmetic with no
+grid at all (`best_gap`): every value is a rational at a rational `L^2/H^2`, and the square is
+the maximizer only at K = 1, 3, 6, 8, 13, 19, 30 of K <= 30. Like the ratio table it is a lower
+bound for the same problem over quadrilaterals.
 
 WHY THIS EXISTS. Everything else in this repo tests the optimizer against a known answer at ONE
 `k` -- the square at k=2, the `sqrt(8/3)` rectangle at k=3. On a rectangle `L x H` the spectrum is
@@ -166,11 +172,108 @@ def best_rectangle(k, perim=4.0, n_grid=4001):
     return L, best
 
 
+# ---- gaps ---------------------------------------------------------------------------------------
+
+def best_gap(K):
+    """`max (lam_{K+1} - lam_K)/lam_1` over rectangles, EXACTLY: a rational value at a rational
+    `t = L^2/H^2`, found with no grid and no tolerance. `K` is 1-based (K = 1 is lam_2 - lam_1).
+
+    WHY THE MAXIMUM IS AT A CROSSING. Scale out `pi^2/L^2` and take `L <= H`, so `t` is in (0, 1].
+    Normalized by `lam_1 = (1 + t)`, every mode is a Mobius function of `t`,
+
+        nu_{m,n}(t) = (m^2 + n^2 t)/(1 + t),
+
+    and so is the difference of any two FIXED modes, `((m'^2 - m^2) + (n'^2 - n^2) t)/(1 + t)`,
+    which is therefore monotone in `t`. The gap is that difference for whichever modes hold slots
+    `K` and `K + 1`; between two consecutive crossings of any pair of modes the holders do not
+    change, so the gap is monotone there and its maximum over `(0, 1]` sits at a crossing
+    `t = (m^2 - m'^2)/(n'^2 - n^2)` or at the square, `t = 1`. Unlike `lam_k/lam_1`, whose
+    optimum is a crossing AT slot k, the gap's optimum is a crossing ADJACENT to the pair: it is
+    pushed open until `lam_K` meets `lam_{K-1}` from above or `lam_{K+1}` meets `lam_{K+2}` from
+    below.
+
+    WHY THE CANDIDATE SET IS FINITE. For `t <= t1 = 3/((K+1)^2 - 1)` the lowest `K + 1` modes are
+    `(1, 1..K+1)` and the gap is `(2K + 1) t/(1 + t)`, increasing, so `(0, t1]` contributes only
+    `t1`, itself a crossing. On `[t1, 1]` the `(K+1)`-th value is at most
+    `nu_{1,K+1} <= (1 + (K+1)^2 t)/(1 + t)`, so a mode in the lowest `K + 1` has
+    `m^2 <= 1 + (K+1)^2` and `n^2 <= 1/t1 + (K+1)^2`: finitely many modes, finitely many crossings.
+
+    Candidates are ranked in floating point and the leaders (within 1e-9) re-evaluated in
+    `Fraction`, so the returned value is the exact rational maximum. Ties (several maximizers)
+    are reported. Returns a dict: `value`, `t` (Fractions), `L_over_H` (= sqrt(t) <= 1), `slots`
+    (the (m, n) modes in slots K and K+1), `lower_double`/`upper_double` (lam_K = lam_{K-1},
+    lam_{K+1} = lam_{K+2} at the optimum), `maximizers` (every maximizing t), `n_candidates`.
+    """
+    K = int(K)
+    if K < 1:
+        raise ValueError(f'K must be at least 1 (lam_2 - lam_1); got {K}')
+    t1 = Fraction(3, (K + 1)**2 - 1)
+    m_max = int(np.floor(np.sqrt(1 + (K + 1)**2)))
+    n_max = int(np.floor(np.sqrt(float(1/t1) + (K + 1)**2)))
+    modes = [(m, n) for m in range(1, m_max + 1) for n in range(1, n_max + 1)]
+    # every crossing of two modes inside [t1, 1], plus the square
+    ts = {Fraction(1)}
+    m2 = sorted({m*m for m, _ in modes})
+    n2 = sorted({n*n for _, n in modes})
+    for a in m2:
+        for b in m2:
+            if b >= a:
+                break
+            for c in n2:
+                for d in n2:
+                    if d <= c:
+                        continue
+                    t = Fraction(a - b, d - c)       # m^2 + n^2 t = m'^2 + n'^2 t
+                    if t1 <= t <= 1:
+                        ts.add(t)
+    ts = sorted(ts)
+    M = np.array([m*m for m, _ in modes], dtype=float)
+    N = np.array([n*n for _, n in modes], dtype=float)
+    tf = np.array([float(t) for t in ts])
+    vals = np.empty(len(ts))
+    for i0 in range(0, len(ts), 2048):
+        tt = tf[i0:i0 + 2048, None]
+        nu = np.partition((M[None, :] + N[None, :]*tt)/(1 + tt), K, axis=1)[:, :K + 1]
+        nu.sort(axis=1)
+        vals[i0:i0 + 2048] = nu[:, K] - nu[:, K - 1]
+    lead = np.flatnonzero(vals >= vals.max()*(1 - 1e-9))
+
+    def exact(t):
+        nu = sorted(((Fraction(m*m) + n*n*t)/(1 + t), (m, n)) for m, n in modes)
+        return nu[K][0] - nu[K - 1][0], nu
+
+    scored = [(exact(ts[i]), ts[i]) for i in lead]
+    best = max(v for (v, _), _ in scored)
+    winners = [(t, nu) for (v, nu), t in scored if v == best]
+    t, nu = winners[0]
+    # which side of the pair is pinned at the optimum: lam_K = lam_{K-1}, lam_{K+1} = lam_{K+2}
+    lower = K >= 2 and nu[K - 2][0] == nu[K - 1][0]
+    upper = nu[K][0] == nu[K + 1][0]
+    return dict(K=K, value=best, t=t, L_over_H=float(np.sqrt(float(t))),
+                slots=(nu[K - 1][1], nu[K][1]), lower_double=bool(lower), upper_double=bool(upper),
+                maximizers=[w for w, _ in winners], n_candidates=len(ts))
+
+
+def gap_table(kmax):
+    """`best_gap(K)` for K = 1..kmax, with the square's own gap beside it."""
+    rows = []
+    for K in range(1, kmax + 1):
+        r = best_gap(K)
+        sq = sorted(Fraction(m*m + n*n, 2) for m in range(1, K + 3) for n in range(1, K + 3))
+        r['square'] = sq[K] - sq[K - 1]
+        rows.append(r)
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--kmax', type=int, default=40, help='largest 1-based eigenvalue index')
     ap.add_argument('--perim', type=float, default=4.0)
+    ap.add_argument('--gap', action='store_true',
+                    help='the gap table, max (lam_{K+1} - lam_K)/lam_1, K = 1..kmax-1, exactly')
     args = ap.parse_args()
+    if args.gap:
+        return main_gap(args.kmax - 1)
 
     perim = args.perim
     L_sq = perim/4
@@ -217,6 +320,31 @@ def main():
     with open(os.path.join(OUT, f'perim{perim:g}.json'), 'w') as fh:
         json.dump(rows, fh, indent=1)
     print(f'\n  written to {OUT}')
+
+
+def main_gap(kmax):
+    rows = gap_table(kmax)
+    print('max (lam_{K+1} - lam_K)/lam_1 over rectangles, exactly (scale-free; t = L^2/H^2, L <= H)\n')
+    print('   K    gap       = float          t      L/H      at the square  pinned   slots K, K+1')
+    print('  ' + '-'*92)
+    for r in rows:
+        pin = ('lo+hi' if r['lower_double'] and r['upper_double'] else
+               'lo' if r['lower_double'] else 'hi' if r['upper_double'] else '-')
+        tie = f"  (+{len(r['maximizers']) - 1} tie)" if len(r['maximizers']) > 1 else ''
+        print(f"  {r['K']:3d}  {str(r['value']):>8s}  {float(r['value']):12.9f}  {str(r['t']):>7s}  "
+              f"{r['L_over_H']:7.5f}  {str(r['square']):>8s}  {pin:>6s}   {r['slots']}{tie}")
+    n_sq = [r['K'] for r in rows if r['t'] == 1]
+    print(f"\n  the square is a maximizer at K = {n_sq}")
+    os.makedirs(OUT, exist_ok=True)
+    out = os.path.join(OUT, 'gaps.json')
+    with open(out, 'w') as fh:
+        json.dump([dict(K=r['K'], value=str(r['value']), value_float=float(r['value']),
+                        t=str(r['t']), L_over_H=r['L_over_H'], square=str(r['square']),
+                        lower_double=r['lower_double'], upper_double=r['upper_double'],
+                        slots=[list(x) for x in r['slots']],
+                        maximizers=[str(t) for t in r['maximizers']]) for r in rows],
+                  fh, indent=1)
+    print(f'\n  written to {out}')
 
 
 if __name__ == '__main__':
