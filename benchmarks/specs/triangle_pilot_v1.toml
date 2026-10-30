@@ -1,7 +1,6 @@
 # v1 (2026-10-30): triangle_pilot_v0 with chladni's opt-in coarse bracketing
 # (`Eigenproblem(coarse_bracket=True)`, chladni PR #20), which took the sharp apex line from
-# 0/15 to 15/15 met levels at 1e-10. Needs a chladni that has it (diag/triangle-apex-planner
-# until #20 merges).
+# 0/15 to 15/15 met levels at 1e-10. Needs chladni main at or after e1ebaf8.
 #
 # Pilot for triangle_grid_v0 (2026-10-26): the same recipe on a coarse lattice, one point per
 # task, to check the ARC install and map where chladni falls short of prec before the full grid.

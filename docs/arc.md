@@ -21,7 +21,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ```bash
 mkdir -p ~/projects/thesis && cd ~/projects/thesis
 git clone https://github.com/hjrrockies/douse.git
-git clone -b diag/triangle-apex-planner https://github.com/hjrrockies/chladni.git
+git clone https://github.com/hjrrockies/chladni.git
 git clone https://github.com/hjrrockies/lappy.git
 ```
 
@@ -34,9 +34,8 @@ lacks it. Without the pin uv takes the newest Python it finds, and on a release 
 dependencies' wheels (3.15 on TinkerCliffs, 2026-10-30) it compiles cvxpy's `sparsediffpy`
 from source and fails on BLAS.
 
-The branches are temporary: chladni's `diag/triangle-apex-planner` is chladni `main` plus the
-opt-in `coarse_bracket` path (chladni PR #20) that the v1 specs use, and the douse branch is
-douse PR #2. Once those merge, clone both at `main`.
+chladni is cloned at `main`, which has the opt-in `coarse_bracket` path (chladni PR #20) that
+the v1 specs use. The douse branch is douse PR #2; once it merges, use douse `main`.
 
 Then the environment check, on a COMPUTE node (it solves the unit square and checks the LAPACK
 route gsvd4py found; a failed solve here means nothing downstream is worth submitting):
