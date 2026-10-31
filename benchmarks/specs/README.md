@@ -15,6 +15,7 @@ identity (`douse_sha`, `chladni_sha`) is recorded beside the spec, not inside it
 | `{parallelogram,isosceles_trapezoid,kite}_pilot_v1.toml` | the quadrilateral families at h = 0.05 (290 / 592 / 192 points), same recipe, to set the production spacing |
 | `{parallelogram,isosceles_trapezoid}_grid_v1.toml` | h = 0.02 at prec 1e-9, height above 0.1 (`min_height = 0.12`): 1682 / 3500 points, ~310 / ~260 CPU-h |
 | `kite_grid_v1.toml` | the kite pilot's recipe at h = 0.02 (1181 points, ~105 CPU-h) |
+| `thesis_ratio_v1.toml` | the thesis table: N = 3..8, k = 2..6, 8 starts, v0's recipe; 240 tasks on ARC |
 | `thesis_ratio_pilot_v1.toml` | timing pilot for the ratio table: N = 6, 8 at k = 2, 6 and N = 10 at k = 2, 2 starts each, on ARC |
 
 ## On the cluster (Slurm)
