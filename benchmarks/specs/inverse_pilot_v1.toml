@@ -1,0 +1,34 @@
+# Pilot (2026-10-31) for the inverse-problem results (decision D4): recover polygons from their
+# first K Dirichlet eigenvalues, up to scale and congruence (`benchmarks/inverse_multistart.py`).
+# Measures recovery rates and cost per fit before the noise sweep. Cases:
+#  - a 1.2 x 0.8 rectangle, whose spectrum is exact: the validation case (recovery is second
+#    order there, `tests/test_inverse_smoke.py`);
+#  - three triangles (vertices 0, 1, a + ib, as family_grid writes them), from K = 3 (the
+#    minimum: 2 ratios for 2 parameters) up, the Antunes-Freitas setting;
+#  - a generic convex quadrilateral and pentagon from K = 2N - 3 (the minimum) up.
+# A target that is not a rectangle is one chladni solve at target_prec.
+name = "inverse_pilot_v1"
+notes = "Pilot: noiseless and sigma = 1e-4 only, one draw, 4 starts."
+cases = [
+  {name = "rect_1.2x0.8", kind = "rectangle", L = 1.2, H = 0.8, K = [5, 6, 10]},
+  {name = "tri_acute",    kind = "polygon", vertices = [[0, 0], [1, 0], [0.3, 0.5]],   K = [3, 4, 6, 10]},
+  {name = "tri_obtuse",   kind = "polygon", vertices = [[0, 0], [1, 0], [0.2, 0.25]],  K = [3, 4, 6, 10]},
+  {name = "tri_near_eq",  kind = "polygon", vertices = [[0, 0], [1, 0], [0.45, 0.75]], K = [3, 4, 6, 10]},
+  {name = "quad",         kind = "polygon", vertices = [[0, 0], [1, 0], [1.2, 0.7], [0.3, 0.9]], K = [5, 6, 10]},
+  {name = "pent",         kind = "polygon", vertices = [[0, 0], [1, 0], [1.3, 0.6], [0.6, 1.1], [-0.2, 0.6]], K = [7, 10]},
+]
+sigmas = [0.0, 1e-4]
+noise_draws = 1
+starts = 4
+seed0 = 0
+max_iter = 40
+max_step = 0.1
+rtol = 1e-19
+prec = 1e-10
+target_prec = 1e-11
+perim = 4.0
+tasks = 160
+slurm_mem = "2G"
+slurm_time = "12:00:00"
+slurm_account = "siallocation"
+slurm_partition = "normal_q"
