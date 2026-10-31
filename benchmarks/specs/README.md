@@ -17,6 +17,7 @@ identity (`douse_sha`, `chladni_sha`) is recorded beside the spec, not inside it
 | `kite_grid_v1.toml` | the kite pilot's recipe at h = 0.02 (1181 points, ~105 CPU-h) |
 | `thesis_ratio_v1.toml` | the thesis table: N = 3..8, k = 2..6, 8 starts, v0's recipe; 240 tasks on ARC |
 | `thesis_ratio_pilot_v1.toml` | timing pilot for the ratio table: N = 6, 8 at k = 2, 6 and N = 10 at k = 2, 2 starts each, on ARC |
+| `inverse_pilot_v1.toml` | `inverse_multistart`: recover a rectangle, 3 triangles, a quadrilateral and a pentagon from K eigenvalues, noiseless and sigma = 1e-4, 4 starts (160 fits) |
 
 ## On the cluster (Slurm)
 
