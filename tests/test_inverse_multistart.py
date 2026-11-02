@@ -102,3 +102,26 @@ def test_the_pilot_spec_loads_and_every_case_is_determined():
     for case in spec.cases:
         N = len(im.case_vertices(case, spec.perim))
         assert min(case['K']) - 1 >= 2*N - 4, case['name']
+
+
+def test_grid_starts_is_content_only_when_set(tmp_path):
+    a = _spec(tmp_path)
+    b = _spec(tmp_path, SPEC + 'grid_starts = ""\n')
+    c = _spec(tmp_path, SPEC + 'grid_starts = "benchmarks/run/family_grid/triangle_grid_v1"\n')
+    assert a.sha == b.sha != c.sha
+
+
+def test_the_grid_start_is_the_triangle_with_the_nearest_ratios(tmp_path):
+    """A synthetic ledger of three 'triangles' with made-up spectra; the target's ratios are
+    nearest the second, and its vertices come back at the requested perimeter."""
+    rows = []
+    for i, scale in enumerate((1.0, 2.0, 3.0)):
+        v = [[0, 0], [1, 0], [0.1*(i + 1), 0.5]]
+        lam = [10.0*(1 + scale*j) for j in range(12)]
+        rows.append(dict(id=i, status='ok', vertices=v, unfolded=lam))
+    (tmp_path / 'task_0.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in rows))
+    im._grid_table.cache_clear()
+    target = np.array([10.0*(1 + 2.1*j) for j in range(4)])
+    v, i = im.grid_start(str(tmp_path), target, 4.0)
+    assert i == 1 and im._perimeter(v) == pytest.approx(4.0)
+    assert np.allclose(v/v[1], np.array([0, 1, 0.2 + 0.5j]))

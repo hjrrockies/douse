@@ -68,6 +68,16 @@ class InverseSpec:
     sigmas: tuple = (0.0,)
     noise_draws: int = 1
     starts: int = 4
+    # A family_grid ledger directory (relative to the douse checkout) for triangle cases: start 0
+    # is then the grid triangle whose first K ratios best match the (noisy) target -- a lookup
+    # that uses only the data, as a user would -- and starts 1.. are random as before. Empty:
+    # every start is random. inverse_pilot_v1, 2026-11-02: from random starts alone, all three
+    # fits of an obtuse triangle at K = 10 converged to the same wrong isosceles minimum.
+    grid_starts: str = ''
+    # Fit log(lam_1/lam_j) instead of lam_1/lam_j (`SpectralMatch(log=True)`): under RELATIVE
+    # noise on the eigenvalues every log-ratio has the same spread, whereas the plain ratio's
+    # spread shrinks with lam_1/lam_j and the high modes count for less.
+    log: bool = False
     seed0: int = 0
     max_iter: int = 40
     max_step: float = 0.1
@@ -106,6 +116,10 @@ class InverseSpec:
         d = {k: getattr(self, k) for k in self.__dataclass_fields__ if k not in skip}
         d['cases'] = [dict(c) for c in self.cases]
         d['sigmas'] = list(self.sigmas)
+        if not self.grid_starts:
+            d.pop('grid_starts')          # specs written before the key keep their hash
+        if not self.log:
+            d.pop('log')
         return d
 
     @property
@@ -244,6 +258,74 @@ def _angles_deg(v):
     return np.degrees(np.mod(np.angle(prev/nxt), 2*np.pi))
 
 
+# ---- grid starts and conditioning --------------------------------------------------------------
+
+@lru_cache(maxsize=None)
+def _grid_table(folder):
+    """`(vertices list, unfolded eigenvalue array)` from a family_grid ledger directory: every
+    `ok` triangle row, the first 15 eigenvalues. Suspect rows are kept -- a start only needs to be
+    near, and the fit re-solves from it."""
+    root = pathlib.Path(folder)
+    if not root.is_absolute():
+        root = PACKAGE_ROOT/root
+    verts, lams = [], []
+    for f in sorted(root.glob('task_*.jsonl')):
+        with open(f) as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                r = json.loads(line)
+                if r.get('status') == 'ok' and len(r.get('unfolded', [])) >= 10:
+                    verts.append(np.array([complex(x, y) for x, y in r['vertices']]))
+                    lams.append(np.asarray(r['unfolded'][:15], dtype=float))
+    if not verts:
+        raise FileNotFoundError(f'no family_grid rows under {root}')
+    n = min(len(l) for l in lams)
+    return verts, np.array([l[:n] for l in lams])
+
+
+def grid_start(folder, target, perim):
+    """The grid triangle whose ratios `lam_1/lam_j` (j <= K) are nearest the target's, scaled to
+    perimeter `perim`, and its index in the table."""
+    verts, lams = _grid_table(folder)
+    K = len(target)
+    if K > lams.shape[1]:
+        raise ValueError(f'the grid stores {lams.shape[1]} eigenvalues; K = {K}')
+    nu = lams[:, :1]/lams[:, 1:K]
+    d = np.sum((nu - target[0]/np.asarray(target[1:]))**2, axis=1)
+    i = int(np.argmin(d))
+    v = verts[i]
+    return v*perim/_perimeter(v), i
+
+
+@lru_cache(maxsize=None)
+def _true_conditioning(key, K, prec):
+    """Singular values of the ratio residual's Jacobian at the TRUE shape, for the first K
+    eigenvalues: how much a shape change moves the K - 1 ratios. The smallest sets the noise
+    amplification (inverse_pilot_v1: 4e-5 for the pentagon at the minimum K = 7, 3e-3 at K = 10)."""
+    from douse import SpectrumEvaluator, VertexPolygon, param_vector
+    from douse.objective import SpectralMatch
+    case = json.loads(key)
+    w = case_vertices(case, case['_perim'])
+    fam = VertexPolygon(len(w), perim=case['_perim'])
+    ev = SpectrumEvaluator(fam, n_eigs=K, prec=prec, degenerate_tol=0.0, warn_gap=0.0)
+    p = param_vector(w, case['_perim'])
+    lam, J = ev(p)
+    lam, J = np.asarray(lam)[:K], np.asarray(J)[:K]
+    _, Jr = SpectralMatch(lam).residual(lam, J)
+    return tuple(float(x) for x in np.linalg.svd(Jr, compute_uv=False))
+
+
+def true_conditioning(spec, case, K):
+    """`true_conditioning` for a case, or None when the solve at the true shape is refused."""
+    from douse.errors import ShapeRefusal
+    key = json.dumps(dict(case, _perim=spec.perim), sort_keys=True)
+    try:
+        return list(_true_conditioning(key, K, spec.prec))
+    except ShapeRefusal:
+        return None
+
+
 # ---- one run ----------------------------------------------------------------------------------
 
 def run_one(spec, rid, ci, K, sigma, draw, start):
@@ -278,9 +360,15 @@ def run_one(spec, rid, ci, K, sigma, draw, start):
             # with no spectrum (2026-10-31, tri_acute start 1: a random triangle missed 1e-10 on
             # all 3 levels). Redraw j uses start index `start + 1000 j`.
             redraws = []
+            row['start_kind'] = 'random'
             for j in range(MAX_REDRAWS + 1):
-                p0 = param_vector(start_shape(N, start + 1000*j, spec.seed0, spec.perim),
-                                  spec.perim)
+                if start == 0 and j == 0 and spec.grid_starts and N == 3:
+                    v0, gi = grid_start(spec.grid_starts, target, spec.perim)
+                    row.update(start_kind='grid', grid_index=gi)
+                    p0 = param_vector(v0, spec.perim)
+                else:
+                    p0 = param_vector(start_shape(N, start + 1000*j, spec.seed0, spec.perim),
+                                      spec.perim)
                 try:
                     ev(p0)
                     break
@@ -291,7 +379,7 @@ def run_one(spec, rid, ci, K, sigma, draw, start):
                 raise ShapeRefusal(f'{len(redraws)} start shapes refused; last: {redraws[-1]}')
             row['redraws'] = redraws
             z0 = fam.vertices(p0)
-            res = gauss_newton(ev, SpectralMatch(target), p0, max_iter=spec.max_iter,
+            res = gauss_newton(ev, SpectralMatch(target, log=spec.log), p0, max_iter=spec.max_iter,
                                max_step=spec.max_step, rtol=spec.rtol)
             z = fam.vertices(res.x)
             err, zm = congruence_error(z, w)
@@ -303,7 +391,9 @@ def run_one(spec, rid, ci, K, sigma, draw, start):
                 ratio_err = float(np.max(np.abs(fit[0]/fit[1:] - lam[0]/lam[1:])))
             except ShapeRefusal:
                 ratio_err = float('nan')
+            sv = true_conditioning(spec, case, K)
             row.update(status='ok', success=bool(res.success), message=str(res.message),
+                       true_sv=sv,
                        loss=float(res.fun), nit=int(res.nit), nfev=int(res.nfev),
                        n_refused=int(res.n_refused), grad_norm=float(res.grad_norm),
                        shape_err=err, start_err=err0, ratio_err=ratio_err,
@@ -395,6 +485,7 @@ def summarize(spec, rows):
         out.append(dict(case=key[0], N=rs[0]['N'], K=key[1], sigma=key[2], runs=len(rs),
                         errors=len(rs) - len(ok), determined=rs[0]['determined'],
                         recovered=sum(r['recovered'] for r in ok), same_basin=same,
+                        sv_min=next((min(r['true_sv']) for r in ok if r.get('true_sv')), np.nan),
                         best_err_median=float(np.median(best)) if best else np.nan,
                         best_err_max=float(np.max(best)) if best else np.nan,
                         wall_median=float(np.median([r['wall'] for r in rs]))))
@@ -407,12 +498,12 @@ def collect(spec, out):
     lines = [f'# {spec.name} @ {spec.sha}: {len(rows)}/{n} run(s), {n - len(rows)} missing, '
              f'{foreign} row(s) from another spec_sha ignored',
              f"  {'case':>12s}  N   K  {'sigma':>7s}  runs  err  recovered  same  "
-             f"{'best err (med)':>14s}  {'(max)':>8s}  wall med"]
+             f"{'best err (med)':>14s}  {'(max)':>8s}  {'sv min':>7s}  wall med"]
     for s in summarize(spec, rows):
         lines.append(f"  {s['case']:>12s}  {s['N']}  {s['K']:2d}  {s['sigma']:7.0e}  "
                      f"{s['runs']:4d}  {s['errors']:3d}  {s['recovered']:4d}/{s['runs'] - s['errors']:<4d} "
                      f"{s['same_basin']:4d}  "
-                     f"{s['best_err_median']:14.2e}  {s['best_err_max']:8.2e}  "
+                     f"{s['best_err_median']:14.2e}  {s['best_err_max']:8.2e}  {s['sv_min']:7.1e}  "
                      f"{s['wall_median']:7.0f}s{'' if s['determined'] else '  (underdetermined)'}")
     walls = [r['wall'] for r in rows.values()]
     if walls:

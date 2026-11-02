@@ -18,6 +18,7 @@ identity (`douse_sha`, `chladni_sha`) is recorded beside the spec, not inside it
 | `thesis_ratio_v2.toml` | v1's N = 6..8 cells again: 1200 iterations at prec 1e-9 (v1 certified 24 of 120 starts there) |
 | `thesis_ratio_v1.toml` | the thesis table: N = 3..8, k = 2..6, 8 starts, v0's recipe; 240 tasks on ARC |
 | `thesis_ratio_pilot_v1.toml` | timing pilot for the ratio table: N = 6, 8 at k = 2, 6 and N = 10 at k = 2, 2 starts each, on ARC |
+| `inverse_v1.toml` | the noise sweep: 8 cases, K from 2N - 3 to 10, sigma 0..1e-2 x 3 draws, 3 starts (triangle start 0 a grid lookup), prec 1e-9; 1344 fits |
 | `inverse_pilot_v1.toml` | `inverse_multistart`: recover a rectangle, 3 triangles, a quadrilateral and a pentagon from K eigenvalues, noiseless and sigma = 1e-4, 4 starts (160 fits) |
 
 ## On the cluster (Slurm)
