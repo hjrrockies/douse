@@ -69,6 +69,13 @@ def refusal_for(spec):
     """
     if getattr(spec, "declined", False):
         return SolverRefusal(f"chladni declined this shape: {'; '.join(spec.flags)}")
+    # A RECORD WITHOUT ITS SOLVER has a value but no shape derivative (`SolveRecord.hadamard`
+    # needs the solver), and the derivative code then failed with `AttributeError: 'NoneType'
+    # object has no attribute 'domain'` -- 6 of 8 fits on an obtuse triangle at K = 6,
+    # inverse_pilot_v1 (2026-11-02). Refused here, so an optimizer shortens the step instead.
+    if getattr(spec, "solver", True) is None:
+        return SolverRefusal("chladni returned a spectrum without its solver (no shape "
+                             f"derivative): {'; '.join(spec.flags) or 'no flags'}")
     bad = [f for f in spec.flags if not f.startswith("count audit: unaudited")]
     if bad:
         return UnresolvedSpectrum("chladni: " + "; ".join(bad))
