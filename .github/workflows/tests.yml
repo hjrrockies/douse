@@ -7,7 +7,7 @@ name: tests
 # environment.
 on:
   push:
-    branches: [main]
+    branches: [main, thesis]
   pull_request:
   workflow_dispatch:
 
