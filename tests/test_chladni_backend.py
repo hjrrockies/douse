@@ -97,6 +97,15 @@ def test_chladni_flags_map_onto_douses_refusals(flags, declined, want):
     assert (exc is None) if want is None else isinstance(exc, want), exc
 
 
+def test_a_record_without_its_solver_is_refused():
+    """It has a value but no shape derivative; accepting it crashed the derivative code."""
+    rec = _Spec(())
+    rec.solver = None
+    assert isinstance(refusal_for(rec), SolverRefusal)
+    rec.solver = object()
+    assert refusal_for(rec) is None
+
+
 @pytest.mark.slow
 def test_cluster_matrices_near_a_double_carry_the_members_own_gradients():
     """A nearly square rectangle: lam_2, lam_3 split slightly but resolvably, so each is a simple
