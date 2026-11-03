@@ -167,3 +167,76 @@ def test_the_geometry_helpers_match_lappys():
         np.testing.assert_array_equal(edge_lengths(z), lu.edge_lengths(z))
         assert polygon_area(z) == lu.polygon_area(z)
         assert polygon_perimeter(z) == lu.polygon_perimeter(z)
+
+
+# ---- MirrorPolygon ---------------------------------------------------------------------------
+from douse.polygon import MirrorPolygon, mirror_axes, edge_lengths  # noqa: E402
+
+LAYOUTS = [(3, 'vertex'), (4, 'vertex'), (4, 'edge'), (5, 'vertex'), (6, 'vertex'), (6, 'edge'),
+           (7, 'vertex'), (8, 'edge')]
+
+
+def _mirror(N, axis, seed=0):
+    reg = np.exp(2j*np.pi*np.arange(N)/N)
+    for r in range(N):
+        fam, q, _ = MirrorPolygon.from_vertices(reg, PERIM, rank=r)
+        if fam.axis == axis:
+            return fam, q + 0.05*np.random.default_rng(seed).normal(size=len(q))
+    raise AssertionError((N, axis))
+
+
+@pytest.mark.parametrize('N,axis', LAYOUTS)
+def test_mirror_polygons_are_symmetric_with_the_right_perimeter_and_jacobian(N, axis):
+    fam, q = _mirror(N, axis)
+    v = fam.vertices(q)
+    assert fam.n_params == N - 2 and fam.is_valid(q)
+    assert polygon_perimeter(v) == pytest.approx(PERIM, abs=1e-12)
+    assert mirror_axes(v)[0][0] < 1e-14
+    np.testing.assert_allclose(-np.conj(v[fam.mirror_index()]), v, atol=1e-14)
+    J, h = fam.d_vertices_dp(q), 1e-6
+    for j in range(len(q)):
+        e = np.zeros(len(q))
+        e[j] = h
+        dv = (fam.vertices(q + e) - fam.vertices(q - e))/(2*h)
+        np.testing.assert_allclose(J[:, j], np.concatenate([dv.real, dv.imag]), atol=1e-8)
+
+
+@pytest.mark.parametrize('N,axis', LAYOUTS)
+def test_from_vertices_recovers_a_moved_relabelled_symmetric_polygon(N, axis):
+    fam, q = _mirror(N, axis, seed=1)
+    v = fam.vertices(q)
+    w = np.roll(v*np.exp(0.7j) + (1 - 2j), 3)
+    f2, q2, defect = MirrorPolygon.from_vertices(w, PERIM)
+    assert defect < 1e-14 and f2.axis == axis
+    np.testing.assert_allclose(np.sort(edge_lengths(f2.vertices(q2))), np.sort(edge_lengths(v)),
+                               atol=1e-13)
+
+
+@pytest.mark.parametrize('N,axis', LAYOUTS)
+def test_the_antisymmetric_basis_complements_the_family(N, axis):
+    fam, q = _mirror(N, axis)
+    B = fam.antisymmetric_basis(q)
+    assert B.shape == (2*N, N - 2)
+    np.testing.assert_allclose(B.T @ B, np.eye(N - 2), atol=1e-12)
+    assert np.abs(B.T @ fam.d_vertices_dp(q)).max() < 1e-12      # breaks, never keeps, symmetry
+    v = fam.vertices(q)
+    for d in B.T:                                                    # no rigid motion in it
+        assert abs(d[:N].sum()) < 1e-12 and abs(np.dot(d, np.concatenate([(1j*v).real, (1j*v).imag]))) < 1e-12
+
+
+def test_an_odd_polygon_has_no_edge_axis():
+    with pytest.raises(ValueError, match='even'):
+        MirrorPolygon(5, 'edge')
+
+
+def test_split_seeds_are_ccw_n_gons_above_the_edge_floor():
+    from benchmarks.make_seeds import corner_cuts, edge_bends
+    from douse.polygon import polygon_area
+    u = 1.3*np.exp(2j*np.pi*np.arange(5)/5)
+    u = u*PERIM/polygon_perimeter(u)
+    l_min = PERIM/60
+    seeds = corner_cuts(u, l_min) + edge_bends(u, l_min)
+    assert len(seeds) == 10
+    for v in seeds:
+        assert len(v) == 6 and polygon_area(v) > 0 and edge_lengths(v).min() > l_min
+        assert abs(polygon_area(v) - polygon_area(u)) < 0.05*polygon_area(u)

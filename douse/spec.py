@@ -22,6 +22,8 @@ import subprocess
 import tomllib
 from dataclasses import asdict, dataclass, field
 
+import numpy as np
+
 __all__ = ['RunSpec', 'load', 'git_sha', 'provenance', 'PACKAGE_ROOT', 'SCHEDULING']
 
 PACKAGE_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -33,9 +35,15 @@ SCHEDULING = ('slurm_mem', 'slurm_time', 'slurm_partition', 'slurm_account')
 @dataclass(frozen=True)
 class RunSpec:
     """One sweep. `cells` are `(N, k)` with `k` 0-based (k=2 is lam_3/lam_1), as the driver
-    takes it. `family` is 'all' (star-shaped starts, the edge floor and the closing budget) or
-    'convex' (Valtr starts, plus the convexity constraint; a separate ledger). `n_eigs=None`
-    means the driver's default, `k + 2`."""
+    takes it. `family` is 'all' (star-shaped starts, the edge floor and the closing budget),
+    'convex' (Valtr starts, plus the convexity constraint; a separate ledger) or 'mirror'
+    (mirror-symmetric polygons, `douse.polygon.MirrorPolygon`; needs `seeds`, a separate ledger).
+    `n_eigs=None` means the driver's default, `k + 2`.
+
+    `seeds` names a JSON file (relative to the package root) of explicit start polygons,
+    `{"N<N>_k<k>": [{"vertices": [[x, y], ..], "note": ".."}, ..]}`: start `i` of a cell is its
+    `i`-th seed instead of a random draw, and a cell's starts beyond its seeds are skipped. The
+    file's CONTENT is hashed into the spec (`seeds_sha`), so editing the seeds is a new recipe."""
     name: str
     cells: tuple
     starts: int = 8
@@ -48,6 +56,7 @@ class RunSpec:
     n_eigs: object = None
     sigma_max: float = 1e-6
     perim: float = 4.0
+    seeds: str = ''
     notes: str = ''
     # WHERE IT RUNS, NOT WHAT IS RUN: Slurm resources per task for `benchmarks/slurm.py`
     # (`slurm_mem = "4G"`, `slurm_time = "24:00:00"`, partition and account as ARC names them).
@@ -62,8 +71,10 @@ class RunSpec:
     def __post_init__(self):
         cells = tuple((int(N), int(k)) for N, k in self.cells)
         object.__setattr__(self, 'cells', cells)
-        if self.family not in ('all', 'convex'):
-            raise ValueError(f"family must be 'all' or 'convex', got {self.family!r}")
+        if self.family not in ('all', 'convex', 'mirror'):
+            raise ValueError(f"family must be 'all', 'convex' or 'mirror', got {self.family!r}")
+        if self.family == 'mirror' and not self.seeds:
+            raise ValueError("family 'mirror' starts from seeds: give `seeds`")
         if self.backend not in ('chladni', 'lappy'):
             raise ValueError(f"backend must be 'chladni' or 'lappy', got {self.backend!r}")
         for N, k in cells:
@@ -85,7 +96,22 @@ class RunSpec:
         for key in ('source',) + SCHEDULING:
             d.pop(key)
         d['cells'] = [list(c) for c in self.cells]
+        if not self.seeds:
+            d.pop('seeds')             # so a spec without seeds hashes as it did before they existed
+        else:
+            d['seeds_sha'] = hashlib.sha256(self.seeds_path().read_bytes()).hexdigest()[:12]
         return d
+
+    def seeds_path(self):
+        return PACKAGE_ROOT/self.seeds
+
+    def seed_polygons(self, N, k):
+        """The cell's seeds as complex vertex arrays (`[]` without `seeds`)."""
+        if not self.seeds:
+            return []
+        table = json.loads(self.seeds_path().read_text())
+        return [np.array([complex(x, y) for x, y in s['vertices']])
+                for s in table.get(f'N{N}_k{k}', [])]
 
     @property
     def sha(self):
@@ -94,7 +120,7 @@ class RunSpec:
         return hashlib.sha256(blob).hexdigest()[:12]
 
     def ledger_name(self, N, k):
-        return f"N{N}_k{k}{'_convex' if self.convex else ''}.jsonl"
+        return f"N{N}_k{k}{'' if self.family == 'all' else '_' + self.family}.jsonl"
 
 
 def load(path):

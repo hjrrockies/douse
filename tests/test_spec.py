@@ -43,3 +43,26 @@ def test_provenance_names_the_spec_and_both_shas():
     assert row['spec'] == 'thesis_ratio_v0' and row['spec_sha'] == spec.sha
     assert set(row) >= {'backend', 'prec', 'douse_sha', 'chladni_sha'}
     assert 'spec' not in S.provenance(Ev())
+
+
+def test_seeds_are_hashed_by_content_and_a_spec_without_them_is_unchanged(tmp_path):
+    seeds = tmp_path / 'seeds.json'
+    seeds.write_text('{"N3_k1": [{"vertices": [[0, 0], [1, 0], [0.5, 0.8]], "note": "x"}]}')
+    base = 'name = "x"\ncells = [[3, 1]]\n'
+    (tmp_path / 'a.toml').write_text(base)
+    (tmp_path / 'b.toml').write_text(base + f'seeds = "{seeds}"\n')
+    a, b = S.load(tmp_path / 'a.toml'), S.load(tmp_path / 'b.toml')
+    assert 'seeds' not in a.content() and a.seed_polygons(3, 1) == []
+    assert b.seed_polygons(3, 1)[0][2] == 0.5 + 0.8j and b.seed_polygons(4, 1) == []
+    sha = b.sha
+    seeds.write_text(seeds.read_text().replace('0.8', '0.9'))
+    assert S.load(tmp_path / 'b.toml').sha != sha
+
+
+def test_the_mirror_family_needs_seeds_and_has_its_own_ledger(tmp_path):
+    (tmp_path / 'm.toml').write_text('name = "x"\ncells = [[3, 1]]\nfamily = "mirror"\n')
+    with pytest.raises(ValueError, match='seeds'):
+        S.load(tmp_path / 'm.toml')
+    m = S.load(SPECS / 'thesis_ratio_mirror_v1.toml')
+    assert m.ledger_name(5, 3) == 'N5_k3_mirror.jsonl'
+    assert all(len(m.seed_polygons(N, k)) == m.starts for N, k in m.cells)

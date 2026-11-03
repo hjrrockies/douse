@@ -313,3 +313,209 @@ class VertexPolygon:
         """Measured, not assumed -- this is the constraint `polygon_vertices` claims to enforce
         and it costs nothing to check."""
         return polygon_perimeter(self.vertices(p))
+
+
+def mirror_axes(vertices):
+    """Every candidate mirror line of a polygon, best first: `[(defect, s, a), ...]`.
+
+    A reflection that maps the polygon onto itself sends vertex `i` to vertex `s - i (mod N)` for
+    one shift `s`, and about the centroid it is `z -> a conj(z)` with `|a| = 1`; the mirror line
+    is at angle `arg(a)/2`. For each `s` the best `a` is the phase of `sum w_i v_i` (`w` the
+    relabelled vertices), and `defect` is the RMS distance between the reflected polygon and
+    the relabelled one, divided by the perimeter: zero for an exact mirror symmetry.
+    """
+    v = np.asarray(vertices, dtype=complex)
+    v = v - v.mean()
+    N, P = len(v), polygon_perimeter(v)
+    out = []
+    for s in range(N):
+        w = v[(s - np.arange(N)) % N]
+        a = np.exp(1j*np.angle(np.sum(w*v)))
+        out.append((float(np.sqrt(np.mean(np.abs(a*np.conj(v) - w)**2))/P), s, a))
+    return sorted(out, key=lambda t: t[0])
+
+
+class MirrorPolygon:
+    """`n`-gons with a mirror symmetry, of fixed perimeter: `n - 2` real parameters.
+
+    WHY. Several `max lam_k/lam_1` optima look symmetric to about 2e-3 of the perimeter but not
+    to the 1e-4 that independent starts agree to. Over all N-gons a symmetry is not something
+    the optimizer can find exactly: the derivatives that would restore it are at the noise floor
+    of the shape derivative. Restricting to symmetric polygons makes it exact, halves the
+    parameter count, and leaves the question of whether the symmetric optimum is a maximum among
+    ALL N-gons to a separate test along the antisymmetric directions
+    (`antisymmetric_basis`, `douse.certify.antisymmetric_hessian`).
+
+    THE LAYOUT. The mirror line is the y-axis and the vertices run counter-clockwise; a vertex
+    `P` on the right (x > 0) has its image `-conj(P)` on the left. `axis` says what the line
+    passes through:
+
+        'vertex' (odd n)    the bottom vertex B = 0, pairs P_1..P_m (m = (n-1)/2), bottom to top
+        'vertex' (even n)   B = 0, pairs P_1..P_m (m = (n-2)/2), the top vertex T = i t
+        'edge'   (even n)   pairs P_1..P_m (m = n/2): the axis crosses the edges M(P_1)P_1 and
+                            P_m M(P_m)
+
+    and the vertex order is `[B,] P_1, .., P_m, [T,] M(P_m), .., M(P_1)`. The gauge: B at the
+    origin (or P_1 on the x-axis for 'edge'), and x_1 = 1 for scale, after which the polygon is
+    rescaled to perimeter `perim`. The parameters are y_1 (not for 'edge'), then x_j, y_j for
+    j = 2..m, then t (even 'vertex' only).
+
+    THE DEGENERACY MOVES OF `douse.cluster_opt` DO NOT APPLY: they propose `VertexPolygon`
+    parameters, which `is_valid` rejects here by length. A symmetric run cannot flatten a
+    vertex or collapse an edge.
+    """
+
+    def __init__(self, n, axis='vertex', perim=1.0):
+        if n < 3:
+            raise ValueError(f'a polygon needs at least 3 vertices, got n={n}')
+        if axis not in ('vertex', 'edge'):
+            raise ValueError(f"axis must be 'vertex' or 'edge', got {axis!r}")
+        if axis == 'edge' and n % 2:
+            raise ValueError(f'an odd polygon\'s mirror line passes through a vertex; '
+                             f"axis='edge' needs even n, got n={n}")
+        self.n, self.axis, self.perim = int(n), axis, float(perim)
+        self.m = (n - 1)//2 if n % 2 else (n - 2)//2 if axis == 'vertex' else n//2
+        self._W = np.array([self._raw(e) - self._raw(np.zeros(self.n_params))
+                            for e in np.eye(self.n_params)]).T          # (n, n_params), complex
+
+    def __repr__(self):
+        return f'MirrorPolygon(n={self.n}, axis={self.axis!r}, perim={self.perim:g})'
+
+    @property
+    def n_params(self):
+        return self.n - 2
+
+    @property
+    def has_bottom(self):
+        return self.axis == 'vertex'
+
+    @property
+    def has_top(self):
+        return self.axis == 'vertex' and self.n % 2 == 0
+
+    def _check(self, q):
+        q = np.asarray(q, dtype=float)
+        if q.shape != (self.n_params,):
+            raise ValueError(f'q must have length {self.n_params} for {self!r}, got {q.shape}')
+        return q
+
+    def _raw(self, q):
+        """The unscaled vertices: affine in `q`."""
+        q = list(q)
+        P = [1.0 + 1j*(q.pop(0) if self.has_bottom else 0.0)]
+        for _ in range(self.m - 1):
+            x = q.pop(0)
+            P.append(x + 1j*q.pop(0))
+        top = [1j*q.pop(0)] if self.has_top else []
+        bottom = [0j] if self.has_bottom else []
+        P = np.array(P)
+        return np.concatenate([bottom, P, top, -np.conj(P[::-1])])
+
+    def mirror_index(self):
+        """`sigma` with vertex `i` the image of vertex `sigma[i]`."""
+        n = self.n
+        return (-np.arange(n)) % n if self.has_bottom else (n - 1 - np.arange(n)) % n
+
+    def vertices(self, q):
+        w = self._raw(self._check(q))
+        return self.perim*w/polygon_perimeter(w)
+
+    def d_vertices_dp(self, q):
+        """`(2n, n - 2)`, rows `[x_0..x_{n-1}, y_0..y_{n-1}]` as for `VertexPolygon`. The raw
+        vertices are affine in `q`; the rescaling `v = perim w / P(w)` is differentiated
+        exactly."""
+        w = self._raw(self._check(q))
+        P, g = perimeter_gradient(w)
+        dP = (np.conj(g)[:, None]*self._W).real.sum(axis=0)              # (n_params,)
+        dv = self.perim*(self._W/P - np.outer(w, dP)/P**2)
+        return np.vstack([dv.real, dv.imag])
+
+    def __call__(self, q, **kwargs):
+        v = self.vertices(q)
+        if polygon_area(v) <= 0:
+            raise ValueError('this q gives a clockwise or degenerate polygon')
+        from chladni.geometry import Polygon
+        kwargs.setdefault('bc', 'dir')
+        return Polygon(v, **kwargs)
+
+    def lappy_domain(self, q, **kwargs):
+        from lappy import Polygon
+        return Polygon(self.vertices(q), **kwargs)
+
+    def is_valid(self, q):
+        try:
+            self(q)
+            return True
+        except (ValueError, TypeError):
+            return False
+
+    def perimeter(self, q):
+        return polygon_perimeter(self.vertices(q))
+
+    @classmethod
+    def from_vertices(cls, vertices, perim=1.0, rank=0):
+        """`(family, q, defect)`: the symmetric polygon nearest `vertices` about its `rank`-th
+        best mirror line (`mirror_axes`), in this layout. `defect` is that line's, so a caller
+        can see how far the input was from symmetric."""
+        v = np.asarray(vertices, dtype=complex)
+        if polygon_area(v) < 0:
+            v = v[::-1]
+        N = len(v)
+        defect, s, a = mirror_axes(v)[rank]
+        u = (v - v.mean())*np.exp(1j*(np.pi/2 - np.angle(a)/2))     # the line is now the y-axis
+        sig = (s - np.arange(N)) % N
+        u = 0.5*(u - np.conj(u[sig]))                                  # exactly symmetric
+        fixed = [i for i in range(N) if sig[i] == i]
+        if fixed:                                  # the line passes through a vertex
+            i0 = min(fixed, key=lambda i: u[i].imag)
+            if len(fixed) == 1 and u[i0].imag > np.mean(u.imag):
+                u = -u                             # a half-turn keeps the line and the orientation
+            i0 = min(fixed, key=lambda i: u[i].imag)
+            u = np.roll(u, -i0)
+            fam = cls(N, 'vertex', perim)
+            u = u - 1j*u[0].imag
+        else:                                      # the line crosses two edges
+            ends = [i for i in range(N) if sig[i] == (i + 1) % N]
+            j = min(ends, key=lambda i: (u[i] + u[(i + 1) % N]).imag)
+            u = np.roll(u, -((j + 1) % N))         # u[0] = P_1, right end of the bottom edge
+            if u[0].real < 0:
+                u = -u
+            fam = cls(N, 'edge', perim)
+            u = u - 1j*u[0].imag
+        i1 = 1 if fam.has_bottom else 0
+        if not u[i1].real > 0:
+            raise ValueError('symmetrized polygon is not in the layout (P_1 not right of the axis)')
+        u = u/u[i1].real
+        q = [u[i1].imag] if fam.has_bottom else []
+        for j in range(1, fam.m):
+            q += [u[i1 + j].real, u[i1 + j].imag]
+        if fam.has_top:
+            q.append(u[fam.m + 1].imag)
+        q = np.array(q)
+        if not np.allclose(fam._raw(q), u, atol=1e-9):
+            raise AssertionError('from_vertices: the layout does not reproduce the polygon')
+        return fam, q, defect
+
+    def antisymmetric_basis(self, q):
+        """An orthonormal basis `(2n, n - 2)` of the vertex perturbations that BREAK the symmetry,
+        rows `[x.., y..]`, with the two rigid motions that are antisymmetric (horizontal
+        translation, rotation) removed. Along these `F(v + t d) = F(v - t d)` exactly (the
+        mirror image is congruent), so first order vanishes and the curvature decides."""
+        v = self.vertices(q)
+        n, sig = self.n, self.mirror_index()
+        cols = []
+        for i in range(n):
+            for e in (1.0, 1j):
+                d = np.zeros(n, dtype=complex)
+                d[i] = e
+                cols.append(0.5*(d + np.conj(d[sig])))                 # minus its mirror image
+        A = np.array([np.concatenate([c.real, c.imag]) for c in cols]).T
+        rigid = np.array([np.concatenate([np.ones(n), np.zeros(n)]),
+                          np.concatenate([(1j*v).real, (1j*v).imag])]).T
+        Qr, _ = np.linalg.qr(rigid)
+        A = A - Qr @ (Qr.T @ A)
+        U, S, _ = np.linalg.svd(A, full_matrices=False)
+        r = int(np.sum(S > 1e-10*S[0]))
+        if r != n - 2:
+            raise AssertionError(f'antisymmetric subspace has rank {r}, expected {n - 2}')
+        return U[:, :r]

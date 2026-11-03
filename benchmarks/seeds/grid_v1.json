@@ -1,0 +1,210 @@
+{
+ "N3_k4": [
+  {
+   "vertices": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     1.0,
+     0.0
+    ],
+    [
+     0.3,
+     0.71
+    ]
+   ],
+   "note": "triangle_grid_v1 local max a=0.30 b=0.71 (lam_5/lam_1=4.36181404)"
+  },
+  {
+   "vertices": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     1.0,
+     0.0
+    ],
+    [
+     0.36,
+     0.22
+    ]
+   ],
+   "note": "triangle_grid_v1 local max a=0.36 b=0.22 (lam_5/lam_1=3.38925202)"
+  },
+  {
+   "vertices": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     1.0,
+     0.0
+    ],
+    [
+     0.03,
+     0.22
+    ]
+   ],
+   "note": "triangle_grid_v1 local max a=0.03 b=0.22 (lam_5/lam_1=3.21906123)"
+  }
+ ],
+ "N3_k5": [
+  {
+   "vertices": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     1.0,
+     0.0
+    ],
+    [
+     0.38,
+     0.52
+    ]
+   ],
+   "note": "triangle_grid_v1 local max a=0.38 b=0.52 (lam_6/lam_1=5.01896407)"
+  },
+  {
+   "vertices": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     1.0,
+     0.0
+    ],
+    [
+     0.4,
+     0.51
+    ]
+   ],
+   "note": "triangle_grid_v1 local max a=0.40 b=0.51 (lam_6/lam_1=5.01636945)"
+  },
+  {
+   "vertices": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     1.0,
+     0.0
+    ],
+    [
+     0.42,
+     0.5
+    ]
+   ],
+   "note": "triangle_grid_v1 local max a=0.42 b=0.50 (lam_6/lam_1=5.01421161)"
+  },
+  {
+   "vertices": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     1.0,
+     0.0
+    ],
+    [
+     0.36,
+     0.53
+    ]
+   ],
+   "note": "triangle_grid_v1 local max a=0.36 b=0.53 (lam_6/lam_1=5.01250858)"
+  },
+  {
+   "vertices": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     1.0,
+     0.0
+    ],
+    [
+     0.44,
+     0.49
+    ]
+   ],
+   "note": "triangle_grid_v1 local max a=0.44 b=0.49 (lam_6/lam_1=5.01236129)"
+  },
+  {
+   "vertices": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     1.0,
+     0.0
+    ],
+    [
+     0.47,
+     0.48
+    ]
+   ],
+   "note": "triangle_grid_v1 local max a=0.47 b=0.48 (lam_6/lam_1=5.01085872)"
+  },
+  {
+   "vertices": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     1.0,
+     0.0
+    ],
+    [
+     0.5,
+     0.17
+    ]
+   ],
+   "note": "triangle_grid_v1 local max a=0.50 b=0.17 (lam_6/lam_1=3.48493510)"
+  },
+  {
+   "vertices": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     1.0,
+     0.0
+    ],
+    [
+     0.29,
+     0.17
+    ]
+   ],
+   "note": "triangle_grid_v1 local max a=0.29 b=0.17 (lam_6/lam_1=3.47059302)"
+  },
+  {
+   "vertices": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     1.0,
+     0.0
+    ],
+    [
+     0.02,
+     0.18
+    ]
+   ],
+   "note": "triangle_grid_v1 local max a=0.02 b=0.18 (lam_6/lam_1=3.31090192)"
+  }
+ ]
+}

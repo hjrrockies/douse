@@ -55,6 +55,8 @@ import numpy as np
 
 from douse import (ClosingBudget, ConstraintSet, Convexity, MinEdgeLength, SpectrumEvaluator,
                    VertexPolygon, param_vector)
+from douse.certify import antisymmetric_hessian
+from douse.polygon import MirrorPolygon, gauge_vector
 from douse import degeneracy as dg
 from douse import spectral_guard
 from douse.sampling import random_convex
@@ -143,7 +145,7 @@ def _sigma(row):
 
 
 def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_redraws=3,
-            prec=1e-10, backend='chladni', spec=None):
+            prec=1e-10, backend='chladni', spec=None, seed=None, mirror=False):
     """One start. A start that cannot be SOLVED AT ALL is redrawn rather than lost.
 
     Measured over the 18-cell grid: **all nine crashed runs died at the start shape**, before a
@@ -160,14 +162,20 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
     The probe is an explicit evaluation of `p0` rather than an inspection of where an exception
     came from. Only a failure BEFORE the first iterate is redrawn; one that appears later is the
     optimizer walking somewhere hard and is reported as it always was.
+
+    A SEEDED START (`seed`, complex vertices from the spec's `seeds`) is never redrawn: the seed
+    is the point of the start. With `mirror` the seed is symmetrized about its best mirror line
+    and the run stays in `MirrorPolygon`; see `run_mirror`.
     """
+    if mirror:
+        return run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec)
     fam = runs.family_for(N, PERIM)
     # `Convexity` is a RESTRICTION and it is meant to be: it asks the convex question. The
     # answer belongs in its own ledger -- see `--convex` in `main`.
     cons = runs.constraints_for(fam, convex)
     draw = convex_start_shape if convex else start_shape
     redraws = []
-    for attempt in range(max_redraws + 1):
+    for attempt in range(max_redraws + 1 if seed is None else 1):
         # A FRESH EVALUATOR PER ATTEMPT. Its statistics are running maxima over its own lifetime,
         # so reusing one across a redraw carries the DISCARDED shape's numbers into the run that
         # replaces it. Measured, and it cost a result: N=6 `lam_4/lam_1` start 5 discarded a
@@ -177,7 +185,7 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
         # optimized. Its own endpoint tensions are 7.0e-13 to 3.3e-12.
         ev = runs.make_evaluator(N, k, n_eigs=n_eigs, fam=fam, prec=prec, backend=backend)
         idx = i if attempt == 0 else i + 1000*attempt
-        p0 = param_vector(draw(N, idx, seed0), PERIM)
+        p0 = param_vector(draw(N, idx, seed0) if seed is None else seed, PERIM)
         try:
             with _quiet():
                 ev.eigenvalues(p0)
@@ -213,11 +221,69 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
     # old rows onto the same names.
     return ledger.result_row(
         res, health=ev.health(), N=N, k=k, start=i, convex=bool(convex), redraws=redraws,
+        seeded=seed is not None,
         start_index=(i if not redraws else i + 1000*len(redraws)),
         seconds=round(time.perf_counter() - t0, 1),
         edges=[float(t) for t in np.sort(dg.edge_lengths(v))],
         angles=[float(t) for t in np.sort(np.degrees(dg.interior_angles(v)))],
         deficit_tol=float(spectral_guard.DEFICIT_TOL), **spec_mod.provenance(ev, spec))
+
+
+def run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec):
+    """One start in `MirrorPolygon`, then the test of whether its optimum is a maximum among ALL
+    N-gons: `certify.antisymmetric_hessian` along the symmetry-breaking directions, evaluated by
+    a `VertexPolygon` evaluator (a fresh one, so nothing of the symmetric run's frozen plan is
+    reused).
+
+    THE ROW IS AN ORDINARY RATIO ROW, so `summarize_grid` and the figure scripts read it unchanged:
+    `x` is the optimum in `VertexPolygon` parameters (`param_vector`), with the symmetric
+    parameters in `x_mirror`, the family's `axis`, the seed's own `seed_defect` (how far from
+    symmetric it was) and the probe in `antisym`.
+    """
+    fam, q0, defect = MirrorPolygon.from_vertices(seed, PERIM)
+    cons = ConstraintSet(MinEdgeLength(fam))
+    ev = runs.make_evaluator(N, k, n_eigs=n_eigs, fam=fam, prec=prec, backend=backend)
+    t0 = time.perf_counter()
+    res = maximize_ratio(ev, q0, k=k, max_iter=max_iter, constraints=cons, delta0=delta0)
+    v = fam.vertices(res.x)
+    row = ledger.result_row(
+        res, health=ev.health(), N=N, k=k, start=i, convex=False, redraws=[], seeded=True,
+        family='mirror', axis=fam.axis, seed_defect=float(defect),
+        start_index=i, seconds=round(time.perf_counter() - t0, 1),
+        edges=[float(t) for t in np.sort(dg.edge_lengths(v))],
+        angles=[float(t) for t in np.sort(np.degrees(dg.interior_angles(v)))],
+        deficit_tol=float(spectral_guard.DEFICIT_TOL), **spec_mod.provenance(ev, spec))
+    row['x_mirror'], row['x'] = row['x'], [float(t) for t in param_vector(v, PERIM)]
+    row['vertices'] = [[float(z.real), float(z.imag)] for z in v]
+
+    # THE PROBE. One anchor for every perturbed polygon -- the corner furthest from flat, as
+    # `gauge_vector` asks -- so the labelling, and with it the full evaluator's frozen plan, is
+    # the same at every probe point.
+    anchor = int(np.argmax(np.abs(np.pi - dg.interior_angles(v))))
+    full = runs.make_evaluator(N, k, n_eigs=n_eigs, fam=runs.family_for(N, PERIM), prec=prec,
+                               backend=backend)
+
+    def F(w):
+        with _quiet():
+            lams, _ = full.eigenvalues(gauge_vector(w, PERIM, anchor=anchor))
+        return lams[k]/lams[0]
+
+    t1 = time.perf_counter()
+    try:
+        pr = antisymmetric_hessian(F, v, fam.antisymmetric_basis(res.x))
+        row['antisym'] = dict(F_full=pr['F0'], ts=pr['ts'], worst=pr['worst'],
+                              verdict=pr['verdict'], hess_eigs=_clean_list(pr['hess_eigs']),
+                              diag=_clean_list([np.diag(D) for D in pr['D']]),
+                              scaling=_clean_list(pr['scaling']),
+                              seconds=round(time.perf_counter() - t1, 1))
+    except Exception as exc:                                          # noqa: BLE001
+        row['antisym'] = dict(error=f'{type(exc).__name__}: {exc}'[:300])
+    return row
+
+
+def _clean_list(a):
+    a = np.asarray(a, dtype=float)
+    return np.where(np.isfinite(a), a, None).tolist()
 
 
 def _cell(job):
@@ -325,7 +391,11 @@ def _run_cell(args, spec=None):
     prec = spec.prec if spec is not None else 1e-10
     backend = spec.backend if spec is not None else 'chladni'
     out = getattr(args, 'out', None) or OUT
-    name = f'N{args.N}_k{args.k}{"_convex" if args.convex else ""}.jsonl'
+    name = (spec.ledger_name(args.N, args.k) if spec is not None else
+            f'N{args.N}_k{args.k}{"_convex" if args.convex else ""}.jsonl')
+    seeds = spec.seed_polygons(args.N, args.k) if spec is not None else []
+    mirror = spec is not None and spec.family == 'mirror'
+    extra = dict(seed=None, mirror=mirror)
     path = out if out.endswith('.jsonl') else os.path.join(out, name)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     done = {r['start'] for r in ledger.read_rows(path, dedupe=False)
@@ -334,6 +404,9 @@ def _run_cell(args, spec=None):
         print(f'resuming {path}: {len(done)} start(s) already recorded', flush=True)
 
     todo = [i for i in range(args.starts) if i not in done]
+    if spec is not None and spec.seeds:
+        # A SEEDED CELL HAS AS MANY STARTS AS SEEDS; a Slurm task past them has nothing to do.
+        todo = [i for i in todo if i < len(seeds)]
     if getattr(args, 'start_index', None) is not None:
         todo = [i for i in todo if i == args.start_index]
 
@@ -346,7 +419,8 @@ def _run_cell(args, spec=None):
             os.environ.setdefault(var, str(threads))
         jobs = [dict(N=args.N, k=args.k, i=i, max_iter=args.max_iter, seed0=args.seed0,
                      delta0=args.delta0, n_eigs=args.n_eigs, convex=args.convex, prec=prec,
-                     backend=backend, spec=spec, threads=threads) for i in todo]
+                     backend=backend, spec=spec, threads=threads,
+                     **dict(extra, seed=seeds[i] if seeds else None)) for i in todo]
         print(f'running {len(jobs)} start(s) on {args.workers} worker(s), '
               f'{threads} thread(s) each', flush=True)
         # ONE START PER PROCESS. Without `max_tasks_per_child` a worker is recycled across many
@@ -378,7 +452,7 @@ def _run_cell(args, spec=None):
         try:
             row = run_one(args.N, args.k, i, args.max_iter, args.seed0, args.delta0,
                           args.n_eigs, convex=args.convex, prec=prec, backend=backend,
-                          spec=spec)
+                          spec=spec, **dict(extra, seed=seeds[i] if seeds else None))
         except Exception as exc:
             row = dict(N=args.N, k=args.k, start=i, convex=bool(args.convex), ok=False,
                        error=f'{type(exc).__name__}: {exc}',

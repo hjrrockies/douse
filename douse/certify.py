@@ -43,7 +43,7 @@ import numpy as np
 
 from .derivative import cluster_matrices, detect_cluster, dlams_dp, directional_derivatives
 
-__all__ = ['det_form', 'first_order_report', 'second_order_probe']
+__all__ = ['det_form', 'first_order_report', 'second_order_probe', 'antisymmetric_hessian']
 
 
 def det_form(Ms):
@@ -160,3 +160,57 @@ def second_order_probe(evaluate_ratio, p, null_basis, h=(0.02, 0.05), n_dirs=Non
                 worst_curvature=float(worst) if np.isfinite(worst) else None,
                 verdict=('consistent with a local maximum' if worst <= 0 else
                          'refuted: the ratio increases along a null direction'))
+
+
+def antisymmetric_hessian(F, vertices, basis, ts=(0.01, 0.03)):
+    """Is a mirror-symmetric optimum a maximum among ALL polygons, not only symmetric ones?
+
+    `F(vertices) -> float` is the objective on vertex arrays (complex); `basis` is
+    `MirrorPolygon.antisymmetric_basis`, `(2N, r)` with rows `[x.., y..]`. Along a direction `d`
+    in its span the reflected polygon of `v + t d` is congruent to `v - t d`, so `F(v + t d) =
+    F(v - t d)`: the first derivative vanishes and ONE evaluation per direction gives the
+    curvature `D(d) = 2 (F(v + t d) - F(v)) / t^2`. The quadratic form on the span is read off
+    `D(e_i)` and `D(e_i + e_j)`: `r (r + 1)/2` evaluations per step size.
+
+    TWO STEP SIZES, BECAUSE THE OPTIMUM MAY BE A KINK. When `lam_k` there is a double eigenvalue
+    with one even and one odd eigenfunction, an antisymmetric perturbation splits it at FIRST
+    order, and `F(v + t d) - F(v)` is `-c|t|`, not `-c t^2`: `D` then scales like `1/t`. The
+    ratio `D(t_0)/D(t_1)` per direction tells the two apart (1 for smooth, `t_1/t_0` for a
+    kink). Either way a maximum needs every `D <= 0`; one positive value refutes it. Like
+    `second_order_probe`, this is evidence from finitely many steps, not a certificate.
+
+    Returns `dict(F0, ts, D (len(ts), r, r) of the sampled curvatures [D(e_i) on the diagonal,
+    D(e_i + e_j)/2 off it], hess_eigs (len(ts), r) of the implied quadratic form,
+    worst (max D), scaling (D(t_0)/D(t_1) per basis direction), verdict)`.
+    """
+    v = np.asarray(vertices, dtype=complex)
+    n = len(v)
+    B = np.asarray(basis, dtype=float)
+    r = B.shape[1]
+    F0 = float(F(v))
+    Ds, eigs, worst = [], [], -np.inf
+    for t in ts:
+        D = np.full((r, r), np.nan)
+        for i in range(r):
+            for j in range(i, r):
+                d = B[:, i] + (B[:, j] if j != i else 0.0)
+                dv = d[:n] + 1j*d[n:]
+                try:
+                    D[i, j] = D[j, i] = 2*(float(F(v + t*dv)) - F0)/t**2/(1 if i == j else 2)
+                except Exception:                                    # noqa: BLE001
+                    pass
+        worst = max(worst, np.nanmax(D)) if np.isfinite(D).any() else worst
+        diag = np.diag(D).copy()
+        H = D - (diag[:, None] + diag[None, :])/2                   # (D(ei+ej) - D(ei) - D(ej))/2
+        H[np.diag_indices(r)] = diag
+        eigs.append(np.linalg.eigvalsh(H) if np.isfinite(H).all() else np.full(r, np.nan))
+        Ds.append(D)
+    Ds, eigs = np.array(Ds), np.array(eigs)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        scaling = np.diagonal(Ds[0])/np.diagonal(Ds[-1])
+    ok = np.isfinite(worst)
+    return dict(F0=F0, ts=list(ts), D=Ds, hess_eigs=eigs, worst=float(worst) if ok else None,
+                scaling=scaling,
+                verdict=('no evaluations' if not ok else
+                         'consistent with a local maximum among all polygons' if worst <= 0 else
+                         'refuted: F increases along a symmetry-breaking direction'))

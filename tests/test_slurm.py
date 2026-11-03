@@ -97,3 +97,11 @@ def test_ratio_multistart_takes_one_start_of_one_spec_cell(tmp_path, monkeypatch
                                      '--start-index', '8'])
     with pytest.raises(SystemExit):
         rm.main()
+
+
+def test_a_seeded_cell_runs_one_task_per_seed():
+    spec = S.load(SPECS / 'thesis_ratio_split_v1.toml')
+    res = sl.resources(spec)
+    arrays = {(N, k): re.search(r'--array=0-(\d+)', sl.script(spec, N, k, 's.toml', 'o', res)).group(1)
+              for N, k in spec.cells}
+    assert arrays == {(6, 4): '9', (7, 5): '11'}
