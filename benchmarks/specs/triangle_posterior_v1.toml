@@ -1,0 +1,34 @@
+# v1 (2026-11-03): the thesis Bayesian result (FINISHLINE 3.3). The posterior over triangles
+# from K noisy eigenvalue ratios lam_1/lam_j, on the triangle_grid_v1 eigenvalues (no solves).
+# Prior: Kendall x exp(-beta (E - E_eq)); sigma^2 ~ InvGamma(ig_alpha, ig_beta), integrated out.
+# Coverage truths are drawn from Kendall (beta 0) and from beta = 1, and each set is scored under
+# all three priors (beta 0, 0.3, 1): matched pairs check calibration, the others measure prior
+# misspecification.
+# Run with `python -m benchmarks.triangle_posterior slurm <this file>` (see its docstring).
+name = "triangle_posterior_v1"
+grid = "benchmarks/specs/triangle_grid_v1.toml"
+Ks = [3, 5, 10]
+sigmas = [1e-3, 1e-2]
+prior_betas = [0.0, 0.3, 1.0]
+truth_betas = [0.0, 1.0]
+n_truths = 150
+# the inverse pilot's acute, obtuse and near-equilateral apexes (snapped to interior grid points)
+map_truths = [[0.3, 0.5], [0.2, 0.25], [0.45, 0.75]]
+seed = 0
+refine = 3
+zoom = 121
+zoom_mass = 0.9999
+# sigma^2 ~ InvGamma(2, 3 sigma_true^2): mode at the true sigma^2, sigma known to a factor of a few.
+# A vague IG(1, 1e-7) does not calibrate (see the driver's docstring).
+ig_alpha = 2.0
+ig_beta = "matched"
+sigma_grid = [1e-5, 0.3, 61]
+rbf_kernel = "quintic"
+rbf_neighbors = 40
+rbf_degree = 2
+tasks = 20
+notes = "Grid posterior; truths are interior grid points scored with the fold interpolant that excludes them."
+slurm_mem = "4G"
+slurm_time = "4:00:00"
+slurm_account = "siallocation"
+slurm_partition = "normal_q"

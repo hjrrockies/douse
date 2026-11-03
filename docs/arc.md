@@ -107,6 +107,33 @@ Bring results home (ledgers are JSONL, a few MB):
 rsync -av <pid>@<cluster>:projects/thesis/douse/benchmarks/run/family_grid/ benchmarks/run/family_grid/
 ```
 
+## The triangle posterior (after the grid)
+
+`benchmarks/triangle_posterior.py` does no solves: it interpolates the collected
+`triangle_grid_v1` ledgers, so it needs them in `benchmarks/run/family_grid/triangle_grid_v1/`
+(already there on the cluster that ran the grid). The whole of `triangle_posterior_v1` is
+under 1 CPU-h (5454 posteriors, ~0.6 s each); 20 tasks finish in a few minutes. Build the
+surrogate once on the login node (~1 minute), then write the sbatch and submit:
+
+```bash
+uv run python -m benchmarks.triangle_posterior prepare benchmarks/specs/triangle_posterior_v1.toml
+```
+
+```bash
+uv run python -m benchmarks.triangle_posterior slurm benchmarks/specs/triangle_posterior_v1.toml --runner .venv/bin/python
+```
+
+```bash
+sbatch benchmarks/run/triangle_posterior/triangle_posterior_v1/triangle_posterior_v1.sbatch
+```
+
+```bash
+uv run python -m benchmarks.triangle_posterior plot benchmarks/specs/triangle_posterior_v1.toml
+```
+
+`plot` prints the coverage table and writes `figures/` (posterior maps, coverage, Kendall
+measure of the 90% region, the interpolant's cross-validated error) beside the ledgers.
+
 ## Notes
 
 - `--runner .venv/bin/python` (the venv `uv sync` built) rather than `uv run`: a hundred tasks
