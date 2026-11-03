@@ -81,7 +81,9 @@ except ImportError:                                                   # pragma: 
     from summarize_grid import PPW, row_deficit
 
 PERIM = 4.0
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run', 'ratio_multistart')
+OUT = (os.path.join(os.path.expanduser(os.environ['DOUSE_RUNS']), 'ratio_multistart')
+       if os.environ.get('DOUSE_RUNS') else
+       os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run', 'ratio_multistart'))
 
 
 # Start shapes and the regular polygon live in `douse.runs` (one definition, 2026-10-14).

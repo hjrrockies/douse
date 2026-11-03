@@ -141,3 +141,26 @@ def test_the_dry_run_writes_one_array_job(capsys):
     text = capsys.readouterr().out
     assert '#SBATCH --array=0-19' in text and '--account=siallocation' in text
     assert '-m benchmarks.triangle_posterior run benchmarks/specs/triangle_posterior_v1.toml' in text
+
+
+def test_equal_area_chart_round_trips_and_its_height_is_normalized_area():
+    rng = np.random.default_rng(0)
+    a, b = rng.uniform(0, .5, 3000), rng.uniform(.02, .86, 3000)
+    keep = tp.in_support(a, b, 10)
+    a, b = a[keep], b[keep]
+    ph, q = tp.to_chart(a, b)
+    a2, b2 = tp.from_chart(ph, q)
+    assert np.abs(a2 - a).max() < 1e-12 and np.abs(b2 - b).max() < 1e-12
+    l2 = 1 + a**2 + b**2 + (1 - a)**2 + b**2
+    assert np.abs(q - 4*np.sqrt(3)*(b/2)/l2).max() < 1e-12
+    assert np.allclose(tp.to_chart(0.5, 0.5)[0], 60) and np.allclose(tp.to_chart(0.2, 0.6)[0], 0)
+    assert 0 < tp.support_area(10, n=200) < 60
+
+
+def test_procrustes_recovers_a_similar_relabelled_mirror_image():
+    t = np.array([0, 1, 0.3 + 0.5j])
+    t = (t - t.mean())/np.linalg.norm(t - t.mean())
+    from douse.repulsive import apex
+    z = 2.5*np.exp(1j)*np.conj(t)[[2, 0, 1]] + 3     # moved, scaled, reflected, relabelled
+    fit = tp.procrustes(apex(z), t)
+    assert np.abs(fit - t).max() < 1e-12

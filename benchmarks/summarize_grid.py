@@ -60,7 +60,9 @@ try:
 except ImportError:                                                   # pragma: no cover
     best_rectangle = None
 
-LEDGERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run', 'ratio_multistart')
+LEDGERS = (os.path.join(os.path.expanduser(os.environ['DOUSE_RUNS']), 'ratio_multistart')
+           if os.environ.get('DOUSE_RUNS') else
+           os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run', 'ratio_multistart'))
 
 
 def revalidate(row, n_extra=3):

@@ -200,7 +200,7 @@ def points(spec):
 
 
 def default_out(spec):
-    return f'benchmarks/run/family_grid/{spec.name}'
+    return spec_mod.run_dir('family_grid', spec.name)
 
 
 # ---- solve ------------------------------------------------------------------------------------
@@ -591,7 +591,7 @@ def main(argv=None):
         p.add_argument('spec')
         p.add_argument('--out', default=None,
                        help='ledger directory, relative to the douse checkout '
-                            '(default benchmarks/run/family_grid/<spec name>)')
+                            '(default $DOUSE_RUNS/family_grid/<spec name>, else benchmarks/run/...)')
         if name in ('run', 'repair'):
             p.add_argument('--task', type=int, default=0)
             p.add_argument('--ntasks', type=int, default=1)

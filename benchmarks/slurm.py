@@ -122,7 +122,7 @@ def main(argv=None):
     ap.add_argument('spec', help='a run spec, benchmarks/specs/*.toml')
     ap.add_argument('--out', default=None,
                     help='where the jobs write, relative to the douse checkout '
-                         '(default: benchmarks/run/slurm/<spec name>)')
+                         '(default: $DOUSE_RUNS/slurm/<spec name>, else benchmarks/run/...)')
     ap.add_argument('--mem', default=None, help='override the spec (sbatch --mem)')
     ap.add_argument('--time', default=None, help='override the spec (sbatch --time)')
     ap.add_argument('--partition', default=None)
@@ -136,7 +136,7 @@ def main(argv=None):
 
     spec = spec_mod.load(args.spec)
     root = spec_mod.PACKAGE_ROOT
-    out = args.out or f'benchmarks/run/slurm/{spec.name}'
+    out = args.out or spec_mod.run_dir('slurm', spec.name)
     spec_path = _rel(args.spec, root)
     res = resources(spec, args.mem, args.time, args.partition, args.account, args.mail)
     print(f'# spec {spec.name} @ {spec.sha}: {len(spec.cells)} cell(s) x {spec.starts} start(s); '

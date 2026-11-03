@@ -101,11 +101,18 @@ uv run python -m benchmarks.family_grid slurm benchmarks/specs/triangle_pilot_v1
 sbatch benchmarks/run/family_grid/triangle_pilot_v1/repair/triangle_pilot_v1_repair.sbatch
 ```
 
-Bring results home (ledgers are JSONL, a few MB):
+Bring results home (ledgers are JSONL, a few MB) into the workstation's one results directory,
+`$DOUSE_RUNS` (`~/projects/thesis-runs`, outside every checkout; see its README). Every driver
+reads and writes there when the variable is set; on the cluster it stays unset, so paths there
+are `benchmarks/run/...` inside the checkout and generated sbatch scripts stay portable --
+generate them ON the cluster, since with `DOUSE_RUNS` set the default `--out` is an absolute
+local path:
 
 ```bash
-rsync -av <pid>@<cluster>:projects/thesis/douse/benchmarks/run/family_grid/ benchmarks/run/family_grid/
+rsync -av <pid>@<cluster>:projects/thesis/douse/benchmarks/run/family_grid/ ~/projects/thesis-runs/family_grid/
 ```
+
+The same for `slurm/` (ratio runs), `inverse/` and `triangle_posterior/`.
 
 ## The triangle posterior (after the grid)
 

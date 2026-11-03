@@ -66,3 +66,14 @@ def test_the_mirror_family_needs_seeds_and_has_its_own_ledger(tmp_path):
     m = S.load(SPECS / 'thesis_ratio_mirror_v1.toml')
     assert m.ledger_name(5, 3) == 'N5_k3_mirror.jsonl'
     assert all(len(m.seed_polygons(N, k)) == m.starts for N, k in m.cells)
+
+
+def test_run_dir_follows_douse_runs(monkeypatch, tmp_path):
+    from douse.spec import run_dir
+    monkeypatch.delenv('DOUSE_RUNS', raising=False)
+    assert run_dir('family_grid', 'x') == 'benchmarks/run/family_grid/x'
+    monkeypatch.setenv('DOUSE_RUNS', str(tmp_path))
+    assert run_dir('family_grid', 'x') == str(tmp_path/'family_grid'/'x')
+    from benchmarks import family_grid as fg
+    spec = fg.GridSpec(name='t', family='triangle', h=0.1)
+    assert fg.default_out(spec) == str(tmp_path/'family_grid'/'t')

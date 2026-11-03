@@ -24,7 +24,7 @@ from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
-__all__ = ['RunSpec', 'load', 'git_sha', 'provenance', 'PACKAGE_ROOT', 'SCHEDULING']
+__all__ = ['RunSpec', 'load', 'git_sha', 'provenance', 'run_dir', 'PACKAGE_ROOT', 'SCHEDULING']
 
 PACKAGE_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -136,6 +136,20 @@ def load(path):
     if 'name' not in raw:
         raw['name'] = path.stem
     return RunSpec(source=str(path), **raw)
+
+
+def run_dir(*parts):
+    """Where a driver's outputs go by default: `$DOUSE_RUNS/<parts>` when the variable is set,
+    else `benchmarks/run/<parts>` (relative, resolved against the douse checkout as before).
+
+    On a workstation `DOUSE_RUNS` points at one directory OUTSIDE every repository
+    (`~/projects/thesis-runs`), so the main checkout, its worktrees and the cluster's rsync all
+    read and write one copy, and removing a worktree removes no results. Left unset (the
+    cluster), paths stay relative and generated sbatch scripts stay portable.  (2026-11-03)"""
+    env = os.environ.get('DOUSE_RUNS')
+    if env:
+        return str(pathlib.Path(env).expanduser().joinpath(*parts))
+    return str(pathlib.PurePosixPath('benchmarks', 'run', *parts))
 
 
 def git_sha(path):

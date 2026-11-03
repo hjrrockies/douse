@@ -152,7 +152,7 @@ def load(path):
 
 
 def default_out(spec):
-    return f'benchmarks/run/triangle_posterior/{spec.name}'
+    return spec_mod.run_dir('triangle_posterior', spec.name)
 
 
 # ---- the surrogate ----------------------------------------------------------------------------
@@ -556,6 +556,239 @@ def collect(spec, out, grid_out=None):
     return rows, '\n'.join(lines)
 
 
+# ---- the equal-area chart --------------------------------------------------------------------
+# Kendall's shape sphere for triangles, in Archimedes' cylindrical coordinates: longitude phi of
+# zeta = (z0 + w z1 + w^2 z2)/(z0 + w^2 z1 + w z2), w = exp(2 pi i/3), folded into [0, 60] deg
+# by relabelling and reflection, and height q = (1 - |zeta|^2)/(1 + |zeta|^2) = 4 sqrt(3) A /
+# sum(l^2). The map is equal-area, so Kendall's measure is d(phi) dq: a density in this chart IS
+# the density relative to Kendall. phi = 0 is isosceles with apex angle < 60 deg (the apex
+# chart's left arc), phi = 60 isosceles with apex angle > 60 (a = 1/2), q = 1 equilateral.
+
+W3 = np.exp(2j*np.pi/3)
+_MINV = np.linalg.inv(np.array([[1, 1, 1], [1, W3, W3**2], [1, W3**2, W3]]))
+
+
+def to_chart(a, b):
+    """Apex a + ib (base [0, 1]) -> (phi in degrees, q)."""
+    w = np.asarray(a) + 1j*np.asarray(b)
+    zt = (W3 + W3**2*w)/(W3**2 + W3*w)
+    zt = np.where(np.abs(zt) > 1, 1/np.conj(zt), zt)
+    ph = np.degrees(np.angle(zt)) % 120
+    ph = np.where(ph > 60, 120 - ph, ph)
+    r2 = np.abs(zt)**2
+    return ph, (1 - r2)/(1 + r2)
+
+
+def from_chart(phi, q):
+    """(phi in degrees, q) -> the canonical apex (a, b): longest side as base [0, 1], a <= 1/2."""
+    phi, q = np.broadcast_arrays(np.asarray(phi, float), np.asarray(q, float))
+    r = np.sqrt((1 - q)/(1 + q))
+    rhs = np.stack([np.zeros_like(r), r*np.exp(1j*np.radians(phi)), np.ones_like(r)], -1)
+    z = rhs @ _MINV.T                                          # (..., 3) vertices
+    l = np.abs(np.roll(z, -1, axis=-1) - z)
+    i = np.argmax(l, axis=-1)[..., None]
+    p0 = np.take_along_axis(z, i, -1)[..., 0]
+    p1 = np.take_along_axis(z, (i + 1) % 3, -1)[..., 0]
+    p2 = np.take_along_axis(z, (i + 2) % 3, -1)[..., 0]
+    w = (p2 - p0)/(p1 - p0)
+    w = np.where(w.imag < 0, w.conj(), w)
+    w = np.where(w.real > 0.5, 1 - w.conj(), w)
+    return w.real, w.imag
+
+
+def log_density(sur, spec, f, y, K, beta, sigma, Q):
+    """Unnormalized log posterior density RELATIVE TO KENDALL at apex points Q (n, 2)."""
+    sig, logw = sigma_weights(spec, sigma)
+    lm, _ = log_lik(y, sur.rbf(f)(Q)[:, :K - 1], sur.tau[:K - 1], sig, logw)
+    return lm - beta*(sur.energy_at(Q) - sur.E_eq)
+
+
+def _chart_grid(lo, hi, n, min_angle_deg):
+    """Cell-centred n x n lattice over the (phi, q) box [lo, hi]: `(PHI, QQ, apex points of the
+    cells in the support, mask)`."""
+    ph = lo[0] + (hi[0] - lo[0])*(np.arange(n) + .5)/n
+    qq = lo[1] + (hi[1] - lo[1])*(np.arange(n) + .5)/n
+    PHI, QQ = np.meshgrid(ph, qq)
+    a, b = from_chart(PHI, QQ)
+    m = in_support(a, b, min_angle_deg)
+    return PHI, QQ, np.c_[a[m], b[m]], m
+
+
+def support_area(min_angle_deg, n=800):
+    """Area of the support in the (phi, q) chart, i.e. its Kendall measure in chart units."""
+    _, _, P, m = _chart_grid((0, 0), (60, 1), n, min_angle_deg)
+    return m.mean()*60.0
+
+
+def plot_density(spec, out, sur, figdir, n=220):
+    """Posterior densities in the equal-area chart: joint heatmaps (Kendall prior) and the
+    marginals of phi and q (every prior), one pair of figures per sigma."""
+    import matplotlib.pyplot as plt
+    base = PACKAGE_ROOT/out if not pathlib.Path(out).is_absolute() else pathlib.Path(out)
+    INK, MUTED = '#1f1f1e', '#8a897f'
+    BETA_C = {b: c for b, c in zip(spec.prior_betas, ('#eb6834', '#2a78d6', '#1baf7a', '#7b5bd6'))}
+    area = support_area(sur.min_angle_deg)
+    mt = [it for it in items(spec, sur) if it[1] == 'map']
+
+    def window(npz_paths, mass_level=0.999):
+        pts = []
+        for p in npz_paths:
+            z = np.load(p)
+            sel = z['Q'][z['level'] <= mass_level]
+            pts.append(np.c_[to_chart(sel[:, 0], sel[:, 1])])
+        pts = np.vstack(pts)
+        lo, hi = pts.min(0), pts.max(0)
+        pad = np.maximum((hi - lo)*0.15, (0.4, 0.004))
+        return np.maximum(lo - pad, (0, 0)), np.minimum(hi + pad, (60, 1))
+
+    def evaluate(key, r, K, s, beta, lo, hi):
+        y = np.load(base/'maps'/f'{key}_K{K}_s{s:g}_b{beta:g}.npz')['y']
+        PHI, QQ, P, m = _chart_grid(lo, hi, n, sur.min_angle_deg)
+        ld = np.full(PHI.shape, -np.inf)
+        ld[m] = log_density(sur, spec, int(sur.fold[r]), y, K, beta, s, P)
+        cell = (hi[0] - lo[0])*(hi[1] - lo[1])/n**2
+        mass = np.exp(ld - logsumexp(ld[m]))
+        mass[~m] = 0.0
+        return PHI, QQ, mass, cell
+
+    for s in spec.sigmas:
+        # joint densities, Kendall prior
+        fig, axs = plt.subplots(len(mt), len(spec.Ks), figsize=(3.7*len(spec.Ks), 3.2*len(mt)),
+                                squeeze=False)
+        beta0 = spec.prior_betas[0]
+        for i, (key, _, _, r) in enumerate(mt):
+            tph, tq = to_chart(*sur.P[r])
+            for j, K in enumerate(spec.Ks):
+                ax = axs[i, j]
+                lo, hi = window([base/'maps'/f'{key}_K{K}_s{s:g}_b{beta0:g}.npz'])
+                PHI, QQ, mass, cell = evaluate(key, r, K, s, beta0, lo, hi)
+                dens = mass/(cell/area)                       # relative to the Kendall prior
+                im = ax.pcolormesh(PHI, QQ, np.ma.masked_where(mass == 0, dens), cmap='Blues',
+                                   shading='nearest', rasterized=True)
+                ax.contourf(PHI, QQ, (mass == 0).astype(float), levels=[0.5, 1.5],
+                            colors=['#e8e7e3'])
+                lev, _ = hpd(np.log(np.maximum(mass, 1e-300)).ravel(), mass.ravel())
+                ax.contour(PHI, QQ, lev.reshape(mass.shape), levels=[0.5, 0.9], colors=INK,
+                           linewidths=[1.1, .6])
+                ax.plot(tph, tq, '+', color='#d95926', ms=11, mew=2)
+                cb = fig.colorbar(im, ax=ax, shrink=.85, pad=.02)
+                cb.ax.tick_params(labelsize=6.5)
+                cb.outline.set_visible(False)
+                ax.set_title(f'apex ({sur.P[r, 0]:.2f}, {sur.P[r, 1]:.2f}), K={K}', fontsize=9)
+                ax.tick_params(labelsize=7)
+                if i == len(mt) - 1:
+                    ax.set_xlabel('φ (degrees)', fontsize=8)
+                if j == 0:
+                    ax.set_ylabel('q (normalized area)', fontsize=8)
+        fig.suptitle(f'Posterior density relative to Kendall, Kendall prior, σ = {s:g}, in the '
+                     'equal-area chart\n(contours: 50% and 90% regions; + = truth; grey = outside '
+                     'the grid; each panel zoomed)', fontsize=10)
+        fig.tight_layout()
+        fig.savefig(figdir/f'density_sigma{s:g}.png', dpi=150, facecolor='white')
+        plt.close(fig)
+
+        # marginals of phi and q, every prior
+        fig, axs = plt.subplots(len(mt), 2*len(spec.Ks), figsize=(2.6*2*len(spec.Ks), 2.4*len(mt)),
+                                squeeze=False)
+        for i, (key, _, _, r) in enumerate(mt):
+            tph, tq = to_chart(*sur.P[r])
+            for j, K in enumerate(spec.Ks):
+                paths = [base/'maps'/f'{key}_K{K}_s{s:g}_b{b:g}.npz' for b in spec.prior_betas]
+                lo, hi = window(paths)
+                axp, axq = axs[i, 2*j], axs[i, 2*j + 1]
+                for beta in spec.prior_betas:
+                    PHI, QQ, mass, cell = evaluate(key, r, K, s, beta, lo, hi)
+                    dph = (hi[0] - lo[0])/n
+                    dq = (hi[1] - lo[1])/n
+                    lab = 'Kendall' if beta == 0 else f'β={beta:g}'
+                    axp.plot(PHI[0], mass.sum(0)/dph, color=BETA_C[beta], lw=1.3, label=lab)
+                    axq.plot(QQ[:, 0], mass.sum(1)/dq, color=BETA_C[beta], lw=1.3, label=lab)
+                for ax, t, name in ((axp, tph, 'φ (deg)'), (axq, tq, 'q')):
+                    ax.axvline(t, color=INK, lw=.8, ls='--')
+                    ax.set_ylim(0, None)
+                    ax.tick_params(labelsize=6.5)
+                    ax.set_yticks([])
+                    if i == len(mt) - 1:
+                        ax.set_xlabel(name, fontsize=8)
+                axp.set_title(f'K={K}: φ', fontsize=8.5)
+                axq.set_title(f'K={K}: q', fontsize=8.5)
+                if j == 0:
+                    axp.set_ylabel(f'apex ({sur.P[r, 0]:.2f}, {sur.P[r, 1]:.2f})', fontsize=8)
+        axs[0, -1].legend(fontsize=7, frameon=False)
+        fig.suptitle(f'Marginal posterior densities of φ and q, σ = {s:g} (dashed = truth; '
+                     'each panel zoomed to the posteriors\' mass)', fontsize=10)
+        fig.tight_layout()
+        fig.savefig(figdir/f'marginals_sigma{s:g}.png', dpi=150, facecolor='white')
+        plt.close(fig)
+
+
+def procrustes(w, t):
+    """The triangle (0, 1, w) similarity-aligned to the triangle t (3 complex vertices, centred,
+    unit centroid size), over the 6 labellings and reflection: returns the aligned vertices."""
+    best = None
+    for z in (np.array([0, 1, w]), np.array([0, 1, np.conj(w)])):
+        for k in range(3):
+            for zz in (np.roll(z, k), np.roll(z, k)[::-1]):
+                zc = zz - zz.mean()
+                fit = zc*(np.vdot(zc, t)/np.vdot(zc, zc))
+                r = np.linalg.norm(fit - t)
+                if best is None or r < best[0]:
+                    best = (r, fit)
+    return best[1]
+
+
+def plot_samples(spec, out, sur, figdir, n_draw=80, n=220, seed=0):
+    """Triangles drawn from the posterior (Kendall prior), each similarity-aligned to the truth
+    (Procrustes over labellings and reflection), drawn translucent over the truth."""
+    import matplotlib.pyplot as plt
+    base = PACKAGE_ROOT/out if not pathlib.Path(out).is_absolute() else pathlib.Path(out)
+    rng = np.random.default_rng(seed)
+    mt = [it for it in items(spec, sur) if it[1] == 'map']
+    beta = spec.prior_betas[0]
+    for s in spec.sigmas:
+        fig, axs = plt.subplots(len(mt), len(spec.Ks), figsize=(2.9*len(spec.Ks), 2.7*len(mt)),
+                                squeeze=False)
+        for i, (key, _, _, r) in enumerate(mt):
+            t = np.array([0, 1, sur.P[r, 0] + 1j*sur.P[r, 1]])
+            t = t - t.mean()
+            t = t/np.linalg.norm(t)
+            for j, K in enumerate(spec.Ks):
+                ax = axs[i, j]
+                y = np.load(base/'maps'/f'{key}_K{K}_s{s:g}_b{beta:g}.npz')['y']
+                # sample on the full equal-area chart (cells are equal Kendall mass)
+                PHI, QQ, P, m = _chart_grid((0, 0), (60, 1), n*2, sur.min_angle_deg)
+                ld = log_density(sur, spec, int(sur.fold[r]), y, K, beta, s, P)
+                # refine: resample on a zoom around the top of the coarse density
+                wts = np.exp(ld - logsumexp(ld))
+                ph_c, q_c = PHI[m], QQ[m]
+                top = wts >= np.sort(wts)[::-1][np.searchsorted(np.cumsum(np.sort(wts)[::-1]),
+                                                                0.9999)]
+                lo = np.array([max(ph_c[top].min() - 60/(2*n), 0), max(q_c[top].min() - 1/(2*n), 0)])
+                hi = np.array([min(ph_c[top].max() + 60/(2*n), 60), min(q_c[top].max() + 1/(2*n), 1)])
+                PHI, QQ, P, m = _chart_grid(lo, hi, n, sur.min_angle_deg)
+                ld = log_density(sur, spec, int(sur.fold[r]), y, K, beta, s, P)
+                wts = np.exp(ld - logsumexp(ld))
+                pick = rng.choice(len(P), n_draw, p=wts)
+                dph, dq = (hi - lo)/n
+                ph = PHI[m][pick] + dph*(rng.random(n_draw) - .5)
+                qq = QQ[m][pick] + dq*(rng.random(n_draw) - .5)
+                a, b = from_chart(ph, np.clip(qq, 0, 1))
+                for w in a + 1j*b:
+                    z = procrustes(w, t)
+                    zc = np.r_[z, z[:1]]
+                    ax.plot(zc.real, zc.imag, color='#2a78d6', lw=.6, alpha=.18)
+                tc = np.r_[t, t[:1]]
+                ax.plot(tc.real, tc.imag, color='#1f1f1e', lw=1.4, ls='--')
+                ax.set_aspect('equal')
+                ax.axis('off')
+                ax.set_title(f'apex ({sur.P[r, 0]:.2f}, {sur.P[r, 1]:.2f}), K={K}', fontsize=9)
+        fig.suptitle(f'{n_draw} posterior draws (Kendall prior, σ = {s:g}), each aligned to the '
+                     'truth (dashed) by rotation, scale, reflection and relabelling', fontsize=10)
+        fig.tight_layout()
+        fig.savefig(figdir/f'samples_sigma{s:g}.png', dpi=150, facecolor='white')
+        plt.close(fig)
+
+
 def plot(spec, out, grid_out=None):
     import matplotlib
     matplotlib.use('Agg')
@@ -672,6 +905,8 @@ def plot(spec, out, grid_out=None):
     fig.colorbar(sc, ax=axs[0].tolist(), shrink=.8)
     fig.savefig(figdir/'cv_error.png', dpi=150, facecolor='white', bbox_inches='tight')
     plt.close(fig)
+    plot_density(spec, out, sur, figdir)
+    plot_samples(spec, out, sur, figdir)
     print(f'# wrote {figdir}')
 
 
@@ -730,7 +965,7 @@ def main(argv=None):
         p.add_argument('spec')
         p.add_argument('--out', default=None,
                        help='output directory, relative to the douse checkout '
-                            '(default benchmarks/run/triangle_posterior/<spec name>)')
+                            '(default $DOUSE_RUNS/triangle_posterior/<spec name>, else benchmarks/run/...)')
         p.add_argument('--grid-out', default=None,
                        help="the triangle grid's ledger directory (default family_grid's)")
         if name == 'run':

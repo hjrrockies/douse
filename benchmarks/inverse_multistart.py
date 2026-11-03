@@ -141,7 +141,7 @@ def load(path):
 
 
 def default_out(spec):
-    return f'benchmarks/run/inverse/{spec.name}'
+    return spec_mod.run_dir('inverse', spec.name)
 
 
 # ---- cases and runs ---------------------------------------------------------------------------
@@ -550,7 +550,7 @@ def main(argv=None):
     for name in ('runs', 'run', 'slurm', 'collect'):
         p = sub.add_parser(name)
         p.add_argument('spec')
-        p.add_argument('--out', default=None, help='default: benchmarks/run/inverse/<spec name>')
+        p.add_argument('--out', default=None, help='default: $DOUSE_RUNS/inverse/<spec name>, else benchmarks/run/...')
         if name == 'run':
             p.add_argument('--task', type=int, default=0)
             p.add_argument('--ntasks', type=int, default=1)
