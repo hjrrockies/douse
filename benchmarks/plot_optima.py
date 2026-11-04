@@ -29,7 +29,9 @@ import numpy as np
 from douse import VertexPolygon, spectral_guard
 
 PERIM = 4.0
-LEDGERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run', 'ratio_multistart')
+LEDGERS = (os.path.join(os.path.expanduser(os.environ['DOUSE_RUNS']), 'ratio_multistart')
+           if os.environ.get('DOUSE_RUNS') else
+           os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run', 'ratio_multistart'))
 # THE GATES ARE IMPORTED, NOT RESTATED. Three files now read these ledgers and a guard
 # copied into each is a guard that drifts apart across them.
 try:

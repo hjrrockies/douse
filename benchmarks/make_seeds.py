@@ -6,8 +6,8 @@ than drawn at random.  (2026-11-03)
     uv run python -m benchmarks.make_seeds grid   --cells N3_k4 N3_k5 --out benchmarks/seeds/grid_v1.json
 
 `k` is the ledger's (0-based: N6_k4 is lam_5/lam_1). The rows the seeds come from are the best
-certified rows of the ledgers under `--from` (default: thesis_ratio_v1 and v2), filtered as
-`summarize_grid` filters them.
+certified rows of the ledgers under `--from` (default: thesis_ratio_v1 and v2 under
+`$DOUSE_RUNS/slurm/`, else `benchmarks/run/slurm/`), filtered as `summarize_grid` filters them.
 
 SPLIT: the max over N-gons is at least the max over (N-1)-gons, since an (N-1)-gon is an N-gon
 with a flat vertex. Two cells (N6 lam_5/lam_1, N7 lam_6/lam_1) certified BELOW their (N-1)-gon
@@ -30,6 +30,7 @@ import pathlib
 import numpy as np
 
 from douse import VertexPolygon, ledger, spectral_guard
+from douse import spec as spec_mod
 from douse.polygon import polygon_area
 
 from . import summarize_grid as sg
@@ -37,7 +38,17 @@ from . import summarize_grid as sg
 ROOT = pathlib.Path(__file__).resolve().parent
 PERIM = 4.0
 SIGMA_MAX = 1e-6
-FROM = [ROOT/'run/slurm/thesis_ratio_v1', ROOT/'run/slurm/thesis_ratio_v2']
+
+
+def runs(*parts):
+    """`spec.run_dir(*parts)` as an absolute path: under `$DOUSE_RUNS` when it is set, else
+    under this checkout's `benchmarks/run/`."""
+    p = pathlib.Path(spec_mod.run_dir(*parts))
+    return p if p.is_absolute() else spec_mod.PACKAGE_ROOT/p
+
+
+FROM = [runs('slurm', 'thesis_ratio_v1'), runs('slurm', 'thesis_ratio_v2')]
+GRID = runs('family_grid', 'triangle_grid_v1')
 
 
 def parse_cell(c):
@@ -114,7 +125,7 @@ def mirror_seeds(N, k, roots=FROM, n=2):
             for r in rows]
 
 
-def grid_seeds(N, k, grid=ROOT/'run/family_grid/triangle_grid_v1',
+def grid_seeds(N, k, grid=GRID,
                spec_path=ROOT/'specs/triangle_grid_v1.toml'):
     from scipy.spatial import cKDTree
     from . import family_grid as fg
@@ -138,7 +149,7 @@ def main(argv=None):
     ap.add_argument('--cells', nargs='+', required=True, help='target cells, e.g. N6_k4')
     ap.add_argument('--from', dest='roots', nargs='+', default=None,
                     help='ledger roots for split/mirror (default: thesis_ratio_v1 and v2)')
-    ap.add_argument('--grid', default=str(ROOT/'run/family_grid/triangle_grid_v1'),
+    ap.add_argument('--grid', default=str(GRID),
                     help='the triangle grid ledgers, for grid seeds')
     ap.add_argument('--out', required=True)
     args = ap.parse_args(argv)
