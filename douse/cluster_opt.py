@@ -100,7 +100,9 @@ def _watch_warnings(tally):
     the backend's own `PrecisionWarning`s (a level unmet, an eigenvalue possibly MISSED). Now the
     one non-substantive message is filtered (`FourierBessel can deliver`, measured ~1e5x
     pessimistic, `chladni/notes/hard_cases.md`), every other warning is shown once per distinct
-    text, and ALL of them are counted into `tally['n']` for the result row (2026-10-14)."""
+    text, and ALL of them are counted into `tally['n']` for the result row (2026-10-14). From
+    chladni PR #22 the Fourier-Bessel warning is column-scaled and reads "FourierBessel at the
+    corner ...": the anchored filter misses it on purpose, so a real loss is shown and counted."""
     with warnings.catch_warnings():
         warnings.simplefilter('always')
         warnings.filterwarnings('ignore', message='FourierBessel can deliver')

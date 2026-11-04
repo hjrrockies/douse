@@ -51,10 +51,12 @@ __all__ = ["SpectrumEvaluator", "ChladniEvaluator", "ChladniSolver", "refusal_fo
 
 @contextmanager
 def _quiet():
-    """Silence ONE warning: Fourier-Bessel's per-column accuracy bound ("FourierBessel can
-    deliver about 1e-9 ..."). Measured against 30-digit mpmath it is ~1e5x pessimistic
-    (`chladni/notes/hard_cases.md`, part 3), so in a long run it is noise. Every other
-    `chladni` warning still reaches the caller; shortfalls arrive as flags and refusals."""
+    """Silence ONE warning: the OLD entry-wise Fourier-Bessel accuracy bound ("FourierBessel can
+    deliver about 1e-9 ..."), measured ~1e5x pessimistic (`chladni/notes/hard_cases.md`, part 3).
+    chladni PR #22 made that warning column-scaled; its message now starts "FourierBessel at the
+    corner ...", which this filter (anchored at the start) lets through ON PURPOSE: it fires only
+    on a real loss. The filter stays for a chladni checkout older than #22. Every other `chladni`
+    warning still reaches the caller; shortfalls arrive as flags and refusals."""
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="FourierBessel can deliver")
         yield
