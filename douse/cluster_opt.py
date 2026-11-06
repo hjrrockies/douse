@@ -132,6 +132,14 @@ def _active_cluster(lams, k, eps_abs, spec=None):
         # Identical to the loop below on all-simple spectra, and on a double the loop already
         # took both copies (their gap is 0 <= eps_abs), so this changes no accepted trace.
         lo_l, hi_l = spec.neighbourhood(spec.level_index(k), float(eps_abs))
+        # chladni's CLUSTERS are a floor (2026-11-05): levels whose eigenfunctions are entangled
+        # are taken whole however narrow `eps_abs` is, since their members' individual
+        # derivatives are not determined (`chladni.eigensolver.Cluster`)
+        clu = [getattr(L, "cluster", None) for L in spec.levels]
+        while lo_l > 0 and clu[lo_l] is not None and clu[lo_l - 1] == clu[lo_l]:
+            lo_l -= 1
+        while hi_l < len(clu) and clu[hi_l - 1] is not None and clu[hi_l] == clu[hi_l - 1]:
+            hi_l += 1
         ends = np.cumsum(spec.mult)
         return int(ends[lo_l] - spec.mult[lo_l]), int(ends[hi_l - 1])
     lams = np.asarray(lams, dtype=float)

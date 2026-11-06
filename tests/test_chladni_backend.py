@@ -389,3 +389,26 @@ def test_near_degenerate_levels_are_predicted_from_their_joint_block():
     assert moves[0] >= 0.25 * moves.max() - 1e-15
     M = np.tensordot(dv, sol.record.hadamard([1, 2], sol._velocity()), axes=(0, 0))
     assert moves[1] >= np.max(np.abs(np.linalg.eigvalsh(0.5 * (M + M.T)))) - 1e-12
+
+
+@pytest.mark.slow
+def test_a_chladni_cluster_is_differentiated_whole():
+    """1 x (1 + 1e-9): lam_2, lam_3 split by 1.2e-9 relative, values resolved but eigenfunctions
+    entangled, so chladni returns them as a CLUSTER (2026-11-05). chladni refuses a Hadamard
+    block over part of one; the backend sizes windows over the whole cluster, gives a member its
+    diagonal block of the cluster's matrix, and refuses (as a shape refusal) a douse cluster
+    that cuts through it."""
+    from douse.derivative import cluster_matrices
+    L, H = 1.0, 1.0 + 1e-9
+    fam = VertexPolygon(4, perim=2 * (L + H))
+    p = _p([0, L, L + 1j * H, 1j * H], fam.perim)
+    lams, solver = ChladniEvaluator(fam, n_eigs=4, prec=PREC, degenerate_tol=0.0).eigenvalues(p)
+    assert [tuple(c.levels) for c in solver.spec.clusters] == [(1, 2)]
+    Hc = solver.record.hadamard([1, 2], solver._velocity())
+    np.testing.assert_array_equal(solver.hadamard_vertices(2), Hc[:, 1:2, 1:2])
+    moves = solver.predicted_moves(np.ones(8) * 1e-3)
+    assert moves.shape == (4,) and moves[1] == moves[2]
+    M = cluster_matrices(fam, p, solver, float(np.mean(lams[1:3])), 2, lams=lams[1:3])
+    assert M.shape[1:] == (2, 2)
+    with pytest.raises(UnresolvedSpectrum, match="entangled"):
+        cluster_matrices(fam, p, solver, float(np.mean(lams[2:4])), 2, lams=lams[2:4])

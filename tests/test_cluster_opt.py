@@ -472,3 +472,21 @@ def test_the_floor_admits_exactly_the_neighbours_closer_than_itself():
     assert _active_cluster(lams, 1, _eps_width(lams[1], 0.0, 0.0, 1e-9)) == (1, 2)
     # and an ordinary eps_rel request still reaches everything within 1e-3 of lam_k
     assert _active_cluster(lams, 1, _eps_width(lams[1], 1e-3, None, 1e-9)) == (1, 4)
+
+
+def test_chladni_clusters_are_a_floor_under_the_active_set():
+    """chladni links levels whose eigenfunctions are entangled into a `Cluster` (2026-11-05);
+    their members' own derivatives are not determined, so the eps-active set takes a cluster
+    whole however narrow `eps_abs` is. Without one, the width alone decides, as before."""
+    from chladni.eigensolver import Cluster, Level, Spectrum
+    from douse.cluster_opt import _active_cluster
+    lam = [10.0, 20.0, 20.0 + 2e-9, 30.0]
+    plain = Spectrum(tuple(Level(l, 1, 1e-12) for l in lam))
+    assert _active_cluster(lam, 1, 1e-12, spec=plain) == (1, 2)
+    levels = tuple(Level(l, 1, 1e-12, cluster=(0 if i in (1, 2) else None))
+                   for i, l in enumerate(lam))
+    spec = Spectrum(levels, clusters=(Cluster(levels=(1, 2), mult=2, spread=1e-10,
+                                              overlap=1e-6),))
+    assert _active_cluster(lam, 1, 1e-12, spec=spec) == (1, 3)
+    assert _active_cluster(lam, 2, 1e-12, spec=spec) == (1, 3)
+    assert _active_cluster(lam, 3, 1e-12, spec=spec) == (3, 4)

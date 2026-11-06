@@ -136,11 +136,35 @@ class ChladniSolver:
     def _level(self, lam):
         return self.spec.level_of(lam)
 
+    def _chladni_cluster(self, i):
+        """The level indices of the chladni cluster holding level `i`, or None (chladni's
+        `Spectrum.clusters`, 2026-11-05: levels whose eigenfunctions are determined only
+        together; `hadamard` refuses a block over part of one)."""
+        c = getattr(self.spec.levels[i], "cluster", None)
+        return None if c is None else tuple(self.spec.clusters[c].levels)
+
     def hadamard_vertices(self, i):
-        """`(2N, m, m)` for level `i`, cached."""
+        """`(2N, m, m)` for level `i`, cached.
+
+        A member of a chladni CLUSTER gets its own diagonal block of the cluster's matrix, on
+        the members orthonormalized together: chladni will not differentiate one member alone.
+        That block is the member's derivative only to within the cluster's `overlap`
+        (`chladni.eigensolver.Cluster`); the per-level vectors it replaces were off by the same
+        overlap AND not orthonormal to each other. A ratio run never reads it -- its eps-active
+        set holds whole clusters (`cluster_opt._active_cluster`) -- but window sizing does."""
         if i not in self._H:
-            with _quiet():
-                self._H[i] = self.record.hadamard(i, self._velocity())
+            members = self._chladni_cluster(i)
+            if members is None:
+                with _quiet():
+                    self._H[i] = self.record.hadamard(i, self._velocity())
+            else:
+                if members not in self._H:
+                    with _quiet():
+                        self._H[members] = self.record.hadamard(list(members), self._velocity())
+                ends = np.cumsum([int(self.spec.mult[j]) for j in members])
+                b = int(ends[members.index(i)])
+                a = b - int(self.spec.mult[i])
+                self._H[i] = self._H[members][:, a:b, a:b]
         return self._H[i]
 
     def dlams_dvertices(self, lams, n_vert):
@@ -161,6 +185,15 @@ class ChladniSolver:
         (`Spectrum.cluster`): those of the members `lams` when given, else the adjacent levels
         whose multiplicities sum to `mult`."""
         idx, total = self.spec.cluster(lams, near=lam, mult=mult)
+        cut = [m for m in {self._chladni_cluster(i) for i in idx} - {None}
+               if not set(m) <= set(idx)]
+        if cut:
+            # The eps-active set holds part of a chladni cluster: its block would mix members
+            # whose eigenfunctions are determined only together. `_active_cluster` takes whole
+            # clusters, so this is reached only from a truncated spectrum.
+            raise UnresolvedSpectrum(
+                f"chladni: the cluster of {mult} eigenvalues near lam = {lam:.10g} cuts through "
+                f"chladni's cluster of levels {cut[0]}, whose eigenfunctions are entangled")
         if total != int(mult):
             # A refusal, not a bug: the caller's eps-active cluster and the solver's levels
             # disagree on how many eigenvalues sit here, so no block is honest. Raised as a
@@ -209,10 +242,13 @@ class ChladniSolver:
         for i in range(n):
             M = np.tensordot(dv, self.hadamard_vertices(i), axes=(0, 0))
             own[i] = float(np.max(np.abs(np.linalg.eigvalsh(0.5 * (M + M.T)))))
-        # group adjacent levels whose gap is within reach of their joint motion
+        # group adjacent levels whose gap is within reach of their joint motion, never splitting
+        # a chladni cluster (`hadamard` refuses a block over part of one)
         groups, start = [], 0
         for i in range(1, n + 1):
-            if i == n or (lam[i] - lam[i - 1]) > factor * (own[i] + own[i - 1]):
+            same = i < n and self._chladni_cluster(i) is not None \
+                and self._chladni_cluster(i) == self._chladni_cluster(i - 1)
+            if i == n or (not same and (lam[i] - lam[i - 1]) > factor * (own[i] + own[i - 1])):
                 groups.append(list(range(start, i)))
                 start = i
         move = own.copy()
