@@ -167,12 +167,25 @@ class ChladniSolver:
                 self._H[i] = self._H[members][:, a:b, a:b]
         return self._H[i]
 
-    def dlams_dvertices(self, lams, n_vert):
-        """`(K, 2N)`: the simple-eigenvalue gradients (`SolvedShape`)."""
+    def dlams_dvertices(self, lams, n_vert, degenerate="raise"):
+        """`(K, 2N)`: the simple-eigenvalue gradients (`SolvedShape`).
+
+        At a level of multiplicity m > 1 the members have no gradient, only directional
+        derivatives (the spectrum of the m x m block). `degenerate="raise"` (the default; an
+        optimizer must model the cluster itself) raises `DegenerateSpectrum`. `"mean"` gives
+        each copy the gradient of the level's MEAN, `tr H / m`, which is exact: a symmetric
+        function of the members is differentiable (2026-11-06, for the inverse problem, whose
+        targets include symmetric shapes with exact doubles)."""
+        if degenerate not in ("raise", "mean"):
+            raise ValueError(f"degenerate must be 'raise' or 'mean', got {degenerate!r}")
         J = np.empty((len(lams), 2 * n_vert))
         for j, lam in enumerate(lams):
             i = self._level(lam)
-            if self.spec.mult[i] > 1:
+            m = int(self.spec.mult[i])
+            if m > 1 and degenerate == "mean":
+                J[j] = np.trace(self.hadamard_vertices(i), axis1=1, axis2=2) / m
+                continue
+            if m > 1:
                 raise DegenerateSpectrum(
                     f"lam = {lam:.10g} is a level of multiplicity {self.spec.mult[i]}: its shape "
                     f"derivative is the spectrum of an m x m matrix, not a gradient. Use "
@@ -281,7 +294,7 @@ class SpectrumEvaluator:
     backend = "chladni"
 
     def __init__(self, family, n_eigs=1, prec=1e-10, plan_at=None, degenerate_tol=1e-6,
-                 confirm=False, warn_gap=1e-3, **lappy_options):
+                 confirm=False, warn_gap=1e-3, degenerate="raise", **lappy_options):
         unknown = sorted(set(lappy_options) - set(self.LAPPY_ONLY))
         if unknown:
             raise TypeError(f"unexpected option(s) {unknown}")
@@ -292,6 +305,10 @@ class SpectrumEvaluator:
         self.prec = float(prec)
         self.degenerate_tol = float(degenerate_tol)
         self.warn_gap = float(warn_gap)
+        if degenerate not in ("raise", "mean"):
+            raise ValueError(f"degenerate must be 'raise' or 'mean', got {degenerate!r}")
+        self.degenerate = degenerate        # at a multiple level: see `dlams_dvertices`
+        self.n_mean_rows = 0                # Jacobian rows given the level-mean gradient
         self.min_gap = np.inf               # smallest relative gap seen, over every evaluation
         self.confirm = bool(confirm)
         self._plan = None
@@ -587,7 +604,11 @@ class SpectrumEvaluator:
         """`(lams, dlams_dp)` -- the spectrum and its `(K, n_p)` Jacobian."""
         from .derivative import dlams_dp
         lams, solver = self.eigenvalues(p, seed=seed)
-        return lams, dlams_dp(self.family, p, solver, lams)
+        if self.degenerate == "raise":
+            return lams, dlams_dp(self.family, p, solver, lams)
+        self.n_mean_rows += sum(int(solver.spec.mult[solver._level(l)]) > 1 for l in lams)
+        J = solver.dlams_dvertices(lams, self.family.n, degenerate=self.degenerate)
+        return lams, J @ self.family.d_vertices_dp(p)
 
     def replan(self, p=None):
         """Throw the frozen plan away so the next call rebuilds it (at `p` if given)."""

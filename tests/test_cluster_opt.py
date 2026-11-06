@@ -490,3 +490,16 @@ def test_chladni_clusters_are_a_floor_under_the_active_set():
     assert _active_cluster(lam, 1, 1e-12, spec=spec) == (1, 3)
     assert _active_cluster(lam, 2, 1e-12, spec=spec) == (1, 3)
     assert _active_cluster(lam, 3, 1e-12, spec=spec) == (3, 4)
+
+
+def test_hadamard_shortfall_warnings_are_counted_apart():
+    """chladni's calibrated Hadamard estimate (#23) warns more often than the faults `n_warnings`
+    was meant to flag, so the run counts it separately as well."""
+    import warnings
+    from douse.cluster_opt import _watch_warnings
+    tally = dict(n=0, n_hadamard_short=0, seen=set())
+    with _watch_warnings(tally):
+        for _ in range(3):
+            warnings.warn("the Hadamard matrix at lam = 49.3 is good to 1.1e-10 relative")
+        warnings.warn("a level at lam = 12 is unmet")
+    assert tally['n'] == 4 and tally['n_hadamard_short'] == 3

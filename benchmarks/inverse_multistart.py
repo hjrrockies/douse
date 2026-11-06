@@ -308,7 +308,8 @@ def _true_conditioning(key, K, prec):
     case = json.loads(key)
     w = case_vertices(case, case['_perim'])
     fam = VertexPolygon(len(w), perim=case['_perim'])
-    ev = SpectrumEvaluator(fam, n_eigs=K, prec=prec, degenerate_tol=0.0, warn_gap=0.0)
+    ev = SpectrumEvaluator(fam, n_eigs=K, prec=prec, degenerate_tol=0.0, warn_gap=0.0,
+                           degenerate='mean')
     p = param_vector(w, case['_perim'])
     lam, J = ev(p)
     lam, J = np.asarray(lam)[:K], np.asarray(J)[:K]
@@ -353,8 +354,12 @@ def run_one(spec, rid, ci, K, sigma, draw, start):
             row.update(target_lam=lam.tolist(), target=target.tolist(), target_bound=tbound,
                        target_min_gap=float(np.min(np.diff(lam)/lam[1:])))
             fam = VertexPolygon(N, perim=spec.perim)
+            # AT A MULTIPLE LEVEL the members have no gradient; each copy's Jacobian row is the
+            # level mean's, which is exact (`chladni_backend.ChladniSolver.dlams_dvertices`).
+            # Symmetric targets -- the equilateral triangle, the square -- have exact doubles,
+            # and the default raised `DegenerateSpectrum`, which `gauss_newton` does not catch.
             ev = SpectrumEvaluator(fam, n_eigs=K, prec=spec.prec, degenerate_tol=0.0,
-                                   warn_gap=0.0)
+                                   warn_gap=0.0, degenerate='mean')
             # A START THE SOLVER REFUSES IS REDRAWN, as `ratio_multistart` does: `gauss_newton`
             # treats a refusal at a trial step as a rejected step but cannot begin from a shape
             # with no spectrum (2026-10-31, tri_acute start 1: a random triangle missed 1e-10 on
@@ -403,7 +408,8 @@ def run_one(spec, rid, ci, K, sigma, draw, start):
                        start_vertices=[[float(c.real), float(c.imag)] for c in z0],
                        angles_deg=np.sort(_angles_deg(zm)).tolist(),
                        true_angles_deg=np.sort(_angles_deg(w)).tolist(),
-                       worst_sigma=float(getattr(ev, 'worst_sigma', np.nan)))
+                       worst_sigma=float(getattr(ev, 'worst_sigma', np.nan)),
+                       n_mean_rows=int(getattr(ev, 'n_mean_rows', 0)))
         except Exception as exc:                                      # noqa: BLE001
             row.update(status='error', error=f'{type(exc).__name__}: {exc}',
                        traceback=traceback.format_exc().strip().splitlines()[-3:])

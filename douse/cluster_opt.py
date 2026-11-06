@@ -83,7 +83,7 @@ import numpy as np
 from scipy.optimize import minimize, minimize_scalar
 
 from . import degeneracy as _dg
-from .derivative import cluster_matrices, dlams_dp
+from .derivative import cluster_matrices, dlams_dp, whole_clusters
 from .evaluate import ShapeRefusal, SolverRefusal
 from .polygon import gauge_vector
 from .optimize import OptimizeResult
@@ -102,7 +102,13 @@ def _watch_warnings(tally):
     pessimistic, `chladni/notes/hard_cases.md`), every other warning is shown once per distinct
     text, and ALL of them are counted into `tally['n']` for the result row (2026-10-14). From
     chladni PR #22 the Fourier-Bessel warning is column-scaled and reads "FourierBessel at the
-    corner ...": the anchored filter misses it on purpose, so a real loss is shown and counted."""
+    corner ...": the anchored filter misses it on purpose, so a real loss is shown and counted.
+
+    `tally['n_hadamard_short']` counts, separately, chladni's `PrecisionWarning` that a Hadamard
+    matrix is short of `prec` ("the Hadamard matrix at lam = ..."). Since chladni #23 its
+    estimate is calibrated and conservative (3 max(identity residual, eps/alpha)), so it fires
+    more often than the warnings `n` was meant to flag; it is a derivative-accuracy statistic,
+    not a fault."""
     with warnings.catch_warnings():
         warnings.simplefilter('always')
         warnings.filterwarnings('ignore', message='FourierBessel can deliver')
@@ -110,6 +116,8 @@ def _watch_warnings(tally):
 
         def counting(message, category, filename, lineno, file=None, line=None):
             tally['n'] += 1
+            if str(message).startswith('the Hadamard matrix at lam'):
+                tally['n_hadamard_short'] = tally.get('n_hadamard_short', 0) + 1
             key = (category.__name__, str(message))
             if key not in tally['seen']:
                 tally['seen'].add(key)
@@ -132,16 +140,10 @@ def _active_cluster(lams, k, eps_abs, spec=None):
         # Identical to the loop below on all-simple spectra, and on a double the loop already
         # took both copies (their gap is 0 <= eps_abs), so this changes no accepted trace.
         lo_l, hi_l = spec.neighbourhood(spec.level_index(k), float(eps_abs))
-        # chladni's CLUSTERS are a floor (2026-11-05): levels whose eigenfunctions are entangled
-        # are taken whole however narrow `eps_abs` is, since their members' individual
-        # derivatives are not determined (`chladni.eigensolver.Cluster`)
-        clu = [getattr(L, "cluster", None) for L in spec.levels]
-        while lo_l > 0 and clu[lo_l] is not None and clu[lo_l - 1] == clu[lo_l]:
-            lo_l -= 1
-        while hi_l < len(clu) and clu[hi_l - 1] is not None and clu[hi_l] == clu[hi_l - 1]:
-            hi_l += 1
         ends = np.cumsum(spec.mult)
-        return int(ends[lo_l] - spec.mult[lo_l]), int(ends[hi_l - 1])
+        # chladni's CLUSTERS are a floor (2026-11-05): levels whose eigenfunctions are entangled
+        # are taken whole however narrow `eps_abs` is (`derivative.whole_clusters`)
+        return whole_clusters(spec, int(ends[lo_l] - spec.mult[lo_l]), int(ends[hi_l - 1]))
     lams = np.asarray(lams, dtype=float)
     lo = hi = k
     while lo > 0 and (lams[k] - lams[lo - 1]) <= eps_abs:
@@ -1266,6 +1268,7 @@ def _result(st, o, ev, tally, lams_tracked, F_tracked, verified):
                                     else [float(t) for t in ev._plan_built_at])),
                           # Warnings the run produced (shown once per text, counted in full).
                           n_warnings=int(tally['n']),
+                          n_hadamard_short=int(tally['n_hadamard_short']),
                           worst_sigma_any=float(stat('worst_bound', 'worst_sigma_any',
                                                      getattr(ev, 'worst_sigma_any', np.nan))),
                           n_spurious_refusals=int(stat('n_unmet_refusals', 'n_spurious_refusals',
@@ -1441,7 +1444,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
               sigma_abort_streak=sigma_abort_streak, fam=evaluator.family,
               window_factor=float(window_factor), window_floor=float(window_floor))
     p = np.array(p0, dtype=float)
-    tally = dict(n=0, seen=set())     # warnings seen inside the loop; see `_watch_warnings`
+    tally = dict(n=0, n_hadamard_short=0, seen=set())   # warnings in the loop: `_watch_warnings`
     with _watch_warnings(tally):
         lams, solver = evaluator.eigenvalues(p)
         st = _State(p=p, F=_ratio(lams, k), lams=lams, solver=solver, delta=float(delta0),

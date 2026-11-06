@@ -185,6 +185,28 @@ def detect_cluster(lams, k, rtol=1e-6):
     return lo, hi + 1
 
 
+def whole_clusters(spec, lo, hi):
+    """The unfolded range `[lo, hi)` widened to whole levels and whole chladni clusters of `spec`.
+
+    chladni links levels whose eigenfunctions are entangled into a `Cluster` (2026-11-05); their
+    members' individual derivatives are not determined, so any set of eigenvalues a caller
+    differentiates as a block must take such a cluster whole. `spec=None` (a lappy solver, or a
+    bare array of values) returns the range unchanged.
+    """
+    if spec is None or not hasattr(spec, "levels"):
+        return int(lo), int(hi)
+    mult = np.asarray(spec.mult, dtype=int)
+    ends = np.cumsum(mult)
+    lo_l = int(np.searchsorted(ends, lo, side="right"))
+    hi_l = int(np.searchsorted(ends, hi - 1, side="right")) + 1
+    clu = [getattr(L, "cluster", None) for L in spec.levels]
+    while lo_l > 0 and clu[lo_l] is not None and clu[lo_l - 1] == clu[lo_l]:
+        lo_l -= 1
+    while hi_l < len(clu) and clu[hi_l - 1] is not None and clu[hi_l] == clu[hi_l - 1]:
+        hi_l += 1
+    return int(ends[lo_l] - mult[lo_l]), int(ends[hi_l - 1])
+
+
 def cluster_matrices(family, p, solver, lam, mult, bq=None, lams=None):
     """`(n_p, m, m)` -- the matrix `M^(i)` for each parameter direction.
 

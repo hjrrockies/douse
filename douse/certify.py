@@ -41,7 +41,8 @@ import warnings
 
 import numpy as np
 
-from .derivative import cluster_matrices, detect_cluster, dlams_dp, directional_derivatives
+from .derivative import (cluster_matrices, detect_cluster, dlams_dp, directional_derivatives,
+                         whole_clusters)
 
 __all__ = ['det_form', 'first_order_report', 'second_order_probe', 'antisymmetric_hessian']
 
@@ -64,7 +65,8 @@ def first_order_report(family, p, solver, lams, k=1, cluster_rtol=1e-6, tol=1e-8
 
     Returns a dict:
 
-        cluster        (lo, hi) indices of the cluster containing lam_k
+        cluster        (lo, hi) indices of the cluster containing lam_k: the values within
+                       `cluster_rtol` of each other, widened to whole chladni clusters
         hypotheses     measured: |grad lam_1|, max |tr M|, cluster size, whether lam_k is lowest
         Q              the determinant form, when the 2x2 path applies
         Q_eigenvalues  its spectrum
@@ -77,6 +79,9 @@ def first_order_report(family, p, solver, lams, k=1, cluster_rtol=1e-6, tol=1e-8
     """
     lams = np.asarray(lams, dtype=float)
     lo, hi = detect_cluster(lams, k, rtol=cluster_rtol)
+    # chladni's clusters are a floor under the gap test, as for the optimizer's eps-active set:
+    # a block that cuts one is refused by the backend (`UnresolvedSpectrum`)
+    lo, hi = whole_clusters(getattr(solver, 'spec', None), lo, hi)
     m = hi - lo
     lam_1 = float(lams[0])
 

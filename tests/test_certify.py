@@ -300,3 +300,24 @@ def test_verify_multiplicity_rejects_a_collapse():
     assert not ev._verify_multiplicity(_FakeSolver([1e-12, 0.4, 0.7]), lams)
     # no coincident group at all: nothing to check
     assert ev._verify_multiplicity(_FakeSolver([0.9, 0.9, 0.9]), np.array([1.0, 2.0, 3.0]))
+
+
+def test_the_certificates_cluster_takes_chladni_clusters_whole():
+    """`first_order_report` groups by relative gap, and a gap test can cut through a chladni
+    `Cluster` (levels whose eigenfunctions are entangled, 2026-11-05), whose block the backend
+    then refuses. `whole_clusters` widens the range; without a chladni spectrum it is a no-op."""
+    from chladni.eigensolver import Cluster, Level, Spectrum
+    from douse.derivative import whole_clusters
+    lam = [10.0, 20.0, 20.0 + 3e-5, 20.0 + 6e-5, 30.0]           # gaps 1.5e-6 relative
+    levels = tuple(Level(l, 1, 1e-12, cluster=(0 if i in (1, 2, 3) else None))
+                   for i, l in enumerate(lam))
+    spec = Spectrum(levels, clusters=(Cluster(levels=(1, 2, 3), mult=3, spread=3e-6,
+                                              overlap=1e-6),))
+    lo, hi = detect_cluster(np.array(lam), 1, rtol=1e-6)
+    assert (lo, hi) == (1, 2)                                   # the gap test alone cuts it
+    assert whole_clusters(spec, lo, hi) == (1, 4)
+    assert whole_clusters(spec, 3, 4) == (1, 4)
+    assert whole_clusters(spec, 4, 5) == (4, 5)
+    assert whole_clusters(None, 1, 2) == (1, 2)
+    double = Spectrum((Level(10.0, 1, 1e-12), Level(20.0, 2, 1e-12), Level(30.0, 1, 1e-12)))
+    assert whole_clusters(double, 1, 2) == (1, 3)                # a double is never half-taken

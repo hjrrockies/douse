@@ -77,6 +77,30 @@ def test_a_degenerate_level_refuses_the_simple_gradient():
         ev(_p([0, 1, 1 + 1j, 1j], 4.0))
 
 
+@pytest.mark.slow
+def test_at_a_double_the_mean_option_gives_the_level_means_exact_gradient():
+    """`degenerate="mean"` (the inverse problem's evaluator): each copy of a double gets the
+    gradient of the pair's MEAN, which is differentiable where the members are not. The 2 x 1
+    rectangle's lam_5 = lam_6 = 5 pi^2 ((4,1) and (2,2)); not the square, where the mean is
+    stationary and the check would be empty. Against central differences of the mean on the same
+    evaluator (frozen plan)."""
+    fam = VertexPolygon(4, perim=6.0)
+    p = _p([0, 2, 2 + 1j, 1j], 6.0)
+    ev = ChladniEvaluator(fam, n_eigs=6, prec=PREC, degenerate_tol=0.0, degenerate="mean")
+    lams, J = ev(p)
+    assert lams[5] - lams[4] < 1e-8 * lams[5] and ev.n_mean_rows == 2
+    np.testing.assert_array_equal(J[4], J[5])
+    assert np.abs(J[4]).max() > 1.0                     # not a stationary point
+    h = 1e-4
+    for d in np.random.default_rng(0).normal(size=(2, len(p))):
+        d /= np.linalg.norm(d)
+        mean = lambda q: float(np.mean(ev.eigenvalues(q)[0][4:6]))
+        fd = (mean(p + h * d) - mean(p - h * d)) / (2 * h)
+        assert J[4] @ d == pytest.approx(fd, rel=1e-5, abs=1e-5 * np.abs(J).max())
+    with pytest.raises(ValueError, match="degenerate"):
+        ChladniEvaluator(fam, n_eigs=3, degenerate="split")
+
+
 class _Spec:
     def __init__(self, flags, declined=False):
         self.flags, self.declined = tuple(flags), declined
