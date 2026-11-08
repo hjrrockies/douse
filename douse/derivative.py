@@ -33,7 +33,7 @@ except ImportError:
 
 __all__ = ['vertex_velocity', 'velocity_fields', 'dlam_dvertices', 'dlam_dp',
            'dlams_dvertices', 'dlams_dp', 'detect_cluster', 'cluster_matrices',
-           'directional_derivatives']
+           'directional_derivatives', 'whole_clusters', 'partition_levels']
 
 
 def vertex_velocity(bq, k, n_vert, direction=1.0 + 0.0j):
@@ -205,6 +205,51 @@ def whole_clusters(spec, lo, hi):
     while hi_l < len(clu) and clu[hi_l - 1] is not None and clu[hi_l] == clu[hi_l - 1]:
         hi_l += 1
     return int(ends[lo_l] - mult[lo_l]), int(ends[hi_l - 1])
+
+
+def partition_levels(spec, tau_g):
+    """The levels of `spec` as `[(lo, hi), ...]`: ranges whose eigenfunctions are determined to
+    `tau_g` only as a whole. THE TEST THAT DECIDES WHAT MUST BE DIFFERENTIATED TOGETHER.
+
+    Davis-Kahan, in Moler-Payne's form: a set of levels spans the true eigenspace to about
+    `x sqrt(1 + x^2)`, `x = eps/gap`, with `eps` its worst `mp_eps` and `gap` its relative
+    distance to the nearest level outside, less that level's bar. Merge adjacent ranges while
+    that exceeds `tau_g`, to a fixed point (a merged range's `eps` can reach further), seeded
+    with chladni's clusters. Over-grouping is harmless: the joint block still carries the real
+    splitting. A level with no `mp_eps` gives no evidence and drives no merge.
+
+    It is conclusive only on certified counts: a missing level makes a gap look larger than it
+    is, which the spectrum's flags report (`chladni_backend.refusal_for` refuses it).
+    """
+    levels = spec.levels
+    lam = np.array([float(L.lam) for L in levels])
+    bnd = np.array([float(L.bound) for L in levels])
+    eps = np.array([float(getattr(L, 'mp_eps', np.nan)) for L in levels])
+    cluster = [getattr(L, 'cluster', None) for L in levels]
+    cut = np.array([cluster[i] is None or cluster[i] != cluster[i + 1]
+                    for i in range(len(levels) - 1)], dtype=bool)
+
+    def alpha(i, j):
+        return max(abs(lam[j] - lam[i]) - bnd[j], 0.0)/lam[j]
+
+    def beyond(e, a):
+        if not np.isfinite(e):
+            return False
+        x = e/a if a > 0 else np.inf
+        return x*np.sqrt(1.0 + x*x) > tau_g
+
+    while True:
+        group = np.concatenate([[0], np.cumsum(cut)])
+        worst = {g: np.nanmax(eps[group == g], initial=-np.inf) if np.any(np.isfinite(eps[group == g]))
+                 else np.nan for g in np.unique(group)}
+        merge = [i for i in np.flatnonzero(cut)
+                 if beyond(worst[group[i]], alpha(i, i + 1))
+                 or beyond(worst[group[i + 1]], alpha(i + 1, i))]
+        if not merge:
+            break
+        cut[merge] = False
+    ends = np.concatenate([[0], np.flatnonzero(cut) + 1, [len(levels)]])
+    return [(int(a), int(b)) for a, b in zip(ends[:-1], ends[1:])]
 
 
 def cluster_matrices(family, p, solver, lam, mult, bq=None, lams=None):

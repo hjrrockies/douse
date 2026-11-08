@@ -83,7 +83,7 @@ import numpy as np
 from scipy.optimize import minimize, minimize_scalar
 
 from . import degeneracy as _dg
-from .derivative import cluster_matrices, dlams_dp, whole_clusters
+from .derivative import cluster_matrices, dlams_dp, partition_levels, whole_clusters
 from .errors import DegenerateSpectrum
 from .evaluate import ShapeRefusal, SolverRefusal
 from .polygon import gauge_vector
@@ -127,13 +127,17 @@ def _watch_warnings(tally):
         yield
 
 
-def _active_cluster(lams, k, eps_abs, spec=None):
+def _active_cluster(lams, k, eps_abs, spec=None, tau_g=None):
     """Indices `[lo, hi)` of eigenvalues within `eps_abs` (absolute) of `lam_k`.
 
     An EPS-ACTIVE set rather than an exact-degeneracy test. The gap closes continuously as the
     optimizer approaches, so a rule that only fires at an exact tie would switch models one step
     before the end and never get the benefit; and one that fires too eagerly spends solves on
     cluster matrices it does not need. See the module docstring for how `eps_abs` is chosen.
+
+    With `tau_g`, whole groups of `partition_levels` come too (2026-11-08): a pair whose
+    derivatives are determined only together at the gradient accuracy the run needs, however
+    narrow `eps_abs` has become. Never lam_1 for a group: the denominator is modelled as simple.
     """
     if spec is not None:
         # ON THE SOLVER'S LEVELS, so a computed double is in or out, never half (2026-10-14):
@@ -141,6 +145,11 @@ def _active_cluster(lams, k, eps_abs, spec=None):
         # Identical to the loop below on all-simple spectra, and on a double the loop already
         # took both copies (their gap is 0 <= eps_abs), so this changes no accepted trace.
         lo_l, hi_l = spec.neighbourhood(spec.level_index(k), float(eps_abs))
+        if tau_g is not None:
+            floor = min(lo_l, 1)
+            for a, b in partition_levels(spec, tau_g):
+                if a < hi_l and lo_l < b:
+                    lo_l, hi_l = min(lo_l, max(a, floor)), max(hi_l, b)
         ends = np.cumsum(spec.mult)
         # chladni's CLUSTERS are a floor (2026-11-05): levels whose eigenfunctions are entangled
         # are taken whole however narrow `eps_abs` is (`derivative.whole_clusters`)
@@ -168,7 +177,7 @@ def _cluster_scale(Ms):
 
 
 def local_model(family, p, solver, lams, k=1, eps_rel=1e-3, eps_abs=None, align_rtol=1e-9,
-                eps_floor_rel=1e-9):
+                eps_floor_rel=1e-9, tau_g=None):
     """The first-order model of `lam_k/lam_1` at `p`.
 
     Returns a dict with `mode` ('smooth' or 'cluster'), the pieces the trust-region step needs,
@@ -210,7 +219,7 @@ def local_model(family, p, solver, lams, k=1, eps_rel=1e-3, eps_abs=None, align_
     spec = getattr(solver, 'spectrum', None)
     if spec is not None and spec.count != len(lams):
         spec = None                           # a truncated array: fall back to the width loop
-    lo, hi = _active_cluster(lams, k, float(eps_abs), spec=spec)
+    lo, hi = _active_cluster(lams, k, float(eps_abs), spec=spec, tau_g=tau_g)
     m, j = hi - lo, k - lo
     out = dict(cluster=(lo, hi), m=m, j=j, lam_1=lam_1, lam_k=lam_k, ratio=lam_k/lam_1,
                eps_abs=float(eps_abs))
@@ -837,6 +846,7 @@ class _Opts:
     fam: object
     window_factor: float = 2.5
     window_floor: float = 1e-9
+    tau_g: object = None
 
 
 @dataclass
@@ -942,7 +952,8 @@ def _build_model(st, o, ev, tally):
     eps_abs = None if (not o.auto or st.scale is None) else st.delta*st.scale
     try:
         st.model = local_model(o.fam, st.p, st.solver, st.lams, k=o.k,
-                               eps_rel=(1e-3 if o.auto else o.eps_rel), eps_abs=eps_abs)
+                               eps_rel=(1e-3 if o.auto else o.eps_rel), eps_abs=eps_abs,
+                               tau_g=o.tau_g)
     except (ShapeRefusal, DegenerateSpectrum) as refusal:
         return _model_refused(st, o, ev, refusal)
     st.scale = st.model['scale']
@@ -1409,7 +1420,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                    verify_final=True, constraints=None, degeneracy_moves=True,
                    quasi_newton=True, max_unresolved_streak=5, discontinuity_halvings=4,
                    discontinuity_ratio=2.0, sigma_abort=1e-6, sigma_abort_streak=3,
-                   window_factor=2.5, window_floor=1e-9):
+                   window_factor=2.5, window_floor=1e-9, tau_g=1e-6):
     """Trust-region ascent on `lam_k/lam_1`, valid through a degeneracy.
 
     `evaluator` must be a `SpectrumEvaluator` with `degenerate_tol=0` -- the guard that normally
@@ -1433,6 +1444,11 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     `n_solver_refused` for `lappy` declining outright) and stops on a shared streak of
     `max_unresolved_streak`. A refusal at the CURRENT iterate stays fatal -- a run cannot begin
     from, or continue at, a shape it cannot evaluate.
+
+    `tau_g` is the gradient accuracy the run needs, and decides which levels are differentiated
+    together (`derivative.partition_levels`): measured on a hexagon with a vertex moved 1e-6, the
+    pair at relative gap 4e-7 has separately-computed derivatives good only to 7e-6, with no
+    chladni cluster and well outside a converged run's eps-active width. None turns it off.
 
     `sigma_abort` stops a run whose basis cannot resolve its own shape, at the same 1e-6 the
     summaries exclude a row on. It reads `evaluator.last_sigma`, the tension AFTER the replan the
@@ -1538,7 +1554,8 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
               discontinuity_halvings=discontinuity_halvings,
               discontinuity_ratio=discontinuity_ratio, sigma_abort=sigma_abort,
               sigma_abort_streak=sigma_abort_streak, fam=evaluator.family,
-              window_factor=float(window_factor), window_floor=float(window_floor))
+              window_factor=float(window_factor), window_floor=float(window_floor),
+              tau_g=tau_g)
     p = np.array(p0, dtype=float)
     tally = dict(n=0, n_hadamard_short=0, seen=set())   # warnings in the loop: `_watch_warnings`
     with _watch_warnings(tally):

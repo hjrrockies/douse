@@ -182,7 +182,7 @@ class ChladniSolver:
                 raise SolverRefusal(f"chladni has no Hadamard derivative here: {e}") from e
         return self._H[key]
 
-    def dlams_dvertices(self, lams, n_vert, degenerate="raise"):
+    def dlams_dvertices(self, lams, n_vert, degenerate="raise", groups=()):
         """`(K, 2N)`: the simple-eigenvalue gradients (`SolvedShape`).
 
         At a level of multiplicity m > 1 the members have no gradient, only directional
@@ -190,7 +190,9 @@ class ChladniSolver:
         optimizer must model the cluster itself) raises `DegenerateSpectrum`. `"mean"` gives
         each copy the gradient of the level's MEAN, `tr H / m`, which is exact: a symmetric
         function of the members is differentiable (2026-11-06, for the inverse problem, whose
-        targets include symmetric shapes with exact doubles)."""
+        targets include symmetric shapes with exact doubles). `groups`, level ranges `(lo, hi)`,
+        extends that to levels determined only together (`derivative.partition_levels`): each
+        member gets the group's mean row, a sum its members' mutual rotation cannot change."""
         if degenerate not in ("raise", "mean"):
             raise ValueError(f"degenerate must be 'raise' or 'mean', got {degenerate!r}")
         J = np.empty((len(lams), 2 * n_vert))
@@ -206,6 +208,12 @@ class ChladniSolver:
                     f"derivative is the spectrum of an m x m matrix, not a gradient. Use "
                     f"douse.derivative.cluster_matrices.")
             J[j] = self.hadamard_vertices(i)[:, 0, 0]
+        if len(groups):
+            at = np.array([self._level(lam) for lam in lams])
+            for lo, hi in groups:
+                members = (at >= lo) & (at < hi)
+                if members.any():
+                    J[members] = J[members].mean(axis=0)
         return J
 
     def _cluster_levels(self, lam, mult, lams):
@@ -315,6 +323,7 @@ class SpectrumEvaluator:
             raise ValueError(f"degenerate must be 'raise' or 'mean', got {degenerate!r}")
         self.degenerate = degenerate        # at a multiple level: see `dlams_dvertices`
         self.n_mean_rows = 0                # Jacobian rows given the level-mean gradient
+        self._target = None                 # (target, sigma, tau_g): `set_target`
         self.min_gap = np.inf               # smallest relative gap seen, over every evaluation
         self.confirm = bool(confirm)
         self._plan = None
@@ -647,12 +656,38 @@ class SpectrumEvaluator:
             if self.degenerate == "raise":
                 return lams, dlams_dp(self.family, p, solver, lams)
             self.n_mean_rows += sum(int(solver.spec.mult[solver._level(l)]) > 1 for l in lams)
-            J = solver.dlams_dvertices(lams, self.family.n, degenerate=self.degenerate)
+            J = solver.dlams_dvertices(lams, self.family.n, degenerate=self.degenerate,
+                                       groups=self.mean_groups(solver.spec))
             return lams, J @ self.family.d_vertices_dp(p)
         except (ShapeRefusal, DegenerateSpectrum):
             raise
         except _SHAPE_ERRORS as e:
             raise SolverRefusal(f"chladni has no derivative at this shape: {e}") from e
+
+    def set_target(self, target, sigma=0.0, tau_g=1e-6):
+        """Declare a fit's target spectrum, so `degenerate="mean"` covers the near pairs whose
+        members are determined only together (`mean_groups`)."""
+        self._target = (np.asarray(target, dtype=float), float(sigma), float(tau_g))
+
+    def mean_groups(self, spec):
+        """The level ranges a fit should give mean Jacobian rows: groups of
+        `derivative.partition_levels` THE TARGET CANNOT RESOLVE. Where the target does separate
+        the members the mean row is wrong, since the difference of their residuals is then out
+        of the Jacobian's range and the loss floors."""
+        if self._target is None:
+            return []
+        from .derivative import partition_levels
+        target, sigma, tau_g = self._target
+        ends = np.cumsum(np.asarray(spec.mult, dtype=int))
+        out = []
+        for lo, hi in partition_levels(spec, tau_g):
+            a, b = int(ends[lo] - spec.mult[lo]), int(ends[hi - 1])
+            if hi - lo < 2 or b > len(target):
+                continue
+            width = float(spec.lam[hi - 1] - spec.lam[lo])
+            if target[b - 1] - target[a] <= max(sigma*target[b - 1], width):
+                out.append((lo, hi))
+        return out
 
     def replan(self, p=None):
         """Throw the frozen plan away so the next call rebuilds it (at `p` if given)."""

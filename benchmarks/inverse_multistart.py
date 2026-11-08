@@ -366,6 +366,7 @@ def run_one(spec, rid, ci, K, sigma, draw, start):
             # and the default raised `DegenerateSpectrum`, which `gauss_newton` does not catch.
             ev = SpectrumEvaluator(fam, n_eigs=K, prec=spec.prec, degenerate_tol=0.0,
                                    warn_gap=0.0, degenerate='mean')
+            ev.set_target(target, sigma=sigma)
             # A START THE SOLVER REFUSES IS REDRAWN, as `ratio_multistart` does: `gauss_newton`
             # treats a refusal at a trial step as a rejected step but cannot begin from a shape
             # with no spectrum (2026-10-31, tri_acute start 1: a random triangle missed 1e-10 on
