@@ -1,0 +1,30 @@
+# Shape inversion headlined by the Gordon-Webb-Wolpert isospectral pair: a fit from a perturbed
+# GWW1 sees the same spectrum as GWW2, so the spectrum cannot say which drum it reached; the
+# start decides, and `recovered_which` reports it.
+#  - K >= 2N - 3 = 13 with N = 8, so the fit is determined at least by count;
+#  - prec 1e-10 explicit: re-entrant corners floor near 1e-11, and every iterate stays in the box;
+#  - target_prec 1e-10 for the same reason (`inverse_v1`'s 1e-11 is for convex shapes).
+name = "inverse_gww_v1"
+notes = "Perturbed GWW1 and GWW2, sigma = 0, K = 15 and 25, 4 starts per perturbation size."
+cases = [
+  {name = "gww1_near", kind = "library", shape = "GWW1", twin = "GWW2", perturb = 0.01, K = [15, 25]},
+  {name = "gww1_far",  kind = "library", shape = "GWW1", twin = "GWW2", perturb = 0.05, K = [15, 25]},
+  {name = "gww2_near", kind = "library", shape = "GWW2", twin = "GWW1", perturb = 0.01, K = [15, 25]},
+  {name = "gww2_far",  kind = "library", shape = "GWW2", twin = "GWW1", perturb = 0.05, K = [15, 25]},
+]
+sigmas = [0.0]
+noise_draws = 1
+starts = 4
+seed0 = 0
+max_iter = 40
+max_step = 0.1
+rtol = 1e-19
+box = true
+prec = 1e-10
+target_prec = 1e-10
+perim = 4.0
+tasks = 32
+slurm_mem = "16G"
+slurm_time = "24:00:00"
+slurm_account = "siallocation"
+slurm_partition = "normal_q"

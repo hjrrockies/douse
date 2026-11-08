@@ -125,3 +125,51 @@ def test_the_grid_start_is_the_triangle_with_the_nearest_ratios(tmp_path):
     v, i = im.grid_start(str(tmp_path), target, 4.0)
     assert i == 1 and im._perimeter(v) == pytest.approx(4.0)
     assert np.allclose(v/v[1], np.array([0, 1, 0.2 + 0.5j]))
+
+
+GWW = """name = "g"
+cases = [{name = "gww1", kind = "library", shape = "GWW1", twin = "GWW2", perturb = 0.02, K = [15]}]
+starts = 2
+box = true
+"""
+
+
+def test_a_library_case_is_the_shipped_drum_at_the_spec_perimeter(tmp_path):
+    spec = _spec(tmp_path, GWW)
+    v = im.case_vertices(spec.cases[0], 4.0)
+    assert len(v) == 8 and abs(im._perimeter(v) - 4.0) < 1e-12 and im._signed_area(v) > 0
+
+
+def test_an_unknown_library_shape_is_refused_when_the_spec_loads(tmp_path):
+    with pytest.raises(ValueError, match='shape'):
+        _spec(tmp_path, GWW.replace('"GWW1"', '"nope"'))
+
+
+def test_a_perturbed_start_is_near_the_target_and_seeded(tmp_path):
+    spec = _spec(tmp_path, GWW)
+    w = im.case_vertices(spec.cases[0], 4.0)
+    a, b, c = (im.perturbed_start(w, 0.02, s, 4.0) for s in (0, 0, 1))
+    assert np.array_equal(a, b) and not np.array_equal(a, c)
+    assert 0 < im.congruence_error(a, w)[0] < 0.02
+
+
+def test_which_drum_was_recovered(tmp_path):
+    spec = _spec(tmp_path, GWW)
+    case = spec.cases[0]
+    w = im.case_vertices(case, 4.0)
+    t = im.case_vertices(dict(case, shape='GWW2'), 4.0)
+    assert im.which_recovered(w*np.exp(0.3j), case, w, 4.0)[1] == 'GWW1'
+    assert im.which_recovered(t + 1, case, w, 4.0)[1] == 'GWW2'
+    assert im.which_recovered(w*(1 + 0.2*np.cos(np.arange(8))), case, w, 4.0)[1] is None
+
+
+def test_no_twin_no_verdict(tmp_path):
+    spec = _spec(tmp_path)
+    w = im.case_vertices(spec.cases[1], 4.0)
+    assert im.which_recovered(w, spec.cases[1], w, 4.0) == (None, None)
+
+
+def test_the_gww_spec_loads_and_is_determined():
+    spec = im.load(SPECS / 'inverse_gww_v1.toml')
+    assert spec.box and spec.prec == 1e-10
+    assert min(min(c['K']) for c in spec.cases) >= 2*8 - 3

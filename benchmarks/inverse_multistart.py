@@ -50,6 +50,9 @@ BLAS_VARS = ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'VECL
              'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS')
 # A start counts as a RECOVERY when its shape error is below this (vertex RMS at perimeter 1).
 RECOVERED = 1e-3
+# The shipped polygons a case may name (`chladni.geometry.library`).
+LIBRARY = dict(GWW1=np.array([1 - 3j, 3 - 1j, 3 + 1j, -1 + 1j, -1 + 3j, -3 + 1j, -1 - 1j, 1 - 1j]),
+               GWW2=np.array([1 - 3j, 1 - 1j, 3 - 1j, 1 + 1j, -1 + 1j, -1 + 3j, -3 + 3j, -3 + 1j]))
 # Two fits found the SAME shape when their congruence distance is below this. With noise the
 # least-squares shape is not the true one, so recovery is judged against the best fit too.
 SAME_BASIN = 1e-4
@@ -62,7 +65,10 @@ MAX_REDRAWS = 3
 @dataclass(frozen=True)
 class InverseSpec:
     """`cases` is a list of tables: `{name, kind = "rectangle", L, H}` or
-    `{name, kind = "polygon", vertices = [[x, y], ...]}`, each with its own list `K`."""
+    `{name, kind = "polygon", vertices = [[x, y], ...]}`, each with its own list `K`, or
+    `{name, kind = "library", shape = "GWW1"}` for one of `LIBRARY`. A case may add
+    `perturb = 0.02` (starts are the target's vertices plus seeded noise of that size relative
+    to the mean edge) and `twin = "GWW2"` (a library shape the fit is also compared against)."""
     name: str
     cases: tuple
     sigmas: tuple = (0.0,)
@@ -100,8 +106,15 @@ class InverseSpec:
         cases = []
         for c in self.cases:
             c = dict(c)
-            if c.get('kind') not in ('rectangle', 'polygon'):
-                raise ValueError(f"case {c.get('name')!r}: kind must be 'rectangle' or 'polygon'")
+            if c.get('kind') not in ('rectangle', 'polygon', 'library'):
+                raise ValueError(f"case {c.get('name')!r}: kind must be 'rectangle', 'polygon' "
+                                 f"or 'library'")
+            for key in ('shape', 'twin'):
+                if key in c and c[key] not in LIBRARY:
+                    raise ValueError(f"case {c.get('name')!r}: {key} must be one of "
+                                     f"{sorted(LIBRARY)}, got {c[key]!r}")
+            if c['kind'] == 'library' and 'shape' not in c:
+                raise ValueError(f"case {c.get('name')!r}: a library case needs a shape")
             if 'name' not in c or not c.get('K'):
                 raise ValueError(f'every case needs a name and a list K, got {c!r}')
             c['K'] = [int(k) for k in c['K']]
@@ -164,10 +177,20 @@ def case_vertices(case, perim):
     if case['kind'] == 'rectangle':
         L, H = float(case['L']), float(case['H'])
         v = np.array([0, L, L + 1j*H, 1j*H])
+    elif case['kind'] == 'library':
+        v = LIBRARY[case['shape']]
     else:
         v = np.array([complex(x, y) for x, y in case['vertices']])
     if _signed_area(v) < 0:
         v = v[::-1]
+    return v*perim/_perimeter(v)
+
+
+def perturbed_start(w, size, seed, perim):
+    """The vertices `w` moved by seeded Gaussian noise of `size` x the mean edge, per coordinate,
+    rescaled to perimeter `perim`."""
+    g = np.random.default_rng(seed).standard_normal((len(w), 2))
+    v = w + size*(perim/len(w))*(g[:, 0] + 1j*g[:, 1])
     return v*perim/_perimeter(v)
 
 
@@ -263,6 +286,19 @@ def congruence_error(z, w):
             if e < best[0]:
                 best = (e, zr + w.mean())
     return best[0]/_perimeter(w), best[1]
+
+
+def which_recovered(z, case, w, perim):
+    """`(congruence error to the case's twin, the name of the drum recovered)`: which of an
+    isospectral pair the fit reached. `(None, None)` for a case with no twin; the name is None
+    when it reached neither."""
+    if 'twin' not in case:
+        return None, None
+    twin = case_vertices(dict(case, kind='library', shape=case['twin']), perim)
+    err_t, err_w = congruence_error(z, twin)[0], congruence_error(z, w)[0]
+    if min(err_t, err_w) >= RECOVERED:
+        return err_t, None
+    return err_t, case['twin'] if err_t < err_w else case.get('shape', case['name'])
 
 
 def _angles_deg(v):
@@ -382,7 +418,12 @@ def run_one(spec, rid, ci, K, sigma, draw, start):
             redraws = []
             row['start_kind'] = 'random'
             for j in range(MAX_REDRAWS + 1):
-                if start == 0 and j == 0 and spec.grid_starts and N == 3:
+                if 'perturb' in case:
+                    v0 = perturbed_start(w, case['perturb'], spec.seed0 + start + 1000*j,
+                                         spec.perim)
+                    row['start_kind'] = 'perturbed'
+                    p0 = param_vector(v0, spec.perim)
+                elif start == 0 and j == 0 and spec.grid_starts and N == 3:
                     v0, gi = grid_start(spec.grid_starts, target, spec.perim)
                     row.update(start_kind='grid', grid_index=gi)
                     p0 = param_vector(v0, spec.perim)
@@ -417,13 +458,15 @@ def run_one(spec, rid, ci, K, sigma, draw, start):
             except ShapeRefusal:
                 ratio_err = float('nan')
             sv = true_conditioning(spec, case, K, sigma)
+            twin_err, which = which_recovered(z, case, w, spec.perim)
             row.update(status='ok', success=bool(res.success), message=str(res.message),
                        true_sv=sv,
                        loss=float(res.fun), nit=int(res.nit), nfev=int(res.nfev),
                        n_refused=int(res.n_refused), n_outside=int(res.n_outside),
                        grad_norm=float(res.grad_norm),
                        shape_err=err, start_err=err0, ratio_err=ratio_err,
-                       recovered=bool(err < RECOVERED),
+                       recovered=bool(err < RECOVERED), twin_err=twin_err,
+                       recovered_which=which,
                        x=res.x.tolist(),
                        vertices=[[float(c.real), float(c.imag)] for c in zm],
                        start_vertices=[[float(c.real), float(c.imag)] for c in z0],
