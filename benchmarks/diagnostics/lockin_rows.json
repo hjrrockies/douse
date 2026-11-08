@@ -1,0 +1,162 @@
+[
+{
+"N": 6,
+"k": 4,
+"start": 2,
+"kind": "collapsed",
+"fun": 5.0780308914073515,
+"seconds": 28797
+},
+{
+"N": 6,
+"k": 4,
+"start": 6,
+"kind": "collapsed",
+"fun": 5.081362995685011,
+"seconds": 5087
+},
+{
+"N": 6,
+"k": 5,
+"start": 0,
+"kind": "collapsed",
+"fun": 6.166219574798809,
+"seconds": 8150
+},
+{
+"N": 6,
+"k": 5,
+"start": 4,
+"kind": "collapsed",
+"fun": 6.163581632009848,
+"seconds": 4159
+},
+{
+"N": 6,
+"k": 5,
+"start": 7,
+"kind": "collapsed",
+"fun": 6.1207687551744545,
+"seconds": 12949
+},
+{
+"N": 7,
+"k": 4,
+"start": 0,
+"kind": "collapsed",
+"fun": 5.09063425349292,
+"seconds": 6731
+},
+{
+"N": 7,
+"k": 4,
+"start": 7,
+"kind": "collapsed",
+"fun": 5.0751336143939,
+"seconds": 14619
+},
+{
+"N": 7,
+"k": 5,
+"start": 3,
+"kind": "collapsed",
+"fun": 6.131604191101277,
+"seconds": 29526
+},
+{
+"N": 7,
+"k": 5,
+"start": 4,
+"kind": "collapsed",
+"fun": 6.120077704997427,
+"seconds": 5908
+},
+{
+"N": 8,
+"k": 4,
+"start": 0,
+"kind": "collapsed",
+"fun": 4.879201531208279,
+"seconds": 2658
+},
+{
+"N": 8,
+"k": 4,
+"start": 3,
+"kind": "collapsed",
+"fun": 5.06493714055246,
+"seconds": 10228
+},
+{
+"N": 8,
+"k": 4,
+"start": 4,
+"kind": "collapsed",
+"fun": 4.956828127178544,
+"seconds": 3964
+},
+{
+"N": 8,
+"k": 5,
+"start": 1,
+"kind": "collapsed",
+"fun": 6.1568413402898585,
+"seconds": 7844
+},
+{
+"N": 6,
+"k": 1,
+"start": 1,
+"kind": "refused",
+"fun": 2.503162607125222,
+"seconds": 8590
+},
+{
+"N": 6,
+"k": 2,
+"start": 5,
+"kind": "refused",
+"fun": 3.188316288981248,
+"seconds": 16108
+},
+{
+"N": 6,
+"k": 5,
+"start": 1,
+"kind": "refused",
+"fun": 5.1413732133866406,
+"seconds": 20516
+},
+{
+"N": 7,
+"k": 2,
+"start": 2,
+"kind": "refused",
+"fun": 3.188659025491344,
+"seconds": 20747
+},
+{
+"N": 8,
+"k": 2,
+"start": 7,
+"kind": "refused",
+"fun": 3.1950247087524626,
+"seconds": 18635
+},
+{
+"N": 6,
+"k": 1,
+"start": 5,
+"kind": "unverified",
+"fun": 2.460826117295184,
+"seconds": 9074
+},
+{
+"N": 6,
+"k": 4,
+"start": 5,
+"kind": "unverified",
+"fun": 5.039140839577359,
+"seconds": 24421
+}
+]
