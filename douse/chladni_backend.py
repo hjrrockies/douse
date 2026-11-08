@@ -692,6 +692,23 @@ class SpectrumEvaluator:
         except _SHAPE_ERRORS as e:
             raise SolverRefusal(f"chladni has no derivative at this shape: {e}") from e
 
+    def set_prec(self, p, prec):
+        """Re-plan at `p` for a new `prec` and solve there, `(lams, solver)`: a precision never
+        changes on a frozen plan. A shape that cannot deliver it raises and leaves the evaluator
+        as it was, precision, plan and continuation."""
+        state, old, cont = self.plan_state(), self.prec, (self._last, self._specs)
+        self.prec = float(prec)
+        self.replan(p)
+        try:
+            out = self.eigenvalues(p)
+        except (ShapeRefusal, DegenerateSpectrum):
+            self.prec = old
+            self.restore_plan(state)
+            self._last, self._specs = cont
+            raise
+        self.n_replans += 1
+        return out
+
     def set_target(self, target, sigma=0.0, tau_g=1e-6):
         """Declare a fit's target spectrum, so `degenerate="mean"` covers the near pairs whose
         members are determined only together (`mean_groups`)."""

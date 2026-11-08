@@ -85,7 +85,7 @@ class InverseSpec:
     max_iter: int = 40
     max_step: float = 0.1
     rtol: float = 1e-19
-    prec: float = 1e-10
+    prec: object = 1e-10              # or 'auto': `fit_prec`
     target_prec: float = 1e-11
     perim: float = 4.0
     tasks: int = 100
@@ -221,6 +221,13 @@ def runs(spec):
     return out
 
 
+def fit_prec(spec, sigma):
+    """The fit's precision: `spec.prec`, or for `'auto'` two digits under the data's noise, kept
+    in [1e-9, 1e-8]. inverse_v1 recorded why not tighter: at 1e-10 the obtuse triangle's fits
+    stalled on refused trial shapes where 1e-9 recovered."""
+    return float(np.clip(sigma/100, 1e-9, 1e-8)) if spec.prec == 'auto' else spec.prec
+
+
 def noisy(lam, sigma, seed):
     """`lam * (1 + sigma * e)`, `e` standard normal from `seed`; `sigma = 0` returns `lam`."""
     if sigma == 0:
@@ -322,12 +329,12 @@ def _true_conditioning(key, K, prec):
     return tuple(float(x) for x in np.linalg.svd(Jr, compute_uv=False))
 
 
-def true_conditioning(spec, case, K):
+def true_conditioning(spec, case, K, sigma=0.0):
     """`true_conditioning` for a case, or None when the solve at the true shape is refused."""
     from douse.errors import ShapeRefusal
     key = json.dumps(dict(case, _perim=spec.perim), sort_keys=True)
     try:
-        return list(_true_conditioning(key, K, spec.prec))
+        return list(_true_conditioning(key, K, fit_prec(spec, sigma)))
     except ShapeRefusal:
         return None
 
@@ -348,7 +355,8 @@ def run_one(spec, rid, ci, K, sigma, draw, start):
     N = len(w)
     si = spec.sigmas.index(sigma)
     row = dict(id=rid, case=case['name'], kind=case['kind'], N=N, K=K, sigma=sigma, draw=draw,
-               start=start, determined=bool(K - 1 >= 2*N - 4), spec=spec.name,
+               start=start, determined=bool(K - 1 >= 2*N - 4), prec=fit_prec(spec, sigma),
+               spec=spec.name,
                spec_sha=spec.sha)
     t0 = time.perf_counter()
     with warnings.catch_warnings(record=True) as caught:
@@ -364,7 +372,7 @@ def run_one(spec, rid, ci, K, sigma, draw, start):
             # level mean's, which is exact (`chladni_backend.ChladniSolver.dlams_dvertices`).
             # Symmetric targets -- the equilateral triangle, the square -- have exact doubles,
             # and the default raised `DegenerateSpectrum`, which `gauss_newton` does not catch.
-            ev = SpectrumEvaluator(fam, n_eigs=K, prec=spec.prec, degenerate_tol=0.0,
+            ev = SpectrumEvaluator(fam, n_eigs=K, prec=row['prec'], degenerate_tol=0.0,
                                    warn_gap=0.0, degenerate='mean')
             ev.set_target(target, sigma=sigma)
             # A START THE SOLVER REFUSES IS REDRAWN, as `ratio_multistart` does: `gauss_newton`
@@ -408,7 +416,7 @@ def run_one(spec, rid, ci, K, sigma, draw, start):
                 ratio_err = float(np.max(np.abs(fit[0]/fit[1:] - lam[0]/lam[1:])))
             except ShapeRefusal:
                 ratio_err = float('nan')
-            sv = true_conditioning(spec, case, K)
+            sv = true_conditioning(spec, case, K, sigma)
             row.update(status='ok', success=bool(res.success), message=str(res.message),
                        true_sv=sv,
                        loss=float(res.fun), nit=int(res.nit), nfev=int(res.nfev),
@@ -448,7 +456,7 @@ def run(spec, task, ntasks, out, limit=None):
     if limit is not None:
         todo = todo[:limit]
     prov = spec_mod.provenance()
-    prov['prec'] = spec.prec
+    prov.pop('prec', None)                # per row: `fit_prec`
     print(f'# {spec.name} @ {spec.sha}: task {task}/{ntasks}, {len(mine)} run(s), '
           f'{len(done)} done, {len(todo)} to run -> {path}', flush=True)
     for i in todo:

@@ -55,7 +55,7 @@ def polygon_perimeter(vertices):
     return float(np.sum(edge_lengths(vertices)))
 
 __all__ = ['polygon_vertices', 'd_vertices_dp', 'param_vector', 'gauge_vector',
-           'perimeter_gradient', 'VertexPolygon', 'n_params', 'n_vertices', 'in_box']
+           'perimeter_gradient', 'VertexPolygon', 'n_params', 'n_vertices', 'in_box', 'is_convex']
 
 
 #: The polygons the thesis claims chladni + douse handle (the lock-in gate, 2026-11-07; the
@@ -106,6 +106,15 @@ def in_box(vertices, min_angle=BOX_MIN_ANGLE, max_angle=BOX_MAX_ANGLE,
     turn = np.angle(e/np.roll(e, 1))                    # exterior angle at each vertex
     interior = 180.0 - np.degrees(turn)
     return bool(np.all((interior >= min_angle) & (interior <= max_angle)))
+
+
+def is_convex(vertices, tol=1e-9):
+    """No re-entrant corner, to `tol` degrees (a straight vertex is convex)."""
+    z = np.asarray(vertices, dtype=complex)
+    if polygon_area(z) < 0:
+        z = z[::-1]
+    e = np.roll(z, -1) - z
+    return bool(np.all(np.degrees(np.angle(e/np.roll(e, 1))) >= -tol))
 
 
 def n_params(n_vert):

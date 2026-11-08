@@ -51,6 +51,7 @@ class RunSpec:
     max_iter: int = 400
     delta0: float = 0.05
     prec: float = 1e-10
+    prec_final: object = None
     backend: str = 'chladni'
     family: str = 'all'
     n_eigs: object = None
@@ -96,6 +97,8 @@ class RunSpec:
         for key in ('source',) + SCHEDULING:
             d.pop(key)
         d['cells'] = [list(c) for c in self.cells]
+        if d['prec_final'] is None:
+            d.pop('prec_final')        # so a spec without it hashes as it did before it existed
         if not self.seeds:
             d.pop('seeds')             # so a spec without seeds hashes as it did before they existed
         else:

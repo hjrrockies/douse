@@ -86,7 +86,7 @@ from . import degeneracy as _dg
 from .derivative import cluster_matrices, dlams_dp, partition_levels, whole_clusters
 from .errors import DegenerateSpectrum
 from .evaluate import ShapeRefusal, SolverRefusal
-from .polygon import gauge_vector
+from .polygon import gauge_vector, is_convex
 from .optimize import OptimizeResult
 from .quasi_newton import SR1, ScalarSecant, tr_subproblem
 
@@ -847,6 +847,7 @@ class _Opts:
     window_factor: float = 2.5
     window_floor: float = 1e-9
     tau_g: object = None
+    prec_final: object = None
 
 
 FLOOR_REJECTIONS = 3
@@ -877,6 +878,8 @@ class _State:
     eps_f: float = np.nan                 # at the model's iterate: `_error_floor`
     eps_g: float = np.nan
     floor_reason: str = ''
+    prec_tried: bool = False
+    prec_final_reached: object = None     # None: not asked for
     degeneracy_moves: bool = True
     n_cluster_steps: int = 0
     n_interior_steps: int = 0
@@ -1078,25 +1081,54 @@ def _first_order_step(st, o, ev, tally):
     st.gain1 = st.gain
     st.eps_f, st.eps_g = _error_floor(st, o)
     st.crit = st.gain/st.delta if st.delta > 0 else 0.0
+    stop = _stationary(st, o)
+    if _escalate(st, o, ev, stop is not None):
+        return Outcome.NEXT_ITER
+    if stop is None:
+        return Outcome.CONTINUE
+    st.success, (st.resolution, st.message) = True, stop
+    return Outcome.STOP
+
+
+def _stationary(st, o):
+    """`(resolution, message)` when the first-order model says this iterate is optimal."""
     if st.crit <= o.gain_tol:
-        st.success = True
-        st.message = (f'criticality {st.crit:.3g} (gain {st.gain:.3g} at radius '
-                      f'{st.delta:.3g}) below gain_tol: first-order optimal')
-        st.resolution = st.crit
-        return Outcome.STOP
+        return st.crit, (f'criticality {st.crit:.3g} (gain {st.gain:.3g} at radius '
+                         f'{st.delta:.3g}) below gain_tol: first-order optimal')
     if o.plateau_rtol is not None and st.crit <= o.plateau_max:
-        d_s, gain_s = trust_region_step(st.model, st.delta*o.plateau_shrink, rng=o.rng,
-                                        lin=st.lin)
+        _, gain_s = trust_region_step(st.model, st.delta*o.plateau_shrink, rng=o.rng, lin=st.lin)
         crit_s = gain_s/(st.delta*o.plateau_shrink)
         if abs(crit_s - st.crit) <= o.plateau_rtol*max(st.crit, crit_s):
-            st.success = True
-            st.resolution = max(st.crit, crit_s)
-            st.message = (f'criticality plateaued at {st.resolution:.3g} '
-                          f'(radius {st.delta:.3g} -> {st.delta*o.plateau_shrink:.3g} moves it '
-                          f'by {abs(crit_s - st.crit)/max(st.crit, crit_s):.1e}): first-order '
-                          f'optimal to that resolution')
-            return Outcome.STOP
-    return Outcome.CONTINUE
+            res = max(st.crit, crit_s)
+            return res, (f'criticality plateaued at {res:.3g} (radius {st.delta:.3g} -> '
+                         f'{st.delta*o.plateau_shrink:.3g} moves it by '
+                         f'{abs(crit_s - st.crit)/res:.1e}): first-order optimal to that '
+                         f'resolution')
+    return None
+
+
+def _escalate(st, o, ev, stopping):
+    """Ask for `prec_final`, once, when the run has used up its starting precision: the step
+    gains no more than 10 prec F, or a stop is about to fire. Only on a convex iterate
+    (re-entrant corners floor near 1e-11). True when the iterate was re-solved, so the model must
+    be rebuilt; a shape that cannot deliver stays where it is and the ending reports that."""
+    if o.prec_final is None or st.prec_tried or not hasattr(ev, 'set_prec'):
+        return False
+    if not (stopping or st.gain1 <= 10*ev.prec*st.F):
+        return False
+    st.prec_final_reached = False
+    if not is_convex(o.fam.vertices(st.p)):
+        return False
+    st.prec_tried = True
+    try:
+        lams, solver = ev.set_prec(st.p, o.prec_final)
+    except (ShapeRefusal, DegenerateSpectrum):
+        return False
+    st.prec_final_reached = True
+    st.adopt(st.p, _ratio(lams, o.k), lams, solver)
+    st.reject_run = []
+    st.reseed(ev)
+    return True
 
 
 def _second_order_step(st, o, ev, tally):
@@ -1423,7 +1455,8 @@ def _result(st, o, ev, tally, lams_tracked, F_tracked, verified):
                           n_resyncs=st.n_resyncs,
                           # What the solves' accuracy allowed, and how the run ended against it.
                           eps_f=float(st.eps_f), eps_g=float(st.eps_g),
-                          floor_reason=st.floor_reason, prec_final_reached=None,
+                          floor_reason=st.floor_reason,
+                          prec_final_reached=st.prec_final_reached,
                           # The refused shapes themselves, not just the count.
                           refusals=(list(h.refusals) if h is not None
                                     else list(getattr(ev, 'refusals', []))),
@@ -1478,7 +1511,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                    verify_final=True, constraints=None, degeneracy_moves=True,
                    quasi_newton=True, max_unresolved_streak=5, discontinuity_halvings=4,
                    discontinuity_ratio=2.0, sigma_abort=1e-6, sigma_abort_streak=3,
-                   window_factor=2.5, window_floor=1e-9, tau_g=1e-6):
+                   window_factor=2.5, window_floor=1e-9, tau_g=1e-6, prec_final=None):
     """Trust-region ascent on `lam_k/lam_1`, valid through a degeneracy.
 
     `evaluator` must be a `SpectrumEvaluator` with `degenerate_tol=0` -- the guard that normally
@@ -1507,6 +1540,10 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     together (`derivative.partition_levels`): measured on a hexagon with a vertex moved 1e-6, the
     pair at relative gap 4e-7 has separately-computed derivatives good only to 7e-6, with no
     chladni cluster and well outside a converged run's eps-active width. None turns it off.
+
+    `prec_final`, on a backend with `set_prec`, is the precision to finish at: the run asks for
+    it once, when the step's first-order gain has reached `10 prec F` or a stop is about to fire,
+    on a convex iterate. `prec_final_reached` on the result says what happened (None: not asked).
 
     `sigma_abort` stops a run whose basis cannot resolve its own shape, at the same 1e-6 the
     summaries exclude a row on. It reads `evaluator.last_sigma`, the tension AFTER the replan the
@@ -1613,7 +1650,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
               discontinuity_ratio=discontinuity_ratio, sigma_abort=sigma_abort,
               sigma_abort_streak=sigma_abort_streak, fam=evaluator.family,
               window_factor=float(window_factor), window_floor=float(window_floor),
-              tau_g=tau_g)
+              tau_g=tau_g, prec_final=prec_final)
     p = np.array(p0, dtype=float)
     tally = dict(n=0, n_hadamard_short=0, seen=set())   # warnings in the loop: `_watch_warnings`
     with _watch_warnings(tally):

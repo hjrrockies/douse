@@ -201,7 +201,8 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
             ev.reset_continuation()
     t0 = time.perf_counter()
     try:
-        res = maximize_ratio(ev, p0, k=k, max_iter=max_iter, constraints=cons, delta0=delta0)
+        res = maximize_ratio(ev, p0, k=k, max_iter=max_iter, constraints=cons, delta0=delta0,
+                             prec_final=None if spec is None else spec.prec_final)
     except ShapeRefusal as exc:
         # A REFUSAL AT THE START SHAPE IS FATAL BY DESIGN -- a run cannot begin from a shape whose
         # spectrum it cannot index -- but the outer handler builds its crash row from the
@@ -246,7 +247,8 @@ def run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec):
     cons = ConstraintSet(MinEdgeLength(fam))
     ev = runs.make_evaluator(N, k, n_eigs=n_eigs, fam=fam, prec=prec, backend=backend)
     t0 = time.perf_counter()
-    res = maximize_ratio(ev, q0, k=k, max_iter=max_iter, constraints=cons, delta0=delta0)
+    res = maximize_ratio(ev, q0, k=k, max_iter=max_iter, constraints=cons, delta0=delta0,
+                         prec_final=None if spec is None else spec.prec_final)
     v = fam.vertices(res.x)
     row = ledger.result_row(
         res, health=ev.health(), N=N, k=k, start=i, convex=False, redraws=[], seeded=True,
