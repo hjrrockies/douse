@@ -114,13 +114,13 @@ def test_the_optimizer_survives_a_lappy_refusal_at_a_trial_shape():
     ev = SpectrumEvaluator(fam, n_eigs=4, degenerate_tol=0.0, warn_gap=0.0)
     real, state = ev.eigenvalues, dict(n=0)
 
-    def flaky(q, seed=None):
+    def flaky(q, seed=None, windows=None):
         if not np.allclose(q, p):
             state['n'] += 1
             if state['n'] <= 2:
                 raise SolverRefusal('f has too many local minima') \
                     from EigensolverFailure('f has too many local minima')
-        return real(q, seed=seed)
+        return real(q, seed=seed, windows=windows)
 
     ev.eigenvalues = flaky
     res = maximize_ratio(ev, p, k=1, max_iter=6, delta0=0.05)
@@ -138,13 +138,13 @@ def test_a_RUN_of_solver_refusals_stops_instead_of_grinding_the_radius():
     ev = SpectrumEvaluator(fam, n_eigs=4, degenerate_tol=0.0, warn_gap=0.0)
     real, state = ev.eigenvalues, dict(n=0)
 
-    def alternating(q, seed=None):
+    def alternating(q, seed=None, windows=None):
         if not np.allclose(q, p):
             state['n'] += 1
             if state['n'] % 2:
                 raise SolverRefusal('f has too many local minima')
             raise UnresolvedSpectrum('synthetic refusal')
-        return real(q, seed=seed)
+        return real(q, seed=seed, windows=windows)
 
     ev.eigenvalues = alternating
     res = maximize_ratio(ev, p, k=1, max_iter=200, delta0=0.05, max_unresolved_streak=4,
@@ -170,12 +170,12 @@ def test_a_refusal_in_the_discontinuity_REPAIR_does_not_kill_the_run():
     ev = SpectrumEvaluator(fam, n_eigs=4, degenerate_tol=0.0, warn_gap=0.0)
     real, state = ev.eigenvalues, dict(armed=False, at_p=None, refused=0)
 
-    def flaky(q, seed=None):
+    def flaky(q, seed=None, windows=None):
         if np.allclose(q, p):
             if state['armed'] and ev._last is None:
                 state['refused'] += 1
                 raise SolverRefusal('f has too many local minima')   # the repair's fresh solve
-            out = real(q, seed=seed)
+            out = real(q, seed=seed, windows=windows)
             state['at_p'], state['armed'] = out, True
             return out
         # A trial: the SAME drop in F at every radius, i.e. a discontinuity at `p`.
@@ -208,8 +208,8 @@ def test_a_run_whose_basis_cannot_resolve_the_shape_STOPS_instead_of_earning_its
     ev = LappySpectrumEvaluator(fam, n_eigs=4, degenerate_tol=0.0, warn_gap=0.0)
     real = ev.eigenvalues
 
-    def drifted(q, seed=None):
-        out = real(q, seed=seed)
+    def drifted(q, seed=None, windows=None):
+        out = real(q, seed=seed, windows=windows)
         ev.last_sigma = 1e-3                   # a rebuilt basis that still cannot resolve `lam_1`
         return out
 
@@ -229,8 +229,8 @@ def test_a_TRANSIENT_excursion_does_not_stop_the_run():
     ev = SpectrumEvaluator(fam, n_eigs=4, degenerate_tol=0.0, warn_gap=0.0)
     real, state = ev.eigenvalues, dict(n=0)
 
-    def flickering(q, seed=None):
-        out = real(q, seed=seed)
+    def flickering(q, seed=None, windows=None):
+        out = real(q, seed=seed, windows=windows)
         state['n'] += 1
         ev.last_sigma = 1e-3 if state['n'] % 3 else 1e-12     # never three in a row
         return out
