@@ -169,6 +169,34 @@ class ChladniSolver:
             self.reports[i] = self.reports[members]
         return self._H[i]
 
+    def hadamard_attained(self, lo, hi):
+        """The calibrated relative error of the Hadamard entries for unfolded values `lo..hi-1`,
+        taken as ONE block (`HadamardReport.attained`, chladni's formula), nan with no report.
+
+        chladni computes each report's eigenfunction bound from the level's own gap, which for
+        an unlinked pair is the gap BETWEEN them: what a block's trace needs is the gap to the
+        outside, so it is recomputed here. The estimate is calibrated, not a bound."""
+        from chladni.mps.solver import HADAMARD_ESTIMATE_K
+        ends = np.cumsum(np.asarray(self.spec.mult, dtype=int))
+        a, b = int(np.searchsorted(ends, lo, side="right")), int(np.searchsorted(ends, hi - 1, side="right")) + 1
+        whole = tuple(range(a, b))
+        keys = [whole] if whole in self.reports else list(whole)
+        if any(k not in self.reports for k in keys):
+            return float("nan")
+        reports = [self.reports[k] for k in keys]
+        finite = [r.mp_eps for r in reports if np.isfinite(r.mp_eps)]
+        lam, bnd = np.asarray(self.spec.lam, float), [float(L.bound) for L in self.spec.levels]
+        sides = [(a, j) for j in (a - 1,) if j >= 0] + [(b - 1, j) for j in (b,) if j < len(lam)]
+        alpha = min((max(abs(lam[j] - lam[i]) - bnd[j], 0.0)/lam[j] for i, j in sides),
+                    default=float("nan"))
+        bound = 0.0
+        if finite and np.isfinite(alpha):
+            x = max(finite)/alpha if alpha > 0 else np.inf
+            bound = x*np.sqrt(1.0 + x*x)
+        base = max(max(r.sizing_prec, r.norm_rule_prec, *r.gram_residual)
+                   + (r.mp_eps if np.isfinite(r.mp_eps) else 0.0) for r in reports)
+        return float(max(base, HADAMARD_ESTIMATE_K*max(bound, max(r.identity_residual for r in reports))))
+
     def _hadamard(self, key, levels):
         """`self._H[key]`, computed once: THE ONE CALL to `record.hadamard`. Keeps its report
         (`self.reports[key]`), and a derivative the solver will not give is a refusal, so an

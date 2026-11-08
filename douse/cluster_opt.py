@@ -849,6 +849,9 @@ class _Opts:
     tau_g: object = None
 
 
+FLOOR_REJECTIONS = 3
+
+
 @dataclass
 class _State:
     """The loop state. `(p, F, lams, solver)` is ONE consistent iterate, replaced together or
@@ -870,6 +873,10 @@ class _State:
     cluster_seen: object = None
     n_replans_seen: int = 0
     previous: object = None               # the iterate before the last `adopt`, whole
+    floor_run: int = 0                    # consecutive rejections below `eps_f`: `_floor_stop`
+    eps_f: float = np.nan                 # at the model's iterate: `_error_floor`
+    eps_g: float = np.nan
+    floor_reason: str = ''
     degeneracy_moves: bool = True
     n_cluster_steps: int = 0
     n_interior_steps: int = 0
@@ -891,6 +898,7 @@ class _State:
     lin: object = None
     d: object = None
     gain: float = 0.0
+    gain1: float = np.nan                 # first order; `gain` becomes the second-order one
     crit: float = 0.0
     rho: float = -np.inf
 
@@ -898,9 +906,11 @@ class _State:
         self.it = it
         self.model, self.lin, self.d = None, None, None
         self.gain, self.crit, self.rho = 0.0, 0.0, -np.inf
+        self.gain1 = np.nan
 
     def adopt(self, p, F, lams, solver):
         self.previous = (self.p, self.F, self.lams, self.solver)
+        self.floor_run = 0
         self.p, self.F, self.lams, self.solver = p, F, lams, solver
 
     def reseed(self, ev):
@@ -1013,6 +1023,43 @@ def _update_curvature(st, o, ev, tally):
     return Outcome.CONTINUE
 
 
+def _error_floor(st, o):
+    """`(eps_f, eps_g)`: what the solves' accuracy allows the model's iterate to say, nan where
+    the backend does not measure it. `eps_f` is the certified error of F (the bars of lam_k and
+    lam_1); `eps_g` estimates the error of its gradient in the parameters, from the Hadamard
+    reports the model was built on (`ChladniSolver.hadamard_attained`). Calibrated, not proven."""
+    spec, attained = getattr(st.solver, 'spec', None), getattr(st.solver, 'hadamard_attained', None)
+    if spec is None or attained is None:
+        return np.nan, np.nan
+    lo, hi, m = *st.model['cluster'], int(st.model['m'])
+    bound = np.array([float(L.bound) for L in spec.levels])
+    lam = np.asarray(spec.lam, float)
+    k, first = spec.level_index(o.k), spec.level_index(0)
+    eps_f = st.F*(bound[k]/lam[k] + bound[first]/lam[first])
+    Jv = o.fam.d_vertices_dp(st.p)
+    eps_g = st.F*np.sqrt(Jv.shape[0])*np.linalg.norm(Jv, 2)*(m*attained(lo, hi) + attained(0, 1))
+    return float(eps_f), float(eps_g)
+
+
+def _note_rejection(st, dF):
+    """Count a rejection that the solves could not have judged."""
+    below = st.gain1 <= st.eps_f and abs(dF) <= st.eps_f
+    st.floor_run = st.floor_run + 1 if below else 0
+
+
+def _floor_stop(st, o):
+    """THREE rejections in a row with nothing resolvable left: end here and say how stationary
+    this is. Errors on one plan correlate, so a single rejection below `eps_f` proves nothing."""
+    if st.floor_run < FLOOR_REJECTIONS:
+        return False
+    st.resolution, st.floor_reason = st.crit, 'eps_f'
+    st.success = bool(st.crit + st.eps_g <= o.plateau_max)
+    st.message = (f'stationary to within eps_g (estimated): criticality {st.crit:.3g}, eps_g '
+                  f'{st.eps_g:.3g}; first-order gain {st.gain1:.3g} at radius {st.delta:.3g} '
+                  f'is below eps_f = {st.eps_f:.3g} on {st.floor_run} rejections in a row')
+    return True
+
+
 def _first_order_step(st, o, ev, tally):
     """The first-order trust-region step, and the two stopping tests measured against it.
 
@@ -1028,6 +1075,8 @@ def _first_order_step(st, o, ev, tally):
     re-solve the first-order model at `delta*plateau_shrink` and compare. Two subproblem solves,
     no eigensolve. `resolution` is the criticality actually achieved and is part of the answer."""
     st.d, st.gain = trust_region_step(st.model, st.delta, rng=o.rng, lin=st.lin)
+    st.gain1 = st.gain
+    st.eps_f, st.eps_g = _error_floor(st, o)
     st.crit = st.gain/st.delta if st.delta > 0 else 0.0
     if st.crit <= o.gain_tol:
         st.success = True
@@ -1078,10 +1127,13 @@ def _second_order_step(st, o, ev, tally):
         st.n_qn_steps += 1
         return Outcome.CONTINUE
     st.delta *= 0.5
+    _note_rejection(st, 0.0)
     if o.callback is not None:
         o.callback(st.p, st.F, st.model, st.delta, -np.inf)
+    if _floor_stop(st, o):
+        return Outcome.STOP
     if st.delta < 1e-14:
-        st.message = f'trust radius collapsed to {st.delta:.3g}'
+        st.message, st.floor_reason = f'trust radius collapsed to {st.delta:.3g}', 'delta_backstop'
         return Outcome.STOP
     return Outcome.NEXT_ITER
 
@@ -1132,6 +1184,7 @@ def _trial_step(st, o, ev, tally):
             st.delta = min(2*st.delta, o.delta_max)
     else:
         st.reject_run.append((st.delta, float(F_q - st.F)))
+        _note_rejection(st, F_q - st.F)
         st.delta *= 0.5
         st.reseed(ev)
     return Outcome.CONTINUE
@@ -1310,8 +1363,10 @@ def _degeneracy_stage(st, o, ev, tally):
 def _finish_iteration(st, o, ev, tally):
     if o.callback is not None:
         o.callback(st.p, st.F, st.model, st.delta, st.rho)
+    if _floor_stop(st, o):
+        return Outcome.STOP
     if st.delta < 1e-14:
-        st.message = f'trust radius collapsed to {st.delta:.3g}'
+        st.message, st.floor_reason = f'trust radius collapsed to {st.delta:.3g}', 'delta_backstop'
         return Outcome.STOP
     return Outcome.CONTINUE
 
@@ -1366,6 +1421,9 @@ def _result(st, o, ev, tally, lams_tracked, F_tracked, verified):
                           n_solver_refused=st.n_solver_refused,
                           n_discontinuity_repairs=st.n_discontinuity_repairs,
                           n_resyncs=st.n_resyncs,
+                          # What the solves' accuracy allowed, and how the run ended against it.
+                          eps_f=float(st.eps_f), eps_g=float(st.eps_g),
+                          floor_reason=st.floor_reason, prec_final_reached=None,
                           # The refused shapes themselves, not just the count.
                           refusals=(list(h.refusals) if h is not None
                                     else list(getattr(ev, 'refusals', []))),

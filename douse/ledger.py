@@ -116,7 +116,10 @@ def result_row(res, health=None, max_trace=400, **meta):
                n_discontinuity_repairs=int(res.get('n_discontinuity_repairs', 0)),
                n_infeasible=int(res.get('n_infeasible', 0)),
                n_unresolved=int(res.get('n_unresolved', 0)),
-               n_solver_refused=int(res.get('n_solver_refused', 0)))
+               n_solver_refused=int(res.get('n_solver_refused', 0)),
+               eps_f=_clean(res.get('eps_f', np.nan)), eps_g=_clean(res.get('eps_g', np.nan)),
+               floor_reason=str(res.get('floor_reason', '')),
+               prec_final_reached=res.get('prec_final_reached'))
     if h is not None:
         h = dict(h)
         trace = h.pop('trace', None)
