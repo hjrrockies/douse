@@ -55,7 +55,57 @@ def polygon_perimeter(vertices):
     return float(np.sum(edge_lengths(vertices)))
 
 __all__ = ['polygon_vertices', 'd_vertices_dp', 'param_vector', 'gauge_vector',
-           'perimeter_gradient', 'VertexPolygon', 'n_params', 'n_vertices']
+           'perimeter_gradient', 'VertexPolygon', 'n_params', 'n_vertices', 'in_box']
+
+
+#: The polygons the thesis claims chladni + douse handle (the lock-in gate, 2026-11-07; the
+#: feasible-set pilot measured it): interior angles in degrees, and the shortest edge and the
+#: narrowest gap between non-adjacent edges as fractions of the diameter.
+BOX_MIN_ANGLE, BOX_MAX_ANGLE, BOX_MIN_FEATURE = 10.0, 300.0, 0.05
+
+
+def _point_segment(p, a, b):
+    """Distance from points `p` to segments `a`-`b`, elementwise (complex)."""
+    d = b - a
+    t = np.clip(((p - a)*np.conj(d)).real/np.maximum(np.abs(d)**2, 1e-300), 0.0, 1.0)
+    return np.abs(p - (a + t*d))
+
+
+def _segments_gap(a, b, c, d):
+    """Distance between segments `a`-`b` and `c`-`d`, elementwise: 0 where they cross."""
+    gap = np.min([_point_segment(a, c, d), _point_segment(b, c, d),
+                  _point_segment(c, a, b), _point_segment(d, a, b)], axis=0)
+
+    def side(p, q, r):
+        return ((q - p).real*(r - p).imag - (q - p).imag*(r - p).real)
+    crossing = (side(a, b, c)*side(a, b, d) < 0) & (side(c, d, a)*side(c, d, b) < 0)
+    return np.where(crossing, 0.0, gap)
+
+
+def in_box(vertices, min_angle=BOX_MIN_ANGLE, max_angle=BOX_MAX_ANGLE,
+           min_feature=BOX_MIN_FEATURE):
+    """Is this polygon inside the thesis's bounding box? Simple, every interior angle within
+    `[min_angle, max_angle]` degrees, and every edge and every gap between non-adjacent edges at
+    least `min_feature` of the diameter. Scale- and orientation-free. A cheap test for an
+    optimizer to run before it pays for an eigensolve: it is a yes/no, not a constraint."""
+    z = np.asarray(vertices, dtype=complex)
+    n = len(z)
+    if n < 3 or polygon_area(z) == 0:
+        return False
+    if polygon_area(z) < 0:
+        z = z[::-1]
+    diam = float(np.max(np.abs(z[:, None] - z[None, :])))
+    e = np.roll(z, -1) - z
+    if np.min(np.abs(e)) < min_feature*diam:
+        return False
+    i, j = np.triu_indices(n, 2)
+    keep = (j - i) < n - 1                              # edges n-1 and 0 share a vertex
+    i, j = i[keep], j[keep]
+    if i.size and np.min(_segments_gap(z[i], z[i] + e[i], z[j], z[j] + e[j])) < min_feature*diam:
+        return False
+    turn = np.angle(e/np.roll(e, 1))                    # exterior angle at each vertex
+    interior = 180.0 - np.degrees(turn)
+    return bool(np.all((interior >= min_angle) & (interior <= max_angle)))
 
 
 def n_params(n_vert):

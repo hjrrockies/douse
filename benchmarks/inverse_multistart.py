@@ -78,6 +78,9 @@ class InverseSpec:
     # noise on the eigenvalues every log-ratio has the same spread, whereas the plain ratio's
     # spread shrinks with lam_1/lam_j and the high modes count for less.
     log: bool = False
+    # Keep every shape inside the thesis's bounding box (`douse.polygon.in_box`): a start outside
+    # it is redrawn and a trial outside it is a rejected step, before any eigensolve.
+    box: bool = False
     seed0: int = 0
     max_iter: int = 40
     max_step: float = 0.1
@@ -120,6 +123,8 @@ class InverseSpec:
             d.pop('grid_starts')          # specs written before the key keep their hash
         if not self.log:
             d.pop('log')
+        if not self.box:
+            d.pop('box')
         return d
 
     @property
@@ -335,6 +340,7 @@ def run_one(spec, rid, ci, K, sigma, draw, start):
     from douse.errors import ShapeRefusal
     from douse.objective import SpectralMatch
     from douse.optimize import gauss_newton
+    from douse.polygon import in_box
     from douse.runs import start_shape
 
     case = spec.cases[ci]
@@ -374,6 +380,9 @@ def run_one(spec, rid, ci, K, sigma, draw, start):
                 else:
                     p0 = param_vector(start_shape(N, start + 1000*j, spec.seed0, spec.perim),
                                       spec.perim)
+                if spec.box and not in_box(fam.vertices(p0)):
+                    redraws.append('outside the box')
+                    continue
                 try:
                     ev(p0)
                     break
@@ -385,7 +394,9 @@ def run_one(spec, rid, ci, K, sigma, draw, start):
             row['redraws'] = redraws
             z0 = fam.vertices(p0)
             res = gauss_newton(ev, SpectralMatch(target, log=spec.log), p0, max_iter=spec.max_iter,
-                               max_step=spec.max_step, rtol=spec.rtol)
+                               max_step=spec.max_step, rtol=spec.rtol,
+                               admissible=((lambda q: in_box(fam.vertices(q))) if spec.box
+                                           else None))
             z = fam.vertices(res.x)
             err, zm = congruence_error(z, w)
             err0, _ = congruence_error(z0, w)
@@ -400,7 +411,8 @@ def run_one(spec, rid, ci, K, sigma, draw, start):
             row.update(status='ok', success=bool(res.success), message=str(res.message),
                        true_sv=sv,
                        loss=float(res.fun), nit=int(res.nit), nfev=int(res.nfev),
-                       n_refused=int(res.n_refused), grad_norm=float(res.grad_norm),
+                       n_refused=int(res.n_refused), n_outside=int(res.n_outside),
+                       grad_norm=float(res.grad_norm),
                        shape_err=err, start_err=err0, ratio_err=ratio_err,
                        recovered=bool(err < RECOVERED),
                        x=res.x.tolist(),

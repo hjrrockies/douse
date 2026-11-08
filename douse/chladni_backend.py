@@ -44,7 +44,7 @@ import numpy as np
 import time
 
 from .backend import RunHealth, SolveTrace
-from .errors import DegenerateSpectrum, SolverRefusal, UnresolvedSpectrum
+from .errors import DegenerateSpectrum, ShapeRefusal, SolverRefusal, UnresolvedSpectrum
 
 __all__ = ["SpectrumEvaluator", "ChladniEvaluator", "ChladniSolver", "refusal_for"]
 
@@ -60,6 +60,11 @@ def _quiet():
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="FourierBessel can deliver")
         yield
+
+
+#: What a solve or a derivative raises when the SHAPE is the problem. Not TypeError or
+#: AttributeError: those are bugs, and a bug must not read as a difficult polygon.
+_SHAPE_ERRORS = (ValueError, RuntimeError, np.linalg.LinAlgError)
 
 
 def refusal_for(spec):
@@ -98,6 +103,7 @@ class ChladniSolver:
         self.vertices = np.asarray(vertices, dtype=complex)
         self.degenerate_tol = float(degenerate_tol)
         self._H = {}
+        self.reports = {}                         # the `HadamardReport` behind each entry of _H
 
     @property
     def spectrum(self):
@@ -155,17 +161,26 @@ class ChladniSolver:
         if i not in self._H:
             members = self._chladni_cluster(i)
             if members is None:
-                with _quiet():
-                    self._H[i] = self.record.hadamard(i, self._velocity())
-            else:
-                if members not in self._H:
-                    with _quiet():
-                        self._H[members] = self.record.hadamard(list(members), self._velocity())
-                ends = np.cumsum([int(self.spec.mult[j]) for j in members])
-                b = int(ends[members.index(i)])
-                a = b - int(self.spec.mult[i])
-                self._H[i] = self._H[members][:, a:b, a:b]
+                return self._hadamard(i, i)
+            ends = np.cumsum([int(self.spec.mult[j]) for j in members])
+            b = int(ends[members.index(i)])
+            a = b - int(self.spec.mult[i])
+            self._H[i] = self._hadamard(members, list(members))[:, a:b, a:b]
+            self.reports[i] = self.reports[members]
         return self._H[i]
+
+    def _hadamard(self, key, levels):
+        """`self._H[key]`, computed once: THE ONE CALL to `record.hadamard`. Keeps its report
+        (`self.reports[key]`), and a derivative the solver will not give is a refusal, so an
+        optimizer shortens the step (2026-11-08, the lock-in gate)."""
+        if key not in self._H:
+            try:
+                with _quiet():
+                    self._H[key], self.reports[key] = self.record.hadamard(
+                        levels, self._velocity(), report=True)
+            except _SHAPE_ERRORS as e:
+                raise SolverRefusal(f"chladni has no Hadamard derivative here: {e}") from e
+        return self._H[key]
 
     def dlams_dvertices(self, lams, n_vert, degenerate="raise"):
         """`(K, 2N)`: the simple-eigenvalue gradients (`SolvedShape`).
@@ -223,12 +238,7 @@ class ChladniSolver:
         level of multiplicity `m`, or several distinct levels -- a nearly degenerate cluster --
         taken as ONE block with their cross terms (`SolveRecord.hadamard([i, j, ...])`)."""
         idx = self._cluster_levels(lam, mult, lams)
-        key = tuple(idx)
-        if key not in self._H:
-            with _quiet():
-                self._H[key] = self.record.hadamard(idx[0] if len(idx) == 1 else idx,
-                                                    self._velocity())
-        H = self._H[key]                                        # (2N, m, m)
+        H = self._hadamard(tuple(idx), idx[0] if len(idx) == 1 else idx)  # (2N, m, m)
         Jv = family.d_vertices_dp(p)                            # (2N, n_p)
         return np.einsum("fij,fp->pij", H, Jv)
 
@@ -267,11 +277,7 @@ class ChladniSolver:
         move = own.copy()
         for g in groups:
             if len(g) > 1:
-                key = tuple(g)
-                if key not in self._H:
-                    with _quiet():
-                        self._H[key] = self.record.hadamard(list(g), self._velocity())
-                M = np.tensordot(dv, self._H[key], axes=(0, 0))
+                M = np.tensordot(dv, self._hadamard(tuple(g), list(g)), axes=(0, 0))
                 radius = float(np.max(np.abs(np.linalg.eigvalsh(0.5 * (M + M.T)))))
                 move[g] = max(radius, float(np.max(own[g])))
         move = np.maximum(move, floor * float(np.max(move, initial=0.0)))
@@ -384,6 +390,19 @@ class SpectrumEvaluator:
             self._planned = (self._plan_built_at.tobytes(), rec, time.perf_counter() - t0)
         return self._plan
 
+    @property
+    def current_plan(self):
+        """The frozen plan values are computed on. An optimizer compares values only when this
+        is the same object at both shapes (`cluster_opt._resync`)."""
+        return self._plan
+
+    def plan_state(self):
+        """Everything `replan` discards, for `restore_plan`."""
+        return self._plan, self._plan_at, self._plan_built_at, self._planned
+
+    def restore_plan(self, state):
+        self._plan, self._plan_at, self._plan_built_at, self._planned = state
+
     def eigenvalues(self, p, seed=None, windows=None):
         """`(lams, solver)`; raises `ShapeRefusal` (and nothing else) when the shape is the
         problem, as `SpectrumEvaluator.eigenvalues` does.
@@ -404,8 +423,28 @@ class SpectrumEvaluator:
         **Tracked from the previous shape** when `_last` names one solved here: chladni's warm
         start (`Eigenproblem.solve(..., near=prev)`), which checks continuity and solves cold on
         any failure, and every 10 warm solves. `seed` is accepted for interface parity and not
-        used: a warm start needs the previous SPECTRUM (its plan and levels), not just values."""
+        used: a warm start needs the previous SPECTRUM (its plan and levels), not just values.
+
+        **A refusal leaves the plan as it found it**, whatever re-planning was tried on the way:
+        a re-plan that failed used to leave `_plan_at` at the refused shape, so every later
+        call retried the plan there (2026-11-08). Anything the shape raises is a
+        `SolverRefusal`; a re-plan's `ValueError` used to escape every handler."""
         p = np.asarray(p, dtype=float)
+        saved = self.plan_state()
+        try:
+            return self._eigenvalues(p, windows)
+        except ShapeRefusal:
+            self.restore_plan(saved)
+            raise
+        except DegenerateSpectrum:
+            raise
+        except _SHAPE_ERRORS as e:
+            self.restore_plan(saved)
+            self.n_solver_refusals += 1
+            self._record(p, f"{type(e).__name__}: {e}")
+            raise SolverRefusal(f"chladni could not solve this shape: {e}") from e
+
+    def _eigenvalues(self, p, windows):
         dom, verts = self._domain(p)
         spec, exc = self._solve(dom, self.plan(p), p, near=self._near(), windows=windows)
         if exc is not None and not self._planned_here(p):
@@ -604,11 +643,16 @@ class SpectrumEvaluator:
         """`(lams, dlams_dp)` -- the spectrum and its `(K, n_p)` Jacobian."""
         from .derivative import dlams_dp
         lams, solver = self.eigenvalues(p, seed=seed)
-        if self.degenerate == "raise":
-            return lams, dlams_dp(self.family, p, solver, lams)
-        self.n_mean_rows += sum(int(solver.spec.mult[solver._level(l)]) > 1 for l in lams)
-        J = solver.dlams_dvertices(lams, self.family.n, degenerate=self.degenerate)
-        return lams, J @ self.family.d_vertices_dp(p)
+        try:
+            if self.degenerate == "raise":
+                return lams, dlams_dp(self.family, p, solver, lams)
+            self.n_mean_rows += sum(int(solver.spec.mult[solver._level(l)]) > 1 for l in lams)
+            J = solver.dlams_dvertices(lams, self.family.n, degenerate=self.degenerate)
+            return lams, J @ self.family.d_vertices_dp(p)
+        except (ShapeRefusal, DegenerateSpectrum):
+            raise
+        except _SHAPE_ERRORS as e:
+            raise SolverRefusal(f"chladni has no derivative at this shape: {e}") from e
 
     def replan(self, p=None):
         """Throw the frozen plan away so the next call rebuilds it (at `p` if given)."""

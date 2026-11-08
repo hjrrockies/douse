@@ -138,7 +138,8 @@ def descend(obj, p0, is_valid=None, max_iter=200, alpha0=0.02, grow=1.6, shrink=
 
 
 def gauss_newton(evaluator, match, p0, max_iter=30, max_step=0.1, mu0=1e-3, grow=4.0,
-                 shrink=0.25, rtol=1e-14, gtol=1e-12, max_backtrack=12, callback=None):
+                 shrink=0.25, rtol=1e-14, gtol=1e-12, max_backtrack=12, callback=None,
+                 admissible=None):
     """Levenberg-Marquardt on the inverse problem: `p -> ||match.residual(lams(p))||^2`.
 
     `descend` is a gradient method, and on a spectral match it is slow in the way gradient
@@ -151,10 +152,12 @@ def gauss_newton(evaluator, match, p0, max_iter=30, max_step=0.1, mu0=1e-3, grow
     Every trial step is checked for admissibility BEFORE an eigensolve (`family.is_valid`), capped
     at `max_step` in `p` so the solver is never asked about a wild shape (one such trial cost
     an L-BFGS run nine minutes of refusal, 2026-10-14), and a `ShapeRefusal` at a trial point is
-    treated as a rejected step: the damping grows and the step shortens.
+    treated as a rejected step: the damping grows and the step shortens. `admissible(q)`, when
+    given, is a further test on the trial `q` alone, and a trial failing it is rejected the same
+    way (counted in `n_outside`); the start is the caller's to choose.
 
     Returns an `OptimizeResult` with `x`, `fun` (the loss), `residual`, `nit`, `nfev`,
-    `n_refused`, `success`, `message`. `success` is True on the residual test (`rtol`, on the
+    `n_refused`, `n_outside`, `success`, `message`. `success` is True on the residual test (`rtol`, on the
     loss) or the gradient test (`gtol`).
     """
     from .errors import ShapeRefusal
@@ -174,7 +177,7 @@ def gauss_newton(evaluator, match, p0, max_iter=30, max_step=0.1, mu0=1e-3, grow
         raise ValueError('p0 is not an admissible parameter vector')
     r, J = residual(p)
     loss = float(r @ r)
-    nfev, n_refused, mu = 1, 0, float(mu0)
+    nfev, n_refused, n_outside, mu = 1, 0, 0, float(mu0)
     success, message, it = False, f'reached max_iter={max_iter}', 0
     for it in range(1, max_iter + 1):
         g = J.T @ r
@@ -192,7 +195,9 @@ def gauss_newton(evaluator, match, p0, max_iter=30, max_step=0.1, mu0=1e-3, grow
             if n > max_step:
                 d *= max_step / n
             q = p + d
-            if is_valid(q):
+            if admissible is not None and is_valid(q) and not admissible(q):
+                n_outside += 1
+            elif is_valid(q):
                 try:
                     r2, J2 = residual(q)
                     nfev += 1
@@ -213,5 +218,5 @@ def gauss_newton(evaluator, match, p0, max_iter=30, max_step=0.1, mu0=1e-3, grow
         if callback is not None:
             callback(p, loss, r)
     return OptimizeResult(x=p, fun=float(loss), residual=r, jac=J.T @ r, nit=it, nfev=nfev,
-                          n_refused=n_refused, grad_norm=float(np.linalg.norm(J.T @ r)),
+                          n_refused=n_refused, n_outside=n_outside, grad_norm=float(np.linalg.norm(J.T @ r)),
                           success=success, message=message)

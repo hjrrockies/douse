@@ -84,6 +84,7 @@ from scipy.optimize import minimize, minimize_scalar
 
 from . import degeneracy as _dg
 from .derivative import cluster_matrices, dlams_dp, whole_clusters
+from .errors import DegenerateSpectrum
 from .evaluate import ShapeRefusal, SolverRefusal
 from .polygon import gauge_vector
 from .optimize import OptimizeResult
@@ -850,6 +851,7 @@ class _State:
     Hmu: object = None
     cluster_seen: object = None
     n_replans_seen: int = 0
+    previous: object = None               # the iterate before the last `adopt`, whole
     degeneracy_moves: bool = True
     n_cluster_steps: int = 0
     n_interior_steps: int = 0
@@ -878,6 +880,7 @@ class _State:
         self.gain, self.crit, self.rho = 0.0, 0.0, -np.inf
 
     def adopt(self, p, F, lams, solver):
+        self.previous = (self.p, self.F, self.lams, self.solver)
         self.p, self.F, self.lams, self.solver = p, F, lams, solver
 
     def reseed(self, ev):
@@ -927,8 +930,11 @@ def _build_model(st, o, ev, tally):
     """The first-order model at the iterate, with the eps-active cluster tied to the trust
     radius under `eps_rel='auto'` (module docstring), and the constraints linearized."""
     eps_abs = None if (not o.auto or st.scale is None) else st.delta*st.scale
-    st.model = local_model(o.fam, st.p, st.solver, st.lams, k=o.k,
-                           eps_rel=(1e-3 if o.auto else o.eps_rel), eps_abs=eps_abs)
+    try:
+        st.model = local_model(o.fam, st.p, st.solver, st.lams, k=o.k,
+                               eps_rel=(1e-3 if o.auto else o.eps_rel), eps_abs=eps_abs)
+    except (ShapeRefusal, DegenerateSpectrum) as refusal:
+        return _model_refused(st, o, ev, refusal)
     st.scale = st.model['scale']
     if st.model['mode'] == 'cluster':
         st.n_cluster_steps += 1
@@ -936,6 +942,34 @@ def _build_model(st, o, ev, tally):
             st.n_interior_steps += 1
     st.lin = None if o.constraints is None else o.constraints(st.p)
     return Outcome.CONTINUE
+
+
+def _model_refused(st, o, ev, refusal):
+    """AN ACCEPTED ITERATE WHOSE DERIVATIVE CANNOT BE HAD is the same event as a refused trial,
+    one iteration late: go back to the iterate before it, whose model was built, shrink, and
+    count it on the shared streak. With nowhere to go back to, the run ends with the reason
+    rather than dying with it (2026-11-08; before this an `UnresolvedSpectrum` here killed the
+    row)."""
+    if isinstance(refusal, SolverRefusal):
+        st.n_solver_refused += 1
+    else:
+        st.n_unresolved += 1
+    st.refusal_streak += 1
+    why = f'{type(refusal).__name__}: {refusal}'
+    if st.previous is None:
+        st.message = f'no local model at this iterate and no earlier one to go back to; {why}'
+        st.success = False
+        return Outcome.STOP
+    if st.refusal_streak >= o.max_unresolved_streak:
+        st.message = (f'{st.refusal_streak} consecutive refusals within delta={st.delta:.3g} '
+                      f'of this iterate; the last was {why}')
+        st.success = False
+        return Outcome.STOP
+    st.p, st.F, st.lams, st.solver = st.previous
+    st.previous = None
+    st.delta *= 0.5
+    st.reseed(ev)
+    return Outcome.NEXT_ITER
 
 
 def _update_curvature(st, o, ev, tally):
