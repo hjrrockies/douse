@@ -723,7 +723,9 @@ def _degeneracy_move(evaluator, p, F, k, gain_tol=0.0):
     if not cands:
         return None
 
-    best = None
+    best, won = None, None
+    snapshot = getattr(evaluator, 'plan_state', None)
+    saved = None if snapshot is None else snapshot()
     plan_at = (evaluator.health().plan_at if hasattr(evaluator, 'health')
                else getattr(evaluator, '_plan_at', None))
     for v in cands:
@@ -749,10 +751,16 @@ def _degeneracy_move(evaluator, p, F, k, gain_tol=0.0):
         F_q = float(lams_q[k]/lams_q[0])
         if F_q > F + gain_tol and (best is None or F_q > best[1]):
             best = (q, F_q, lams_q, solver_q)
+            won = None if snapshot is None else snapshot()
 
     # `_plan` currently holds whichever candidate was tried LAST, which need not be the winner.
-    # Re-freeze it lazily at the shape actually being returned to, or restore the run's own.
-    evaluator.replan(plan_at if best is None else best[0])
+    # Back to the plan the kept iterate was solved on: a fresh plan here would put the next
+    # trial on a different discretization from it (`_resync`).
+    if snapshot is None:
+        evaluator.replan(plan_at if best is None else best[0])
+    else:
+        evaluator.restore_plan(saved if best is None else won)
+        evaluator.reset_continuation()
     return best
 
 
@@ -859,6 +867,8 @@ class _State:
     n_unresolved: int = 0
     n_solver_refused: int = 0
     n_discontinuity_repairs: int = 0
+    n_resyncs: int = 0
+    resync_streak: int = 0
     n_degeneracy_moves: int = 0
     n_qn_steps: int = 0
     n_windowed: int = 0
@@ -1082,6 +1092,7 @@ def _trial_step(st, o, ev, tally):
     `max_unresolved_streak` stops the run with the reason attached."""
     windows = _warm_windows(st, o)
     q = st.p + st.d
+    plan0, saved = _plan_of(ev), (ev.plan_state() if hasattr(ev, 'plan_state') else None)
     st.rho = -np.inf
     if not o.fam.is_valid(q) or (o.constraints is not None
                                  and not o.constraints.is_feasible(q)):
@@ -1092,27 +1103,20 @@ def _trial_step(st, o, ev, tally):
         lams_q, solver_q = (ev.eigenvalues(q) if windows is None
                             else ev.eigenvalues(q, windows=windows))
     except ShapeRefusal as refusal:
-        st.delta *= 0.5
-        if isinstance(refusal, SolverRefusal):
-            st.n_solver_refused += 1
-        else:
-            st.n_unresolved += 1
-        st.refusal_streak += 1
-        st.reseed(ev)
-        if o.callback is not None:
-            o.callback(st.p, st.F, st.model, st.delta, -np.inf)
-        if st.refusal_streak >= o.max_unresolved_streak:
-            st.message = (f'the solver refused {st.refusal_streak} consecutive trial '
-                          f'shapes within delta={st.delta:.3g} of this iterate; the last '
-                          f'was {type(refusal).__name__}: {refusal}')
-            return Outcome.STOP
-        return Outcome.NEXT_ITER
-    st.refusal_streak = 0
+        return _refused_trial(st, o, ev, refusal)
     F_q = _ratio(lams_q, o.k)
+    swapped = _plan_of(ev) is not plan0
+    if swapped:
+        out = _resync(st, o, ev, saved)
+        if out is not None:
+            return out
+    st.refusal_streak = st.resync_streak = 0
     st.rho = (F_q - st.F)/st.gain if st.gain > 0 else -np.inf
     if st.rho > o.eta:
         st.reject_run = []
         st.adopt(q, F_q, lams_q, solver_q)
+        if swapped:
+            st.reseed(ev)                     # `_resync` left the continuation at the old iterate
         if st.rho > o.eta_grow:
             st.delta = min(2*st.delta, o.delta_max)
     else:
@@ -1120,6 +1124,59 @@ def _trial_step(st, o, ev, tally):
         st.delta *= 0.5
         st.reseed(ev)
     return Outcome.CONTINUE
+
+
+def _plan_of(ev):
+    """The evaluator's frozen plan, or None for one with no such notion (a fake, lappy)."""
+    return getattr(ev, 'current_plan', None)
+
+
+def _refused_trial(st, o, ev, refusal):
+    """A trial the solver will not serve (`_trial_step`): shrink, count, stop on a streak."""
+    st.delta *= 0.5
+    if isinstance(refusal, SolverRefusal):
+        st.n_solver_refused += 1
+    else:
+        st.n_unresolved += 1
+    st.refusal_streak += 1
+    st.reseed(ev)
+    if o.callback is not None:
+        o.callback(st.p, st.F, st.model, st.delta, -np.inf)
+    if st.refusal_streak >= o.max_unresolved_streak:
+        st.message = (f'the solver refused {st.refusal_streak} consecutive trial '
+                      f'shapes within delta={st.delta:.3g} of this iterate; the last '
+                      f'was {type(refusal).__name__}: {refusal}')
+        return Outcome.STOP
+    return Outcome.NEXT_ITER
+
+
+def _resync(st, o, ev, saved):
+    """`rho` IS A DIFFERENCE OF TWO SOLVES AND MEANS NOTHING ACROSS A CHANGE OF PLAN. It is
+    trustworthy far below the solves' absolute error only because two solves on one plan make
+    correlated errors, and a re-plan moves `F` by a small discrete jump of its own. So when a
+    trial re-planned, the iterate is re-evaluated on the new plan and adopted, whether the step
+    is then accepted or not: keeping the old value after a rejection left the NEXT trial
+    crossing plans too (2026-11-08).
+
+    Returns None when the comparison can go ahead. If the iterate refuses the trial's plan, the
+    old plan comes back and the trial counts as refused. If the iterate re-plans in turn, the
+    trial is void: the iterate stays, on its plan, and only a repeat shrinks the radius, which
+    bounds the ping-pong."""
+    plan_q = _plan_of(ev)
+    try:
+        lams_p, solver_p = ev.eigenvalues(st.p)
+    except ShapeRefusal as refusal:
+        ev.restore_plan(saved)
+        return _refused_trial(st, o, ev, refusal)
+    st.adopt(st.p, _ratio(lams_p, o.k), lams_p, solver_p)
+    st.reject_run = []
+    st.n_resyncs += 1
+    if _plan_of(ev) is plan_q:
+        return None
+    st.resync_streak += 1
+    if st.resync_streak > 1:
+        st.delta *= 0.5
+    return Outcome.NEXT_ITER
 
 
 def _warm_windows(st, o):
@@ -1184,6 +1241,7 @@ def _repair_discontinuity(st, o, ev, tally):
     d0 = st.reject_run[-o.discontinuity_halvings][0]
     window = [abs(df) for _, df in st.reject_run[-o.discontinuity_halvings:]]
     lams_fresh, F_fresh, solver_fresh = None, None, None
+    plan0 = _plan_of(ev)
     try:
         with _watch_warnings(tally):
             ev.reset_continuation()
@@ -1199,6 +1257,9 @@ def _repair_discontinuity(st, o, ev, tally):
         st.adopt(st.p, F_fresh, lams_fresh, solver_fresh)
         st.delta = min(max(d0, st.delta), o.delta_max)
         return Outcome.NEXT_ITER
+    if lams_fresh is not None and _plan_of(ev) is not plan0:
+        st.adopt(st.p, F_fresh, lams_fresh, solver_fresh)    # no jump, but a new plan: `_resync`
+        st.n_resyncs += 1
     return Outcome.CONTINUE
 
 
@@ -1293,6 +1354,7 @@ def _result(st, o, ev, tally, lams_tracked, F_tracked, verified):
                           # spectrum: same policy, different diagnosis.
                           n_solver_refused=st.n_solver_refused,
                           n_discontinuity_repairs=st.n_discontinuity_repairs,
+                          n_resyncs=st.n_resyncs,
                           # The refused shapes themselves, not just the count.
                           refusals=(list(h.refusals) if h is not None
                                     else list(getattr(ev, 'refusals', []))),

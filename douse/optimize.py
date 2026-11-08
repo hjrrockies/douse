@@ -156,6 +156,10 @@ def gauss_newton(evaluator, match, p0, max_iter=30, max_step=0.1, mu0=1e-3, grow
     given, is a further test on the trial `q` alone, and a trial failing it is rejected the same
     way (counted in `n_outside`); the start is the caller's to choose.
 
+    A trial that re-planned is compared with `p` re-evaluated on the new plan, never with its
+    value on the old one (`cluster_opt._resync`); if `p` refuses the new plan the old one comes
+    back and the trial counts as refused, and if `p` re-plans in turn the trial is dropped.
+
     Returns an `OptimizeResult` with `x`, `fun` (the loss), `residual`, `nit`, `nfev`,
     `n_refused`, `n_outside`, `success`, `message`. `success` is True on the residual test (`rtol`, on the
     loss) or the gradient test (`gtol`).
@@ -179,6 +183,10 @@ def gauss_newton(evaluator, match, p0, max_iter=30, max_step=0.1, mu0=1e-3, grow
     loss = float(r @ r)
     nfev, n_refused, n_outside, mu = 1, 0, 0, float(mu0)
     success, message, it = False, f'reached max_iter={max_iter}', 0
+
+    def plan_of():
+        return getattr(evaluator, 'current_plan', None)
+
     for it in range(1, max_iter + 1):
         g = J.T @ r
         if loss < rtol:
@@ -198,12 +206,27 @@ def gauss_newton(evaluator, match, p0, max_iter=30, max_step=0.1, mu0=1e-3, grow
             if admissible is not None and is_valid(q) and not admissible(q):
                 n_outside += 1
             elif is_valid(q):
+                before = plan_of()
+                saved = evaluator.plan_state() if hasattr(evaluator, 'plan_state') else None
                 try:
                     r2, J2 = residual(q)
                     nfev += 1
                 except ShapeRefusal:
                     n_refused += 1
                     r2 = None
+                if r2 is not None and plan_of() is not before:
+                    after = plan_of()
+                    try:
+                        r, J = residual(p)
+                        nfev += 1
+                    except ShapeRefusal:
+                        evaluator.restore_plan(saved)
+                        n_refused += 1
+                        r2 = None
+                    else:
+                        loss, g = float(r @ r), J.T @ r
+                        if plan_of() is not after:
+                            r2 = None
                 if r2 is not None:
                     loss2 = float(r2 @ r2)
                     if np.isfinite(loss2) and loss2 < loss:
