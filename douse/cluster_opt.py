@@ -87,7 +87,7 @@ from . import degeneracy as _dg
 from .derivative import cluster_matrices, dlams_dp, partition_levels, whole_clusters
 from .errors import DegenerateSpectrum, TimeBudget
 from .evaluate import ShapeRefusal, SolverRefusal
-from .polygon import gauge_vector, is_convex
+from .polygon import VertexPolygon, gauge_vector, is_convex
 from .optimize import OptimizeResult
 from .quasi_newton import SR1, ScalarSecant, tr_subproblem
 
@@ -717,6 +717,11 @@ def trust_region_step(model, delta, rng=None, lin=None):
 GAIN_ROUNDOFF = 1e-12
 #: `gain/delta` a conic solve can be trusted to, in unit-ball coordinates.
 CONIC_ACCURACY = 1e-8
+#: A predicted gain this many `eps_f` large can be judged across a change of plan (`_resync`).
+CROSS_PLAN_GAIN = 100.0
+#: `|dx_0/dp|` above this is a bad choice of anchor (`_reanchor_stage`): `v_0` within a few
+#: degrees of flat. A new anchor must improve it by `REANCHOR_GAIN`.
+REANCHOR_COND, REANCHOR_GAIN, MAX_REANCHOR_TRIES = 100.0, 4.0, 5
 
 #: The branches of `_subproblem`, and whether each one's method guarantees the global maximum of
 #: the model (up to solver accuracy, or the grid for `highest_2`). Where it does not, a gain near
@@ -1020,6 +1025,9 @@ class _State:
     n_windowed: int = 0
     n_window_caps: int = 0
     n_corrected: int = 0                  # trials `_second_order_correction` pulled back
+    n_reanchors: int = 0                  # labellings `_reanchor_stage` changed
+    reanchor_tries: int = 0
+    back_plan: object = None              # the iterate's plan, set by a cross-plan `_resync`
     final_case: object = None            # `_case_record` of the latest first-order solve
     final_case_p: object = None           # the iterate that record describes
     message: str = ''
@@ -1086,6 +1094,74 @@ def _sigma_abort(st, o, ev, tally):
             return Outcome.STOP
     else:
         st.sigma_streak = 0
+    return Outcome.CONTINUE
+
+
+def _anchor_cond(fam, p):
+    """`|dx_0/dp|`, how hard the perimeter solve amplifies a step. Infinite when `v_0` is flat."""
+    try:
+        return float(np.linalg.norm(fam.d_vertices_dp(p)[0]))
+    except (ValueError, TypeError):
+        return np.inf
+
+
+def _best_anchor(fam, p, cond, constraints=None):
+    """The same polygon with the best-conditioned anchor, or None if none beats `cond` enough."""
+    v, best, best_cond = fam.vertices(p), None, cond/REANCHOR_GAIN
+    for anchor in range(len(v)):
+        try:
+            q = gauge_vector(v, fam.perim, anchor=anchor)
+        except (ValueError, TypeError):
+            continue
+        if not fam.is_valid(q) or (constraints is not None
+                                   and not constraints.is_feasible(q, tol=1e-12)):
+            continue
+        c = _anchor_cond(fam, q)
+        if c < best_cond:
+            best, best_cond = q, c
+    return best
+
+
+def _reanchor_stage(st, o, ev, tally):
+    """A NEARLY FLAT `v_0` IS A LABELLING PROBLEM, and the polygon only matters up to isometry.
+
+    `x_0` is solved from the perimeter with `dP/dx_0 = 1 - cos(phi)`, so a flat `v_0` makes it
+    ill-determined. Row 10 of the lock-in validation started with a 184.87 degree corner there
+    and `|dx_0/dp| = 745`: a step of 2e-4 moved edge 0 by 0.05, and its first 12 iterations were
+    mostly infeasible trials. Choosing another anchor is the same domain in better coordinates.
+
+    Like `_degeneracy_stage` it resets the curvature, which describes the old coordinates. The
+    new labelling must give the same `F`, or the old one stays."""
+    if (not isinstance(o.fam, VertexPolygon) or not hasattr(ev, 'replan')
+            or st.reanchor_tries >= MAX_REANCHOR_TRIES):
+        return Outcome.CONTINUE
+    cond = _anchor_cond(o.fam, st.p)
+    if cond <= REANCHOR_COND:
+        return Outcome.CONTINUE
+    q = _best_anchor(o.fam, st.p, cond, o.constraints)
+    if q is None:
+        return Outcome.CONTINUE
+    st.reanchor_tries += 1
+    saved = ev.plan_state()
+    allowed = max(100*st.eps_f if np.isfinite(st.eps_f) else 0.0, 1e-7*abs(st.F))
+    try:
+        ev.replan(q)
+        lams, solver = ev.eigenvalues(q)
+        same = abs(_ratio(lams, o.k) - st.F) <= allowed
+    except ShapeRefusal:
+        same = False
+    if not same:
+        ev.restore_plan(saved)
+        st.reseed(ev)
+        return Outcome.CONTINUE
+    st.adopt(q, _ratio(lams, o.k), lams, solver)
+    st.previous, st.reject_run = None, []     # the earlier iterate is in the old coordinates
+    st.n_reanchors += 1
+    if st.H1 is not None:
+        st.H1.reset()
+        st.Hmu.reset()
+        st.cluster_seen = None
+        st.n_replans_seen = int(getattr(ev, 'n_replans', 0))
     return Outcome.CONTINUE
 
 
@@ -1493,7 +1569,10 @@ def _trial_step(st, o, ev, tally):
         st.reject_run.append((st.delta, float(F_q - st.F)))
         _note_rejection(st, F_q - st.F)
         st.delta *= 0.5
+        if st.back_plan is not None:
+            ev.restore_plan(st.back_plan)
         st.reseed(ev)
+    st.back_plan = None
     return Outcome.CONTINUE
 
 
@@ -1533,17 +1612,32 @@ def _resync(st, o, ev, saved):
     Returns None when the comparison can go ahead. If the iterate refuses the trial's plan, the
     old plan comes back and the trial counts as refused. If the iterate re-plans in turn, the
     trial is void: the iterate stays, on its plan, and only a repeat shrinks the radius, which
-    bounds the ping-pong."""
-    plan_q = _plan_of(ev)
+    bounds the ping-pong.
+
+    A GAIN FAR ABOVE THE SOLVES' ERROR NEEDS NO SHARED PLAN (2026-11-09). A re-plan moves `F` by
+    about `eps_f`, so it can only change the decision near `eps_f`. Without this, row 10 of the
+    lock-in validation spent 52 minutes and 22 halvings at a flattened vertex: the iterate's
+    plan has one corner fewer than any trial's, so every trial was void. The comparison goes
+    ahead on the trial's plan, and `back_plan` is the iterate's, for a rejection to restore."""
+    plan_q, state_q = _plan_of(ev), ev.plan_state()
+    decisive = np.isfinite(st.eps_f) and st.gain > CROSS_PLAN_GAIN*st.eps_f
     try:
         lams_p, solver_p = ev.eigenvalues(st.p)
     except ShapeRefusal as refusal:
+        if decisive:
+            ev.restore_plan(state_q)
+            st.back_plan = saved
+            return None
         ev.restore_plan(saved)
         return _refused_trial(st, o, ev, refusal)
     st.adopt(st.p, _ratio(lams_p, o.k), lams_p, solver_p)
     st.reject_run = []
     st.n_resyncs += 1
     if _plan_of(ev) is plan_q:
+        return None
+    if decisive:
+        st.back_plan = ev.plan_state()
+        ev.restore_plan(state_q)
         return None
     st.resync_streak += 1
     if st.resync_streak > 1:
@@ -1679,7 +1773,7 @@ def _finish_iteration(st, o, ev, tally):
     return Outcome.CONTINUE
 
 
-_STAGES = (_sigma_abort, _build_model, _update_curvature, _first_order_step,
+_STAGES = (_sigma_abort, _reanchor_stage, _build_model, _update_curvature, _first_order_step,
            _second_order_step, _trial_step, _repair_discontinuity, _degeneracy_stage,
            _finish_iteration)
 
@@ -1765,7 +1859,7 @@ def _result(st, o, ev, tally, lams_tracked, F_tracked, verified):
     return OptimizeResult(x=st.p, fun=st.F, nit=st.it, lams=lams, gap=gap, delta=st.delta,
                           health=health, final_case=final_case,
                           convergence=_convergence(st.success, final_case),
-                          n_corrected=st.n_corrected,
+                          n_corrected=st.n_corrected, n_reanchors=st.n_reanchors,
                           n_cluster_steps=st.n_cluster_steps,
                           n_interior_steps=st.n_interior_steps,
                           n_infeasible=st.n_infeasible, n_unresolved=st.n_unresolved,
