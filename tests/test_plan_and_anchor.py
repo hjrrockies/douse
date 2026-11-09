@@ -12,7 +12,7 @@ from douse import cluster_opt as co
 from douse.cluster_opt import Outcome, _trial_step
 from douse.errors import UnresolvedSpectrum
 from douse.polygon import VertexPolygon, edge_lengths, gauge_vector
-from tests.test_resync import PlanEv, opts, state
+from test_resync import PlanEv, opts, state
 
 
 # ---- across a change of plan -----------------------------------------------------------------
