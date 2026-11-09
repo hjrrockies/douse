@@ -53,3 +53,36 @@ jobs:
           OPENBLAS_NUM_THREADS: "1"
           OMP_NUM_THREADS: "1"
         run: uv run pytest -q -p no:cacheprovider
+
+  # The slow tier, real optimizations end to end, on every push to the thesis branch. A nightly
+  # schedule would run only from the default branch, and the work is not on it.
+  slow:
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/thesis'
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: douse
+      - uses: actions/checkout@v4
+        with:
+          repository: hjrrockies/chladni
+          ref: ${{ env.CHLADNI_REF }}
+          path: chladni
+      - uses: actions/checkout@v4
+        with:
+          repository: hjrrockies/lappy
+          path: lappy
+      - uses: astral-sh/setup-uv@v5
+      - name: Install
+        working-directory: douse
+        run: |
+          uv python install 3.12
+          uv sync --extra test --python 3.12
+      - name: Slow tier
+        working-directory: douse
+        env:
+          OPENBLAS_NUM_THREADS: "1"
+          OMP_NUM_THREADS: "1"
+        run: uv run pytest -q -p no:cacheprovider -m slow -o addopts=""

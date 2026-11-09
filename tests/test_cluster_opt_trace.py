@@ -95,7 +95,7 @@ class FakeRectEvaluator:
     def values(self, verts):
         return np.array([self.branch(verts, lab) for lab in MODES])
 
-    def eigenvalues(self, p):
+    def eigenvalues(self, p, seed=None, windows=None):
         self.n_calls += 1
         verts = np.asarray(self.family.vertices(p), dtype=complex)
         vals = self.values(verts)

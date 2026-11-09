@@ -34,7 +34,7 @@ class FakeEvaluator:
         self._last = None
         self.reseeds, self.resets, self.calls = [], 0, []
 
-    def eigenvalues(self, p):
+    def eigenvalues(self, p, seed=None, windows=None):
         self.calls.append(np.array(p, float))
         kind, payload = self.script.pop(0)
         if kind == 'refuse':
