@@ -14,7 +14,6 @@ can resolve, and no warm solve dies on a `windows` length.
 """
 import argparse
 import dataclasses
-import functools
 import json
 import pathlib
 import time
@@ -34,14 +33,31 @@ def rows():
     return json.loads(ROWS.read_text())
 
 
+def _progress(ev, t0):
+    """A `maximize_ratio` callback printing one line per iteration, flushed, so a row still
+    running on the cluster can be told from a stuck one. `model` is None on a refused trial."""
+    n = [0]
+
+    def line(p, F, model, delta, rho):
+        n[0] += 1
+        mode, m = (None, None) if model is None else (model.get('mode'), model.get('m'))
+        print(f'iter {n[0]} F={F:.10f} delta={delta:.2e} rho={rho:+.2f} mode={mode} m={m} '
+              f'replans={ev.health().n_replans} t={time.perf_counter() - t0:.0f}s', flush=True)
+    return line
+
+
 def run(index, tau_g, out):
     import benchmarks.ratio_multistart as rm
     from douse import spec as spec_mod
     from douse.cluster_opt import maximize_ratio
     r = rows()[index]
     spec = dataclasses.replace(spec_mod.load(SPEC), prec_final=PREC_FINAL)
-    rm.maximize_ratio = functools.partial(maximize_ratio, tau_g=tau_g)
     t0 = time.perf_counter()
+
+    def logged(ev, p0, **kw):
+        kw['callback'] = _progress(ev, t0)
+        return maximize_ratio(ev, p0, tau_g=tau_g, **kw)
+    rm.maximize_ratio = logged
     row = rm.run_one(r['N'], r['k'], r['start'], spec.max_iter, spec.seed0, spec.delta0,
                      prec=spec.prec, backend=spec.backend, spec=spec)
     row.update(index=index, tau_g=tau_g, v2_fun=r['fun'], v2_kind=r['kind'],
