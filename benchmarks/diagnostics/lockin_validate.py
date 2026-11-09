@@ -96,7 +96,9 @@ def compare(folder):
             collapsed.append((r['index'], r['tau_g'], end))
         if _overclaims(r):
             overclaimed.append((r['index'], r['tau_g'], r.get('resolution'), r.get('eps_g')))
-        if 'windows' in json.dumps(r.get('refusals', [])) + json.dumps(r.get('trace', [])):
+        # "every half-width must be positive" is chladni declining a window wider than its value,
+        # at a large radius, and solving cold; the crash was a length mismatch.
+        if 'broadcast' in json.dumps(r.get('refusals', [])) + json.dumps(r.get('trace', [])):
             windows.append((r['index'], r['tau_g']))
     v2 = sum(r['kind'] == 'refused' for r in rows())
     now = sum(_ending(r) == 'refused' for r in new)
