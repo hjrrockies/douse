@@ -222,8 +222,11 @@ def local_model(family, p, solver, lams, k=1, eps_rel=1e-3, eps_abs=None, align_
         spec = None                           # a truncated array: fall back to the width loop
     lo, hi = _active_cluster(lams, k, float(eps_abs), spec=spec, tau_g=tau_g)
     m, j = hi - lo, k - lo
-    out = dict(cluster=(lo, hi), m=m, j=j, lam_1=lam_1, lam_k=lam_k, ratio=lam_k/lam_1,
-               eps_abs=float(eps_abs))
+    # The cluster at the floor width, which no trust radius moves: what the shape IS, where
+    # `cluster` is what this radius sees (`_case_record`).
+    resolved = _active_cluster(lams, k, float(eps_floor_rel)*abs(lam_k), spec=spec, tau_g=tau_g)
+    out = dict(cluster=(lo, hi), resolved=resolved, m=m, j=j, lam_1=lam_1, lam_k=lam_k,
+               ratio=lam_k/lam_1, eps_abs=float(eps_abs))
 
     if m == 1:
         J = dlams_dp(family, p, solver, [lam_1, lam_k]) if k != 0 else \
@@ -683,34 +686,59 @@ def trust_region_step(model, delta, rng=None, lin=None):
 #: `gain/delta` this small is zero: far below what any derivative here is accurate to.
 GAIN_ROUNDOFF = 1e-12
 
+#: The branches of `_subproblem`, and whether each one's method guarantees the global maximum of
+#: the model (up to solver accuracy, or the grid for `highest_2`). Where it does not, a gain near
+#: zero says only that multistart found no step.
+CASE_CERTIFIED = dict(simple=True, lowest_2=True, lowest_m=True, highest_2=True, highest_m=False,
+                      middle=False, constrained=False)
+
+
+def _case_row(model, delta, lin=None):
+    """The branch of `_subproblem` this model and radius go to, a key of `CASE_CERTIFIED`."""
+    if lin is not None and len(_active_rows(lin, delta)):
+        return 'constrained'
+    if model['mode'] == 'smooth':
+        return 'simple'
+    m, j = model['m'], model['j']
+    if j == 0:
+        return 'lowest_2' if m == 2 else 'lowest_m'
+    if j == m - 1:
+        return 'highest_2' if m == 2 else 'highest_m'
+    return 'middle'
+
 
 def _subproblem(model, delta, rng=None, lin=None):
     """`(d, gain, ok)`, the dispatch behind `trust_region_step`. `ok` False says gain 0 is a
     failure to solve, which must not be read as optimality: the iterate is outside the
-    constraints, or no solver found a step at all."""
-    if lin is not None and len(_active_rows(lin, delta)):
+    constraints, or no solver found a step at all. `model['fallback']` says whether the branch's
+    own method was replaced, since then its row no longer describes what ran."""
+    row = _case_row(model, delta, lin)
+    model['fallback'] = False
+    if row == 'constrained':
         d = _step_constrained(model, delta, lin, rng=rng)
         gain = model_gain(model, d)
         ok = _feasible(np.zeros_like(d), lin)
         return (d, float(gain), ok) if np.isfinite(gain) and gain > 0 else (np.zeros_like(d), 0.0, ok)
 
-    if model['mode'] == 'smooth':
+    if row == 'simple':
         d = _step_smooth(model, delta)
         return d, max(0.0, model_gain(model, d)), True
 
-    m, j = model['m'], model['j']
     n_p = len(model['g1'])
-    if j == 0:
-        d = _step_concave_2x2(model, delta) if m == 2 else _step_concave_sdp(model, delta)
-    elif j == m - 1:
-        d = _step_convex(model, delta, rng=rng)
-    else:
+    if row == 'lowest_2':
+        d = _step_concave_2x2(model, delta)
+    elif row == 'lowest_m':
+        d = _step_concave_sdp(model, delta)
+    elif row == 'middle':
         d = _step_interior(model, delta, rng=rng)
+    else:
+        d = _step_convex(model, delta, rng=rng)
 
     # A step worse than none means the solver failed, whatever status it gave. Round-off below
     # zero does not: at a true maximum the solver returns 1e-16 of a step and gain -5e-17.
     if d is None or not np.all(np.isfinite(d)) or \
             not model_gain(model, np.asarray(d, float)) >= -GAIN_ROUNDOFF*delta:
+        model['fallback'] = True
         rng = np.random.default_rng(0) if rng is None else rng
         r = rng.normal(size=(8, n_p))
         seeds = [np.zeros(n_p)] + list(0.5*delta*r/np.linalg.norm(r, axis=1, keepdims=True))
@@ -939,6 +967,8 @@ class _State:
     n_qn_steps: int = 0
     n_windowed: int = 0
     n_window_caps: int = 0
+    final_case: object = None             # `_case_record` of the latest first-order solve
+    final_case_p: object = None           # the iterate that record describes
     message: str = ''
     success: bool = False
     resolution: float = np.nan
@@ -1154,6 +1184,7 @@ def _first_order_step(st, o, ev, tally):
     re-solve the first-order model at `delta*plateau_shrink` and compare. Two subproblem solves,
     no eigensolve. `resolution` is the criticality actually achieved and is part of the answer."""
     st.d, st.gain, st.sub_ok = _subproblem(st.model, st.delta, rng=o.rng, lin=st.lin)
+    st.final_case, st.final_case_p = _case_record(st), np.array(st.p, dtype=float)
     st.gain1 = st.gain
     st.eps_f, st.eps_g = _error_floor(st, o)
     st.crit = st.gain/st.delta if st.delta > 0 else 0.0
@@ -1165,6 +1196,30 @@ def _first_order_step(st, o, ev, tally):
         return Outcome.CONTINUE
     st.success, (st.resolution, st.message) = True, stop
     return Outcome.STOP
+
+
+def _case_record(st):
+    """WHICH CASE THE SUBPROBLEM JUST SOLVED WAS, for `OptimizeResult.final_case` (2026-11-08).
+
+    A "first-order optimal" ending means different things by branch, so a result has to say which
+    one it ended in; the step counters only say what happened on the way. `row` follows the radius
+    (`cluster` is what `delta` could see), while `resolved_m`, `resolved_j` are the grouping at the
+    floor width, which is a property of the shape. Both are reported because they can differ.
+    `cluster` indexes `lams` from zero; `j` and `resolved_j` are positions within each group."""
+    model, lams = st.model, st.lams
+    row = _case_row(model, st.delta, st.lin)
+    lo, hi = (int(i) for i in model['cluster'])
+    r_lo, r_hi = (int(i) for i in model['resolved'])
+    fallback = bool(model['fallback'])
+    return dict(row=row, certified=CASE_CERTIFIED[row] and not fallback and bool(st.sub_ok),
+                fallback=fallback, solved=bool(st.sub_ok), m=int(model['m']), j=int(model['j']),
+                cluster=(lo, hi), resolved_m=r_hi - r_lo, resolved_j=lo + int(model['j']) - r_lo,
+                split=float(lams[hi - 1] - lams[lo]),
+                gap_below=float(lams[lo] - lams[lo - 1]) if lo > 0 else np.nan,
+                gap_above=float(lams[hi] - lams[hi - 1]) if hi < len(lams) else np.nan,
+                n_active_constraints=(0 if st.lin is None
+                                      else int(len(_active_rows(st.lin, st.delta)))),
+                delta=float(st.delta))
 
 
 def _stationary(st, o):
@@ -1587,8 +1642,12 @@ def _result(st, o, ev, tally, lams_tracked, F_tracked, verified):
 
     def stat(name, old, default):
         return default if h is None else getattr(h, name)
+    # `at_endpoint` False: the last iteration moved or refused after this record was taken, so
+    # the record describes the iterate before `x`. None: no first-order solve ever ran.
+    final_case = (None if st.final_case is None else
+                  dict(st.final_case, at_endpoint=bool(np.array_equal(st.final_case_p, st.p))))
     return OptimizeResult(x=st.p, fun=st.F, nit=st.it, lams=lams, gap=gap, delta=st.delta,
-                          health=health,
+                          health=health, final_case=final_case,
                           n_cluster_steps=st.n_cluster_steps,
                           n_interior_steps=st.n_interior_steps,
                           n_infeasible=st.n_infeasible, n_unresolved=st.n_unresolved,

@@ -55,6 +55,7 @@ def setup(gain, monkeypatch, final=1e-12, v=SQUARE, **over):
     st = state(delta=1.0)
     st.model, st.lin = dict(mode='smooth'), None
     monkeypatch.setattr(co, '_subproblem', lambda m, d, rng=None, lin=None: (np.zeros(2), gain*d, True))
+    monkeypatch.setattr(co, '_case_record', lambda st: None)
     o = opts()
     o = o.__class__(**{**o.__dict__, 'prec_final': final, 'fam': Fam(v), 'plateau_rtol': None, **over})
     return st, o

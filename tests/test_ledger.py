@@ -42,7 +42,9 @@ def test_read_rows_dedupes_by_start_keeping_the_last(tmp_path):
 def test_result_row_is_schema_2_with_the_health_and_a_capped_trace():
     res = OptimizeResult(x=np.array([0.1, 0.2]), fun=2.5, nit=7, lams=np.array([1.0, 2.5]),
                          gap=1.5, delta=0.01, resolution=np.nan, success=True, message='ok',
-                         n_warnings=1, n_cluster_steps=3)
+                         n_warnings=1, n_cluster_steps=3,
+                         final_case=dict(row='lowest_2', certified=True, cluster=(1, 3),
+                                         gap_above=np.nan))
     h = RunHealth(worst_bound=1e-10, worst_deficit=0.1, n_replans=2,
                   trace=tuple(SolveTrace('cold', None, 1, 100, 1.0) for _ in range(5)))
     row = ledger.result_row(res, health=h, N=4, k=1, start=0, backend='chladni', max_trace=3)
@@ -50,5 +52,7 @@ def test_result_row_is_schema_2_with_the_health_and_a_capped_trace():
     assert row['worst_bound'] == 1e-10 and row['n_replans'] == 2 and row['resolution'] is None
     assert row['x'] == [0.1, 0.2] and row['n_cluster_steps'] == 3 and row['n_warnings'] == 1
     assert len(row['trace']) == 3 and row['trace'][0]['kind'] == 'cold'
+    assert row['final_case'] == dict(row='lowest_2', certified=True, cluster=[1, 3],
+                                     gap_above=None)
     json.dumps(row)                                              # JSON-clean
     assert ledger.schema_mix([row, dict(fun=1.0)]) == {2: 1, 1: 1}

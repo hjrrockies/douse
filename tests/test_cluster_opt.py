@@ -31,13 +31,15 @@ semidefinite program for the concave one. They need no eigensolver, so they run 
 second and can be trusted to fail for one reason only.
 """
 import warnings
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from douse import VertexPolygon, param_vector, SpectrumEvaluator
-from douse.cluster_opt import (local_model, trust_region_step, maximize_ratio, model_gain,
-                               _active_cluster, _step_concave_sdp)
+from douse.cluster_opt import (CASE_CERTIFIED, local_model, trust_region_step, maximize_ratio,
+                               model_gain, _active_cluster, _case_record, _case_row, _step_concave_sdp,
+                               _subproblem)
 
 PERIM = 4.0
 PPW = (3.8317059702/2.4048255577)**2
@@ -67,6 +69,9 @@ def test_the_square_is_reached_through_the_degeneracy():
     assert res.fun <= PPW + 1e-9, f'{res.fun} exceeds the PPW bound {PPW}'
     assert res.gap < 1e-5, f'should finish AT the degeneracy, gap = {res.gap:.2e}'
     assert res.n_cluster_steps > 0, 'the cluster model was never used'
+    c = res.final_case
+    assert c['row'] == 'lowest_2' and c['certified'] and c['at_endpoint'], c
+    assert c['cluster'] == (1, 3) and c['resolved_m'] == 2 and c['resolved_j'] == 0, c
 
     v = fam.vertices(res.x)
     ang = np.degrees([np.pi - np.angle((v[(i+1) % 4]-v[i])/(v[i]-v[i-1])) for i in range(4)])
@@ -503,3 +508,75 @@ def test_hadamard_shortfall_warnings_are_counted_apart():
             warnings.warn("the Hadamard matrix at lam = 49.3 is good to 1.1e-10 relative")
         warnings.warn("a level at lam = 12 is unmet")
     assert tally['n'] == 4 and tally['n_hadamard_short'] == 3
+
+
+# THE CASE A RUN ENDED IN. The rows are read from the same function `_subproblem` dispatches on,
+# so these check the labels, the fallback and the record's arithmetic.
+
+@pytest.mark.parametrize('m,j,row', [(2, 0, 'lowest_2'), (3, 0, 'lowest_m'), (4, 0, 'lowest_m'),
+                                     (2, 1, 'highest_2'), (3, 2, 'highest_m'), (3, 1, 'middle'),
+                                     (5, 2, 'middle')])
+def test_each_position_names_its_row(m, j, row):
+    assert _case_row(_synthetic(m, 6, j, seed=0), 0.01) == row
+
+
+def test_only_the_rows_with_a_reduction_are_certified():
+    assert {r for r, ok in CASE_CERTIFIED.items() if not ok} == {'highest_m', 'middle',
+                                                                 'constrained'}
+
+
+def test_a_constraint_in_reach_overrides_the_position():
+    model = _synthetic(2, 3, 0, seed=0)
+    near, far = (np.array([1e-3]), np.eye(3)[:1]), (np.array([1.0]), np.eye(3)[:1])
+    assert _case_row(model, 0.01, near) == 'constrained'
+    assert _case_row(model, 0.01, far) == 'lowest_2'
+    assert _case_row(dict(mode='smooth'), 0.01, near) == 'constrained'
+    assert _case_row(dict(mode='smooth'), 0.01) == 'simple'
+
+
+def test_a_fallback_is_recorded_and_costs_the_certificate(monkeypatch):
+    import douse.cluster_opt as co
+
+    def state(model):
+        return SimpleNamespace(model=model, lams=np.array([10.0, 20.0, 20.5, 20.75, 30.0]),
+                               delta=0.01, lin=None, sub_ok=True)
+    model = _synthetic(3, 6, 0, seed=0)
+    model.update(cluster=(1, 4), resolved=(1, 4))
+    _subproblem(model, 0.01, rng=np.random.default_rng(0))
+    assert model['fallback'] is False and _case_record(state(model))['certified']
+
+    monkeypatch.setattr(co, '_step_concave_sdp', lambda model, delta: None)
+    _, gain, ok = _subproblem(model, 0.01, rng=np.random.default_rng(0))
+    assert ok and gain > 0 and model['fallback'] is True
+    c = _case_record(state(model))
+    assert c['row'] == 'lowest_m' and c['fallback'] and not c['certified'] and c['solved']
+
+
+def test_the_record_separates_what_the_radius_saw_from_the_shape():
+    """A wide radius takes three eigenvalues; at the floor width only the pair remains, and `k`
+    is the upper of the two, so the position differs as well as the size."""
+    model = dict(mode='cluster', m=3, j=1, cluster=(1, 4), resolved=(1, 3), fallback=False)
+    lams = np.array([10.0, 20.0, 20.0, 20.5, 31.0])
+    c = _case_record(SimpleNamespace(model=model, lams=lams, delta=0.1, lin=None, sub_ok=True))
+    assert c['row'] == 'middle' and not c['certified']
+    assert (c['m'], c['j'], c['resolved_m'], c['resolved_j']) == (3, 1, 2, 1)
+    assert c['split'] == 0.5 and c['gap_below'] == 10.0 and c['gap_above'] == 10.5
+    assert c['n_active_constraints'] == 0 and c['delta'] == 0.1
+
+
+def test_the_record_has_no_gap_past_the_ends_of_the_computed_spectrum():
+    model = dict(mode='cluster', m=2, j=0, cluster=(0, 2), resolved=(0, 2), fallback=False)
+    c = _case_record(SimpleNamespace(model=model, lams=np.array([20.0, 20.5]), delta=0.1,
+                                     lin=None, sub_ok=True))
+    assert np.isnan(c['gap_below']) and np.isnan(c['gap_above'])
+
+
+def test_a_run_cut_off_after_a_step_says_its_case_is_stale():
+    fam = VertexPolygon(4, perim=PERIM)
+    ev = SpectrumEvaluator(fam, n_eigs=3, warn_gap=0.0, degenerate_tol=0.0)
+    p0 = param_vector(_perturbed(4, 0.06), PERIM)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = maximize_ratio(ev, p0, k=1, max_iter=1)
+    assert not np.array_equal(res.x, p0), 'the one iteration should have moved'
+    assert res.final_case is not None and res.final_case['at_endpoint'] is False
