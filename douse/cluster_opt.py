@@ -680,6 +680,10 @@ def trust_region_step(model, delta, rng=None, lin=None):
     return d, gain
 
 
+#: `gain/delta` this small is zero: far below what any derivative here is accurate to.
+GAIN_ROUNDOFF = 1e-12
+
+
 def _subproblem(model, delta, rng=None, lin=None):
     """`(d, gain, ok)`, the dispatch behind `trust_region_step`. `ok` False says gain 0 is a
     failure to solve, which must not be read as optimality: the iterate is outside the
@@ -703,8 +707,10 @@ def _subproblem(model, delta, rng=None, lin=None):
     else:
         d = _step_interior(model, delta, rng=rng)
 
-    # A step worse than none means the solver failed, whatever status it gave.
-    if d is None or not np.all(np.isfinite(d)) or not model_gain(model, np.asarray(d, float)) >= 0:
+    # A step worse than none means the solver failed, whatever status it gave. Round-off below
+    # zero does not: at a true maximum the solver returns 1e-16 of a step and gain -5e-17.
+    if d is None or not np.all(np.isfinite(d)) or \
+            not model_gain(model, np.asarray(d, float)) >= -GAIN_ROUNDOFF*delta:
         rng = np.random.default_rng(0) if rng is None else rng
         r = rng.normal(size=(8, n_p))
         seeds = [np.zeros(n_p)] + list(0.5*delta*r/np.linalg.norm(r, axis=1, keepdims=True))
@@ -718,9 +724,9 @@ def _subproblem(model, delta, rng=None, lin=None):
     if nd > delta:                       # SLSQP satisfies the trust region to its own tolerance
         d = d*(delta/nd)
     gain = model_gain(model, d)
-    if not np.isfinite(gain) or gain < 0:
+    if not np.isfinite(gain) or gain < -GAIN_ROUNDOFF*delta:
         return np.zeros(n_p), 0.0, False
-    return d, float(gain), True
+    return (d, float(gain), True) if gain > GAIN_ROUNDOFF*delta else (np.zeros(n_p), 0.0, True)
 
 
 def _degeneracy_move(evaluator, p, F, k, gain_tol=0.0, constraints=None):

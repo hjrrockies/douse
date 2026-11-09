@@ -52,6 +52,30 @@ def test_nothing_usable_from_any_solver_cannot_certify(monkeypatch):
     assert g == 0 and not ok
 
 
+def test_a_true_maximum_is_a_real_zero_not_a_failed_solve():
+    """lam_min of `[[d1, d2], [d2, -d1]]` is `-|d|`: every step loses. The solver's answer there
+    is round-off, and reading its sign as a failure kept real triangle optima from certifying."""
+    n_p = 2
+    Ms = np.zeros((n_p, 2, 2))
+    Ms[0] = [[1, 0], [0, -1]]
+    Ms[1] = [[0, 1], [1, 0]]
+    model = dict(mode='cluster', m=2, j=0, Ms=Ms, g1=np.zeros(n_p), Lam=np.zeros((2, 2)),
+                 lam_1=18.0, lam_k=110.0, cluster=(5, 7), scale=1.0)
+    for delta in (1e-2, 1e-7):
+        d, g, ok = _subproblem(model, delta, rng=np.random.default_rng(0))
+        assert ok and g == 0 and np.all(d == 0)
+
+
+def test_round_off_below_zero_is_still_a_solve(monkeypatch):
+    import douse.cluster_opt as co
+    n_p = 12
+    model = _cluster_model(2, 0, n_p=n_p)
+    d = 1e-4*1e-17*np.ones(n_p)
+    monkeypatch.setattr(co, 'model_gain', lambda m, x: -1e-17*1e-4)
+    monkeypatch.setattr(co, '_step_concave_2x2', lambda m, delta: d)
+    assert _subproblem(model, 1e-4)[2]
+
+
 class _Fam:
     def vertices(self, p):
         return np.array([0, 1, 1 + 1j, 1j])

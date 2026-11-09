@@ -6,6 +6,7 @@ hid better verified rows, resumes that kept another spec's rows, and day-long jo
 killed with nothing saved.
 """
 import json
+import pathlib
 from types import SimpleNamespace
 
 import numpy as np
@@ -15,6 +16,8 @@ from douse import cluster_opt as co
 from douse import runs
 from douse.certify import antisymmetric_hessian
 from douse.errors import ShapeRefusal, TimeBudget
+
+SPECS = pathlib.Path(__file__).resolve().parent.parent/'benchmarks'/'specs'
 
 sg = pytest.importorskip('benchmarks.summarize_grid')
 rm = pytest.importorskip('benchmarks.ratio_multistart')
@@ -170,3 +173,57 @@ def test_running_out_of_time_saves_and_writes_no_row_and_resubmitting_continues(
     fresh = rm.run_one(*args)
     assert fresh['n_resumes'] == 0
     assert row['fun'] == pytest.approx(fresh['fun'], rel=1e-5)
+
+
+# ---- the runners hand the spec's options on ----------------------------------------------------
+
+
+class _Stop(Exception):
+    pass
+
+
+def test_the_ratio_runner_hands_on_the_specs_final_precision(monkeypatch):
+    import dataclasses
+    from douse import spec as spec_mod
+    seen = {}
+
+    def spy(ev, p0, **kw):
+        seen.update(kw)
+        raise _Stop
+    monkeypatch.setattr(rm, 'maximize_ratio', spy)
+    spec = dataclasses.replace(spec_mod.load(SPECS/'thesis_ratio_v2.toml'),
+                               prec_final=[1e-12, 1e-11])
+    with pytest.raises(_Stop):
+        rm.run_one(4, 1, 0, 5, 0, 0.05, spec=spec)
+    assert seen['prec_final'] == [1e-12, 1e-11]
+
+
+def test_an_ending_says_why_on_the_result():
+    from douse import VertexPolygon, param_vector
+    from test_cluster_opt_trace import FakeRectEvaluator
+    fam = VertexPolygon(4, perim=4.0)
+    p0 = param_vector(np.array([0, 1.25, 1.25 + 0.75j, 0.75j]), 4.0)
+    res = co.maximize_ratio(FakeRectEvaluator(fam), p0, k=1, max_iter=1,
+                            rng=np.random.default_rng(0), verify_final=False)
+    assert res.floor_reason == 'max_iter'
+
+
+def test_the_inverse_runner_hands_on_the_noise_target_and_the_box(monkeypatch):
+    import dataclasses
+    import douse
+    seen = {}
+    real = douse.SpectrumEvaluator.set_target
+
+    def spy_target(self, target, sigma=0.0, tau_g=1e-6):
+        seen['sigma'] = sigma
+        return real(self, target, sigma=sigma, tau_g=tau_g)
+
+    def spy_gn(ev, match, p0, **kw):
+        seen['admissible'] = kw.get('admissible')
+        raise _Stop
+    monkeypatch.setattr(douse.SpectrumEvaluator, 'set_target', spy_target)
+    monkeypatch.setattr('douse.optimize.gauss_newton', spy_gn)
+    spec = dataclasses.replace(im.load(SPECS/'inverse_pilot_v1.toml'), box=True)
+    all_runs = im.runs(spec)
+    im.run_one(spec, 0, *all_runs[0])
+    assert 'sigma' in seen and callable(seen['admissible'])
