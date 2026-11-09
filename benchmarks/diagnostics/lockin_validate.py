@@ -9,7 +9,8 @@ under about 8 hours then) with the finishing precision the thesis runs will use.
     python -m benchmarks.diagnostics.lockin_validate compare DIR
 
 `compare` applies the plan's pass criteria: no row ends collapsed, no row loses more than 1e-6
-against its v2 value, refusal-streak endings drop.
+against its v2 value, refusal-streak endings drop, no success claims more than its derivatives
+can resolve, and no warm solve dies on a `windows` length.
 """
 import argparse
 import dataclasses
@@ -25,6 +26,7 @@ ROWS = HERE/'lockin_rows.json'
 SPEC = HERE.parent/'specs'/'thesis_ratio_v2.toml'
 PREC_FINAL = [1e-12, 1e-11, 1e-10]
 LOSS_TOL = 1e-6
+GAIN_TOL, CRIT_FACTOR, PLATEAU_MAX = 1e-7, 10.0, 1e-3     # `maximize_ratio`'s defaults
 
 
 def rows():
@@ -67,12 +69,20 @@ def _ending(r):
     return 'certified'
 
 
+def _overclaims(r):
+    """A success whose criticality is above what `cluster_opt._crit_tol` allows at its `eps_g`."""
+    eps_g, crit = r.get('eps_g'), r.get('resolution')
+    if not r.get('success') or eps_g is None or crit is None or not np.isfinite(eps_g):
+        return False
+    return crit > 1.001*min(max(GAIN_TOL, CRIT_FACTOR*eps_g), PLATEAU_MAX - eps_g)
+
+
 def compare(folder):
     new = [json.loads(line) for f in sorted(pathlib.Path(folder).glob('row*.jsonl'))
            for line in open(f) if line.strip()]
     print(f"{'row':>3} {'tau':>6} {'N':>2} {'k':>2} {'st':>2} {'v2':>10} {'now':>10} "
           f"{'F change':>10} {'eps_g':>8} {'final':>6} {'h now':>6} {'h v2':>6}")
-    losses, collapsed = [], []
+    losses, collapsed, overclaimed, windows = [], [], [], []
     for r in new:
         end = _ending(r)
         d = r.get('fun', np.nan) - r['v2_fun']
@@ -84,10 +94,16 @@ def compare(folder):
             losses.append((r['index'], r['tau_g'], d))
         if end in ('collapsed', 'error'):
             collapsed.append((r['index'], r['tau_g'], end))
+        if _overclaims(r):
+            overclaimed.append((r['index'], r['tau_g'], r.get('resolution'), r.get('eps_g')))
+        if 'windows' in json.dumps(r.get('refusals', [])) + json.dumps(r.get('trace', [])):
+            windows.append((r['index'], r['tau_g']))
     v2 = sum(r['kind'] == 'refused' for r in rows())
     now = sum(_ending(r) == 'refused' for r in new)
     print(f"\n{len(new)} rows. collapsed or errored: {collapsed or 'none'}. lost more than "
-          f"{LOSS_TOL:g}: {losses or 'none'}. refusal endings: {now} (v2 sample: {v2}).")
+          f"{LOSS_TOL:g}: {losses or 'none'}. refusal endings: {now} (v2 sample: {v2}). "
+          f"successes above the certificate: {overclaimed or 'none'}. windows crashes: "
+          f"{windows or 'none'}.")
 
 
 def main(argv=None):
