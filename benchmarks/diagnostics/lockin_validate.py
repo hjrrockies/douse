@@ -26,6 +26,7 @@ ROWS = HERE/'lockin_rows.json'
 SPEC = HERE.parent/'specs'/'thesis_ratio_v2.toml'
 PREC_FINAL = [1e-12, 1e-11, 1e-10]
 LOSS_TOL = 1e-6
+STALL_CRIT = 1e-2                       # above this an unsuccessful row stalled, however it ended
 GAIN_TOL, CRIT_FACTOR, PLATEAU_MAX = 1e-7, 10.0, 1e-3     # `maximize_ratio`'s defaults
 
 
@@ -82,7 +83,7 @@ def compare(folder):
            for line in open(f) if line.strip()]
     print(f"{'row':>3} {'tau':>6} {'N':>2} {'k':>2} {'st':>2} {'v2':>10} {'now':>10} "
           f"{'F change':>10} {'eps_g':>8} {'final':>6} {'h now':>6} {'h v2':>6}")
-    losses, collapsed, overclaimed, windows = [], [], [], []
+    losses, collapsed, overclaimed, windows, stalled = [], [], [], [], []
     for r in new:
         end = _ending(r)
         d = r.get('fun', np.nan) - r['v2_fun']
@@ -92,6 +93,8 @@ def compare(folder):
               f"{r['v2_seconds']/3600:6.1f}")
         if not d >= -LOSS_TOL:
             losses.append((r['index'], r['tau_g'], d))
+        if not r.get('success') and (r.get('resolution') or 0.0) > STALL_CRIT:
+            stalled.append((r['index'], r['tau_g'], r['resolution']))
         if end in ('collapsed', 'error'):
             collapsed.append((r['index'], r['tau_g'], end))
         if _overclaims(r):
@@ -105,7 +108,7 @@ def compare(folder):
     print(f"\n{len(new)} rows. collapsed or errored: {collapsed or 'none'}. lost more than "
           f"{LOSS_TOL:g}: {losses or 'none'}. refusal endings: {now} (v2 sample: {v2}). "
           f"successes above the certificate: {overclaimed or 'none'}. windows crashes: "
-          f"{windows or 'none'}.")
+          f"{windows or 'none'}. stalled far from stationary: {stalled or 'none'}.")
 
 
 def main(argv=None):

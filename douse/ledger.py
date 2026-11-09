@@ -111,6 +111,8 @@ def result_row(res, health=None, max_trace=400, **meta):
                n_warnings=int(res.get('n_warnings', 0)),
                n_hadamard_short=int(res.get('n_hadamard_short', 0)),
                final_case=_clean(res.get('final_case')),
+               convergence=res.get('convergence'),
+               n_corrected=int(res.get('n_corrected', 0)),
                n_cluster_steps=int(res.get('n_cluster_steps', 0)),
                n_interior_steps=int(res.get('n_interior_steps', 0)),
                n_qn_steps=int(res.get('n_qn_steps', 0)),

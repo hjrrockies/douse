@@ -482,11 +482,12 @@ def _step_concave_2x2(model, delta):
     return delta*best_u
 
 
-def _step_concave_sdp(model, delta):
+def _step_concave_sdp(model, delta, lin=None):
     """`lam_min` of an m x m block, m >= 3: the SDP itself, through `cvxpy`.
 
     Imported here rather than at module scope so that the m = 2 path -- which `D_N` symmetry
-    makes the common one -- never needs the dependency installed.
+    makes the common one -- never needs the dependency installed. `lin` adds the constraints a
+    step can reach, which leave the problem convex at any m.
     """
     try:
         import cvxpy as cp
@@ -506,8 +507,11 @@ def _step_concave_sdp(model, delta):
     z = cp.Variable(n_p)
     t = cp.Variable()
     S = Lam/(delta*s) + sum(z[i]*(Ms[i]/s) for i in range(n_p))
-    prob = cp.Problem(cp.Maximize(t - (lam_k/lam_1)*((g1/s) @ z)),
-                      [S - t*np.eye(m) >> 0, cp.norm(z) <= 1])
+    cons = [S - t*np.eye(m) >> 0, cp.norm(z) <= 1]
+    if lin is not None:
+        rows = _active_rows(lin, delta)
+        cons.append(lin[0][rows]/delta + lin[1][rows] @ z >= 0)
+    prob = cp.Problem(cp.Maximize(t - (lam_k/lam_1)*((g1/s) @ z)), cons)
     try:
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
@@ -648,6 +652,32 @@ def _active_rows(lin, delta):
     return np.flatnonzero(c < delta*np.linalg.norm(A, axis=1) + 1e-15)
 
 
+def _step_smooth_constrained(model, delta, lin):
+    """A linear objective over the ball and the half-spaces: convex, so solved exactly, in
+    `z = d/delta`. None when the conic solver cannot answer."""
+    try:
+        import cvxpy as cp
+    except ImportError:                                           # pragma: no cover
+        return None
+    g = np.asarray(model['grad'], dtype=float)
+    ng = float(np.linalg.norm(g))
+    if ng == 0:
+        return np.zeros_like(g)
+    rows = _active_rows(lin, delta)
+    z = cp.Variable(len(g))
+    prob = cp.Problem(cp.Maximize((g/ng) @ z),
+                      [cp.norm(z) <= 1, lin[0][rows]/delta + lin[1][rows] @ z >= 0])
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            prob.solve()
+    except cp.SolverError:
+        return None
+    if z.value is None or prob.status not in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
+        return None
+    return delta*np.asarray(z.value, dtype=float)
+
+
 def _step_constrained(model, delta, lin, rng=None, n_rand=8):
     """Maximize the EXACT model over the trust region intersected with `c + A.d >= 0`.
 
@@ -685,6 +715,8 @@ def trust_region_step(model, delta, rng=None, lin=None):
 
 #: `gain/delta` this small is zero: far below what any derivative here is accurate to.
 GAIN_ROUNDOFF = 1e-12
+#: `gain/delta` a conic solve can be trusted to, in unit-ball coordinates.
+CONIC_ACCURACY = 1e-8
 
 #: The branches of `_subproblem`, and whether each one's method guarantees the global maximum of
 #: the model (up to solver accuracy, or the grid for `highest_2`). Where it does not, a gain near
@@ -711,14 +743,34 @@ def _subproblem(model, delta, rng=None, lin=None):
     """`(d, gain, ok)`, the dispatch behind `trust_region_step`. `ok` False says gain 0 is a
     failure to solve, which must not be read as optimality: the iterate is outside the
     constraints, or no solver found a step at all. `model['fallback']` says whether the branch's
-    own method was replaced, since then its row no longer describes what ran."""
+    own method was replaced, since then its row no longer describes what ran.
+
+    A CONSTRAINED STEP IS EXACT WHERE THE PROBLEM IS CONVEX, the smooth and lowest cases. A
+    multistart that finds no gain says nothing, and until 2026-11-09 it read as a real zero and
+    could certify. `model['exact_constrained']` says the conic solve answered."""
     row = _case_row(model, delta, lin)
-    model['fallback'] = False
+    model['fallback'] = model['exact_constrained'] = False
     if row == 'constrained':
-        d = _step_constrained(model, delta, lin, rng=rng)
+        ok = _feasible(np.zeros(len(lin[1][0])), lin)
+        convex = model['mode'] == 'smooth' or model['j'] == 0
+        exact = None
+        if ok and convex:
+            exact = (_step_smooth_constrained(model, delta, lin) if model['mode'] == 'smooth'
+                     else _step_concave_sdp(model, delta, lin=lin))
+        model['exact_constrained'] = exact is not None
+        model['fallback'] = ok and convex and exact is None
+        d = np.asarray(_step_constrained(model, delta, lin, rng=rng), dtype=float)
+        # The conic answer referees: SLSQP's step is the sharper when it found the maximum.
+        if exact is not None:
+            exact = np.asarray(exact, dtype=float)
+            nd = float(np.linalg.norm(exact))
+            exact = exact if nd <= delta else exact*(delta/nd)
+            if model_gain(model, exact) > model_gain(model, d) + CONIC_ACCURACY*delta:
+                d = exact
         gain = model_gain(model, d)
-        ok = _feasible(np.zeros_like(d), lin)
-        return (d, float(gain), ok) if np.isfinite(gain) and gain > 0 else (np.zeros_like(d), 0.0, ok)
+        if np.isfinite(gain) and gain > GAIN_ROUNDOFF*delta:
+            return d, float(gain), ok
+        return np.zeros_like(d), 0.0, ok and not model['fallback']
 
     if row == 'simple':
         d = _step_smooth(model, delta)
@@ -967,7 +1019,8 @@ class _State:
     n_qn_steps: int = 0
     n_windowed: int = 0
     n_window_caps: int = 0
-    final_case: object = None             # `_case_record` of the latest first-order solve
+    n_corrected: int = 0                  # trials `_second_order_correction` pulled back
+    final_case: object = None            # `_case_record` of the latest first-order solve
     final_case_p: object = None           # the iterate that record describes
     message: str = ''
     success: bool = False
@@ -1161,11 +1214,18 @@ def _floor_stop(st, o):
     return True
 
 
+def _measures_accuracy(st):
+    """Is this a solved shape whose backend reports the bars `_error_floor` reads? Fakes and
+    lappy do not, and keep the older tests."""
+    return getattr(st.solver, 'spec', None) is not None
+
+
 def _crit_tol(st, o):
     """The criticality the derivatives' accuracy can vouch for: `crit_factor*eps_g`, never below
-    `gain_tol`, and `crit + eps_g` stays inside `plateau_max` however inaccurate they are."""
+    `gain_tol`, and `crit + eps_g` stays inside `plateau_max` however inaccurate they are. A
+    backend that should have measured `eps_g` and did not vouches for nothing."""
     if not np.isfinite(st.eps_g):
-        return o.plateau_max
+        return -np.inf if _measures_accuracy(st) else o.plateau_max
     return min(max(o.gain_tol, o.crit_factor*st.eps_g), o.plateau_max - st.eps_g)
 
 
@@ -1211,7 +1271,8 @@ def _case_record(st):
     lo, hi = (int(i) for i in model['cluster'])
     r_lo, r_hi = (int(i) for i in model['resolved'])
     fallback = bool(model['fallback'])
-    return dict(row=row, certified=CASE_CERTIFIED[row] and not fallback and bool(st.sub_ok),
+    method_certified = CASE_CERTIFIED[row] or bool(model.get('exact_constrained'))
+    return dict(row=row, certified=method_certified and not fallback and bool(st.sub_ok),
                 fallback=fallback, solved=bool(st.sub_ok), m=int(model['m']), j=int(model['j']),
                 cluster=(lo, hi), resolved_m=r_hi - r_lo, resolved_j=lo + int(model['j']) - r_lo,
                 split=float(lams[hi - 1] - lams[lo]),
@@ -1232,6 +1293,8 @@ def _stationary(st, o):
         return None
     if np.isfinite(st.eps_g):
         return _certified(st, o)
+    if _measures_accuracy(st):
+        return None
     if st.crit <= o.gain_tol:
         return st.crit, (f'criticality {st.crit:.3g} (gain {st.gain:.3g} at radius '
                          f'{st.delta:.3g}) below gain_tol: first-order optimal')
@@ -1334,6 +1397,43 @@ def _second_order_step(st, o, ev, tally):
     return Outcome.NEXT_ITER
 
 
+#: How far `_second_order_correction` may move a trial, as a fraction of the radius.
+CORRECTION_MAX = 0.5
+#: The slack it aims for, so that round-off leaves the exact test `c >= 0` satisfied.
+CORRECTION_SLACK = 1e-14
+
+
+def _second_order_correction(q, constraints, delta, sweeps=5):
+    """A TRIAL THAT LEFT A NONLINEAR CONSTRAINT AT SECOND ORDER, pulled back onto it.
+
+    The subproblem sees the linearization, so from an iterate exactly on a curved bound a step
+    along it violates the bound by order `delta**2`, and halving never helps. Measured on rows
+    9 and 11 of the lock-in validation (2026-11-09): the short edge 0 is `x_0(p)`, solved from
+    the perimeter; every trial was infeasible, by an amount falling four-fold per halving, and
+    the radius collapsed to 1e-10 at criticality 1.16 with the gradient correct to 1e-7.
+
+    Minimum-norm Newton steps on the violated rows, the standard correction of constrained
+    optimization. The constraint stays hard, and the objective is untouched. Returns `q` itself
+    when it is feasible, cannot be evaluated, or would have to move too far: that is the caller's
+    ordinary infeasible trial."""
+    try:
+        c, J = constraints(q)
+        if not np.any(c < 0):
+            return q
+        z = q
+        for _ in range(sweeps):
+            bad = c < 0
+            if not np.any(bad):
+                break
+            z = z + np.linalg.lstsq(J[bad], CORRECTION_SLACK - c[bad], rcond=None)[0]
+            c, J = constraints(z)
+    except (ValueError, TypeError, np.linalg.LinAlgError):
+        return q
+    if np.any(c < 0) or np.linalg.norm(z - q) > CORRECTION_MAX*delta:
+        return q
+    return z
+
+
 def _trial_step(st, o, ev, tally):
     """The trial point, its evaluation, and the accept/reject decision.
 
@@ -1351,6 +1451,11 @@ def _trial_step(st, o, ev, tally):
     `max_unresolved_streak` stops the run with the reason attached."""
     windows = _warm_windows(st, o)
     q = st.p + st.d
+    if o.constraints is not None:
+        corrected = _second_order_correction(q, o.constraints, st.delta)
+        if corrected is not q:
+            q, st.d = corrected, corrected - st.p
+            st.n_corrected += 1
     plan0, saved = _plan_of(ev), (ev.plan_state() if hasattr(ev, 'plan_state') else None)
     st.rho = -np.inf
     if not o.fam.is_valid(q) or (o.constraints is not None
@@ -1579,6 +1684,17 @@ _STAGES = (_sigma_abort, _build_model, _update_curvature, _first_order_step,
            _finish_iteration)
 
 
+def _convergence(success, final_case):
+    """WHAT THE ENDING SHOWS, in three states. Both stationary states are first-order: neither
+    says the shape is a local maximum. They differ in whether the subproblem's method guaranteed
+    the model's maximum there, or a multistart merely found no step."""
+    if not success:
+        return 'not_converged'
+    if final_case is not None and final_case['certified'] and final_case['at_endpoint']:
+        return 'certified_stationary'
+    return 'stationary_no_guarantee'
+
+
 def _close_ending(st):
     """EVERY ENDING SAYS HOW STATIONARY IT GOT AND WHY IT STOPPED, the unsuccessful ones most of
     all: a refused row used to report `resolution` nan and no reason."""
@@ -1648,6 +1764,8 @@ def _result(st, o, ev, tally, lams_tracked, F_tracked, verified):
                   dict(st.final_case, at_endpoint=bool(np.array_equal(st.final_case_p, st.p))))
     return OptimizeResult(x=st.p, fun=st.F, nit=st.it, lams=lams, gap=gap, delta=st.delta,
                           health=health, final_case=final_case,
+                          convergence=_convergence(st.success, final_case),
+                          n_corrected=st.n_corrected,
                           n_cluster_steps=st.n_cluster_steps,
                           n_interior_steps=st.n_interior_steps,
                           n_infeasible=st.n_infeasible, n_unresolved=st.n_unresolved,

@@ -271,7 +271,13 @@ def _endings(rows):
         key = r.get('floor_reason') or ('certified' if r.get('success') else 'other')
         reasons[key] = reasons.get(key, 0) + 1
     eps_g = [r['eps_g'] for r in done if r.get('eps_g') is not None and np.isfinite(r['eps_g'])]
-    return dict(reasons=reasons, n_prec_final=sum(1 for r in done if r.get('prec_final_reached')),
+    # A row with no subproblem guarantee is counted apart, not removed: an optimum on a bound or
+    # in a middle case is a result, with weaker evidence behind its first-order claim.
+    states = {}
+    for r in done:
+        key = r.get('convergence') or 'unrecorded'
+        states[key] = states.get(key, 0) + 1
+    return dict(reasons=reasons, states=states, n_prec_final=sum(1 for r in done if r.get('prec_final_reached')),
                 eps_g=float(np.median(eps_g)) if eps_g else None,
                 n_warm_refused=int(sum(r.get('n_warm_refused') or 0 for r in done)))
 
@@ -420,7 +426,9 @@ def main():
     print('\n  how the rows ended, and what they could resolve:')
     for N, k, conv, s in cells:
         e = s['endings']
-        print(f"  N={N:2d} k={k+1:2d}: {e['reasons']}  prec_final reached {e['n_prec_final']}, "
+        best_state = '' if s['best'] is None else f", best is {s['best'].get('convergence')}"
+        print(f"  N={N:2d} k={k+1:2d}: {e['states']}{best_state}")
+        print(f"          {e['reasons']}  prec_final reached {e['n_prec_final']}, "
               f"median eps_g {e['eps_g'] if e['eps_g'] is None else format(e['eps_g'], '.1e')}, "
               f"warm solves refused {e['n_warm_refused']}")
 
