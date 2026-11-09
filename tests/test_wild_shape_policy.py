@@ -147,7 +147,8 @@ def test_a_RUN_of_solver_refusals_stops_instead_of_grinding_the_radius():
         return real(q, seed=seed, windows=windows)
 
     ev.eigenvalues = alternating
-    res = maximize_ratio(ev, p, k=1, max_iter=200, delta0=0.05, max_unresolved_streak=4,
+    # delta0 at 1e-4, from where `max_unresolved_streak` counts: above it halving is allowed for
+    res = maximize_ratio(ev, p, k=1, max_iter=200, delta0=1e-4, max_unresolved_streak=4,
                          verify_final=False)
     assert res.n_solver_refused + res.n_unresolved == 4      # stopped on the shared streak
     assert res.n_solver_refused == 2 and res.n_unresolved == 2
