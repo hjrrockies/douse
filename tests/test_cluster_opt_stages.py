@@ -85,16 +85,23 @@ def test_a_refusal_shrinks_counts_reseeds_and_tries_again():
     assert seen == [(0.025, -np.inf)]
 
 
+def test_a_refusal_streak_counts_from_a_small_radius():
+    """Halving from a large radius is the ordinary way to find a step that can be served."""
+    ev = FakeEvaluator([('refuse', SolverRefusal('declined'))]*5)
+    st, o, tally = _state(delta=0.05), _opts(), dict(n=0, seen=set())
+    assert [_trial_step(st, o, ev, tally) for _ in range(5)] == [Outcome.NEXT_ITER]*5
+
+
 def test_five_refusals_in_a_row_stop_the_run_with_the_last_kind_named():
     script = [('refuse', UnresolvedSpectrum('a'))]*3 + [('refuse', SolverRefusal('declined'))]*2
     ev = FakeEvaluator(script)
-    st, o, tally = _state(), _opts(), dict(n=0, seen=set())
+    st, o, tally = _state(delta=1e-5), _opts(), dict(n=0, seen=set())
     outs = []
     for _ in range(5):
         outs.append(_trial_step(st, o, ev, tally))
     assert outs == [Outcome.NEXT_ITER]*4 + [Outcome.STOP]
     assert st.n_unresolved == 3 and st.n_solver_refused == 2 and st.refusal_streak == 5
-    assert st.delta == pytest.approx(0.05/32)
+    assert st.delta == pytest.approx(1e-5/32)
     assert 'refused 5 consecutive trial shapes' in st.message and 'SolverRefusal' in st.message
 
 

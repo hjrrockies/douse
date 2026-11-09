@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from douse import SpectrumEvaluator, VertexPolygon
-from douse.chladni_backend import ChladniSolver
+from douse.chladni_backend import ChladniSolver, refusal_for
 from douse.cluster_opt import Outcome, _build_model, _Opts, _State
 from douse.errors import DegenerateSpectrum, ShapeRefusal, SolverRefusal, UnresolvedSpectrum
 from douse.optimize import gauss_newton
@@ -194,7 +194,7 @@ def test_a_model_refused_with_nowhere_to_go_back_to_stops_the_run_with_the_reaso
 
 def test_model_refusals_share_the_refusal_streak():
     st, ev = _state(), _ModelEv()
-    st.refusal_streak = 1
+    st.refusal_streak, st.delta = 1, 1e-5
     st.adopt(np.ones(2), 2.5, np.array([1.0, 2.5]), _Raises(SolverRefusal('h')))
     assert _build_model(st, _opts(streak=2), ev, {}) is Outcome.STOP
 
@@ -264,3 +264,112 @@ def test_gauss_newton_without_a_box_is_unchanged():
     ev = _GNEv()
     res = gauss_newton(ev, _Match(), np.array([1.0, 0.0]), max_iter=3, max_step=2.0)
     assert res.n_outside == 0
+
+
+# ---- what is worth refusing ---------------------------------------------------------------
+
+
+class _Level:
+    def __init__(self, bound, lam=10.0, mult=1):
+        self.bound, self.lam, self.mult = bound, lam, mult
+
+
+class _Levels:
+    declined, solver, prec = False, object(), 1e-9
+
+    def __init__(self, flags, *bounds):
+        self.flags, self.levels = tuple(flags), [_Level(b) for b in bounds]
+
+
+PLANNER = 'planner: no rung met prec=1e-09; returning rung 2 of 4'
+UNMET = 'unmet: 1 of 3 levels miss prec=1e-09'
+
+
+def test_a_search_flag_is_no_refusal_when_the_requested_levels_are_met():
+    assert refusal_for(_Levels([PLANNER, UNMET], 1e-8, 1.5e-8, 1e-3), n_eigs=2) is None
+
+
+def test_a_requested_level_past_the_slack_refuses():
+    assert isinstance(refusal_for(_Levels([PLANNER], 1e-8, 3e-8), n_eigs=2), UnresolvedSpectrum)
+
+
+def test_the_count_audit_still_refuses_with_the_levels_met():
+    spec = _Levels([PLANNER, 'count audit: short (mean Weyl deficit 0.785)'], 1e-9, 1e-9)
+    assert isinstance(refusal_for(spec, n_eigs=2), UnresolvedSpectrum)
+
+
+def test_a_nan_bound_refuses():
+    assert refusal_for(_Levels([UNMET], np.nan, 1e-9), n_eigs=2) is not None
+
+
+def test_a_caller_that_does_not_say_what_it_asked_for_gets_the_old_policy():
+    assert refusal_for(_Levels([PLANNER], 1e-9, 1e-9)) is not None
+
+
+# ---- gauss_newton when nothing can be tried ------------------------------------------------
+
+
+class _RefusingGN(_GNEv):
+    """Serves `p0`; every trial re-plans, then refuses."""
+    current_plan = 'A'
+
+    def __init__(self):
+        super().__init__()
+        self.restored = []
+
+    def __call__(self, q):
+        if self.seen:
+            self.current_plan = 'B'
+            self.seen.append(np.array(q))
+            raise SolverRefusal('derivative')
+        return super().__call__(q)
+
+    def plan_state(self):
+        return self.current_plan
+
+    def restore_plan(self, saved):
+        self.restored.append(saved)
+        self.current_plan = saved
+
+
+def test_gauss_newton_restores_the_plan_when_a_trial_refuses_after_replanning():
+    ev = _RefusingGN()
+    gauss_newton(ev, _Match(), np.array([1.0, 0.0]), max_iter=1, max_step=2.0)
+    assert ev.current_plan == 'A' and ev.restored
+
+
+def test_gauss_newton_says_when_every_step_was_refused():
+    res = gauss_newton(_RefusingGN(), _Match(), np.array([1.0, 0.0]), max_iter=1, max_step=2.0)
+    assert 'were refused' in res.message and 'own accuracy' not in res.message
+
+
+def test_gauss_newton_cuts_its_step_after_a_refusal():
+    ev = _RefusingGN()
+    gauss_newton(ev, _Match(), np.array([1.0, 0.0]), max_iter=1, max_step=1e-1)
+    steps = [np.linalg.norm(q - np.array([1.0, 0.0])) for q in ev.seen[1:]]
+    assert steps[-1] < 1e-3*steps[0]
+
+
+def test_gauss_newton_stops_at_what_its_precision_can_resolve():
+    res = gauss_newton(_GNEv(), _Match(), np.array([1e-3, 0.0]), max_iter=20, max_step=2.0,
+                       rtol=0.0, gtol=0.0, prec=1e-2)
+    assert res.success and res.nit < 20
+
+
+# ---- the warm windows ----------------------------------------------------------------------
+
+
+def test_a_straddling_double_does_not_crash_the_warm_solve():
+    """`lams` keeps a top level whole, so it has more entries than values requested, and chladni
+    broadcast the windows onto the requested count: 96 of 400 trace entries on one N = 6 run, each
+    a forced re-plan."""
+    fam = VertexPolygon(4, perim=4.0)
+    ev = SpectrumEvaluator(fam, n_eigs=2, prec=1e-8, degenerate_tol=0.0, warn_gap=0.0)
+    p = np.asarray(fam.parameters(np.array([0, 1, 1 + 1j, 1j]))) if hasattr(fam, 'parameters') else None
+    if p is None:
+        from douse.polygon import param_vector
+        p = param_vector(np.array([0, 1, 1 + 1j, 1j]), 4.0)
+    lams, _ = ev.eigenvalues(p)
+    assert len(lams) == 3
+    ev.eigenvalues(p + 1e-7, windows=np.full(len(lams), 1e-4))
+    assert ev.n_solver_refusals == 0 and ev.n_replans == 0

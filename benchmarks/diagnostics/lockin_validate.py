@@ -58,7 +58,7 @@ def _ending(r):
         return 'unverified'
     if 'collapsed' in m:
         return 'collapsed'
-    if 'stationary to within' in m:
+    if 'stationary to within' in m or 'accuracy floor' in m:
         return 'floor'
     if 'streak' in m or 'in a row' in m or 'refus' in m:
         return 'refused'

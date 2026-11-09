@@ -38,7 +38,7 @@ class RunSpec:
     takes it. `family` is 'all' (star-shaped starts, the edge floor and the closing budget),
     'convex' (Valtr starts, plus the convexity constraint; a separate ledger) or 'mirror'
     (mirror-symmetric polygons, `douse.polygon.MirrorPolygon`; needs `seeds`, a separate ledger).
-    `n_eigs=None` means the driver's default, `k + 2`.
+    `n_eigs=None` means the driver's default, `k + 3`.
 
     `seeds` names a JSON file (relative to the package root) of explicit start polygons,
     `{"N<N>_k<k>": [{"vertices": [[x, y], ..], "note": ".."}, ..]}`: start `i` of a cell is its

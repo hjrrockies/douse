@@ -444,7 +444,7 @@ def run_one(spec, rid, ci, K, sigma, draw, start):
             row['redraws'] = redraws
             z0 = fam.vertices(p0)
             res = gauss_newton(ev, SpectralMatch(target, log=spec.log), p0, max_iter=spec.max_iter,
-                               max_step=spec.max_step, rtol=spec.rtol,
+                               max_step=spec.max_step, rtol=spec.rtol, prec=row['prec'],
                                admissible=((lambda q: in_box(fam.vertices(q))) if spec.box
                                            else None))
             z = fam.vertices(res.x)

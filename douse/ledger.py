@@ -107,6 +107,7 @@ def result_row(res, health=None, max_trace=400, **meta):
                resolution=_clean(res.get('resolution', np.nan)),
                success=bool(res.success), message=str(res.message),
                verified=bool(res.get('verified', True)),
+               fun_tracked=_clean(res.get('fun_tracked', np.nan)),
                n_warnings=int(res.get('n_warnings', 0)),
                n_hadamard_short=int(res.get('n_hadamard_short', 0)),
                n_cluster_steps=int(res.get('n_cluster_steps', 0)),

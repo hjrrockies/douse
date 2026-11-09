@@ -54,7 +54,7 @@ class Ev:
 def setup(gain, monkeypatch, final=1e-12, v=SQUARE, **over):
     st = state(delta=1.0)
     st.model, st.lin = dict(mode='smooth'), None
-    monkeypatch.setattr(co, 'trust_region_step', lambda m, d, rng=None, lin=None: (np.zeros(2), gain*d))
+    monkeypatch.setattr(co, '_subproblem', lambda m, d, rng=None, lin=None: (np.zeros(2), gain*d, True))
     o = opts()
     o = o.__class__(**{**o.__dict__, 'prec_final': final, 'fam': Fam(v), 'plateau_rtol': None, **over})
     return st, o

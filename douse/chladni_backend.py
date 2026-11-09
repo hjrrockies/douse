@@ -67,12 +67,35 @@ def _quiet():
 _SHAPE_ERRORS = (ValueError, RuntimeError, np.linalg.LinAlgError)
 
 
-def refusal_for(spec):
+#: How far past `prec` a requested level may be and still be used. 70% of the refusals on an
+#: objective's own levels in v1 and v2 were within 1.25 prec and 90% within 2. Nothing is hidden:
+#: `eps_f` reads the real bounds.
+REFUSAL_SLACK = 2.0
+
+#: Flags about the search that say nothing against the levels when those levels are met. A planner
+#: that found no rung meeting `prec` on `n + HEADROOM` says so even when the `n` asked for are fine.
+_SEARCH_FLAGS = ("planner:", "unmet:")
+
+
+def _requested_met(spec, n_eigs):
+    """Do the levels holding the first `n_eigs` values meet `REFUSAL_SLACK*prec`?"""
+    count = 0
+    for L in spec.levels:
+        if count >= n_eigs:
+            break
+        if not float(L.bound) <= REFUSAL_SLACK*float(spec.prec)*float(L.lam):
+            return False
+        count += int(L.mult)
+    return count >= n_eigs
+
+
+def refusal_for(spec, n_eigs=None):
     """The `douse` exception a flagged `chladni` spectrum should raise, or None.
 
     `count audit: unaudited` is not a failure (the audit could not be applied), so it does not
-    refuse. Every other flag means the returned set cannot be trusted to be lam_1 .. lam_K at
-    `prec`.
+    refuse. With `n_eigs`, neither do `_SEARCH_FLAGS` when the requested levels are met
+    (`_requested_met`). Every other flag means the returned set cannot be trusted to be
+    lam_1 .. lam_K at `prec`.
     """
     if getattr(spec, "declined", False):
         return SolverRefusal(f"chladni declined this shape: {'; '.join(spec.flags)}")
@@ -84,6 +107,8 @@ def refusal_for(spec):
         return SolverRefusal("chladni returned a spectrum without its solver (no shape "
                              f"derivative): {'; '.join(spec.flags) or 'no flags'}")
     bad = [f for f in spec.flags if not f.startswith("count audit: unaudited")]
+    if n_eigs is not None and all(f.startswith(_SEARCH_FLAGS) for f in bad) and _requested_met(spec, n_eigs):
+        return None
     if bad:
         return UnresolvedSpectrum("chladni: " + "; ".join(bad))
     return None
@@ -189,6 +214,8 @@ class ChladniSolver:
         sides = [(a, j) for j in (a - 1,) if j >= 0] + [(b - 1, j) for j in (b,) if j < len(lam)]
         alpha = min((max(abs(lam[j] - lam[i]) - bnd[j], 0.0)/lam[j] for i, j in sides),
                     default=float("nan"))
+        if b == len(lam):                     # the next level was not kept; chladni's gap saw it
+            alpha = np.nanmin([alpha, float(getattr(self.spec.levels[b - 1], "gap", np.nan))])
         bound = 0.0
         if finite and np.isfinite(alpha):
             x = max(finite)/alpha if alpha > 0 else np.inf
@@ -389,6 +416,7 @@ class SpectrumEvaluator:
         self.n_track_refusals = 0           # warm solves asked for and refused (then solved cold)
         self.last_warm_note = None
         self.n_replans = 0
+        self.may_replan = True              # the optimizer's, for a step too small to re-plan for
         self.n_solver_refusals = 0
         self.refusals = []
         self.max_refusals_kept = 16
@@ -484,7 +512,7 @@ class SpectrumEvaluator:
     def _eigenvalues(self, p, windows):
         dom, verts = self._domain(p)
         spec, exc = self._solve(dom, self.plan(p), p, near=self._near(), windows=windows)
-        if exc is not None and not self._planned_here(p):
+        if exc is not None and self.may_replan and not self._planned_here(p):
             self.replan(p)
             self.n_replans += 1
             spec, exc = self._solve(dom, self.plan(p), p)
@@ -616,7 +644,7 @@ class SpectrumEvaluator:
             spec = planned[1]
             self.n_solves += 1
             self.last_warm_note = None
-            refusal = refusal_for(spec)
+            refusal = refusal_for(spec, self.n_eigs)
             self._trace("plan", None if refusal is None else str(refusal), plan, spec,
                         time.perf_counter() - planned[2])
             return spec, refusal
@@ -628,8 +656,11 @@ class SpectrumEvaluator:
                 with _quiet():
                     spec = Eigenproblem(dom).solve(self.n_eigs, prec=self.prec, plan=plan,
                                                    near=near,
-                                                   windows=(windows if near is not None
-                                                            else None))
+                                                   # one per requested value: `lams` keeps a
+                                                   # top level whole, so it can be longer
+                                                   windows=(np.asarray(windows)[:self.n_eigs]
+                                                            if windows is not None
+                                                            and near is not None else None))
             except ValueError as e:
                 if "corner" not in str(e):
                     raise
@@ -653,7 +684,7 @@ class SpectrumEvaluator:
             if near is not None:
                 self.n_track_refusals += 1
         self.last_warm_note = spec.warm_note
-        refusal = refusal_for(spec)
+        refusal = refusal_for(spec, self.n_eigs)
         self._trace(kind, spec.warm_note if refusal is None else str(refusal), spec.plan,
                     spec, t0)
         return spec, refusal

@@ -357,45 +357,47 @@ def _step_second_order(model, delta, H1, Hmu, seeds, lin=None, rng=None, n_rand=
     """
     n_p = len(model['g1'])
     rng = np.random.default_rng(0) if rng is None else rng
-    f = lambda z: -model_gain2(model, z, H1, Hmu)
-    fp = lambda z: -model_gain2_grad(model, z, H1, Hmu)
+    # In `u = d/delta`, like every subproblem here (`_unit_ball_search`).
+    f = lambda u: -model_gain2(model, delta*u, H1, Hmu)/delta
+    fp = lambda u: -model_gain2_grad(model, delta*u, H1, Hmu)
 
-    cons = [dict(type='ineq', fun=lambda z: delta**2 - z @ z, jac=lambda z: -2*z)]
+    cons = [dict(type='ineq', fun=lambda u: 1.0 - u @ u, jac=lambda u: -2*u)]
     if lin is not None and len(_active_rows(lin, delta)):
-        c, A = lin
-        cons.append(dict(type='ineq', fun=lambda z: c + A @ z, jac=lambda z: A))
+        rows = _active_rows(lin, delta)
+        c, A = lin[0][rows]/delta, lin[1][rows]
+        cons.append(dict(type='ineq', fun=lambda u: c + A @ u, jac=lambda u: A))
 
     starts = [np.zeros(n_p)]
     for sd in seeds:
         sd = np.asarray(sd, dtype=float)
         if sd.size == n_p and np.all(np.isfinite(sd)):
-            starts += [sd, 0.5*sd, 0.25*sd]
+            starts += [sd/delta, 0.5*sd/delta, 0.25*sd/delta]
     r = rng.normal(size=(n_rand, n_p))
-    starts += list(delta*r/np.linalg.norm(r, axis=1, keepdims=True))
+    starts += list(r/np.linalg.norm(r, axis=1, keepdims=True))
 
     best, best_d = -np.inf, np.zeros(n_p)
     for z0 in starts:                       # the seeds themselves are candidates, polish or not
-        z = np.asarray(z0, dtype=float)
-        nz = float(np.linalg.norm(z))
-        if nz > delta:
-            z = z*(delta/nz)
-        g = model_gain2(model, z, H1, Hmu)
-        if g > best and _feasible(z, lin):
-            best, best_d = g, z
+        u = np.asarray(z0, dtype=float)
+        nu = float(np.linalg.norm(u))
+        if nu > 1.0:
+            u = u/nu
+        g = model_gain2(model, delta*u, H1, Hmu)
+        if g > best and _feasible(delta*u, lin):
+            best, best_d = g, delta*u
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         for z0 in starts:
             res = minimize(f, z0, jac=fp, method='SLSQP', constraints=cons,
                            options=dict(maxiter=200, ftol=1e-16))
-            z = np.asarray(res.x, dtype=float)
-            if not np.all(np.isfinite(z)):
+            u = np.asarray(res.x, dtype=float)
+            if not np.all(np.isfinite(u)):
                 continue
-            nz = float(np.linalg.norm(z))
-            if nz > delta:
-                z = z*(delta/nz)
-            g = model_gain2(model, z, H1, Hmu)
-            if g > best and _feasible(z, lin):
-                best, best_d = g, z
+            nu = float(np.linalg.norm(u))
+            if nu > 1.0:
+                u = u/nu
+            g = model_gain2(model, delta*u, H1, Hmu)
+            if g > best and _feasible(delta*u, lin):
+                best, best_d = g, delta*u
     return best_d
 
 
@@ -447,31 +449,33 @@ def _step_concave_2x2(model, delta):
     L = np.vstack([(A - C)/2, B])
     b = np.array([(l0 - l1)/2, 0.0])
 
-    def neg(d):
-        return -((a @ d + c0) - lam_1*np.linalg.norm(L @ d + b))/lam_1**2
+    c0, b = c0/delta, b/delta           # in `u = d/delta`, like every subproblem here
 
-    def neg_grad(d):
-        w = L @ d + b
+    def neg(u):
+        return -((a @ u + c0) - lam_1*np.linalg.norm(L @ u + b))/lam_1**2
+
+    def neg_grad(u):
+        w = L @ u + b
         n = float(np.linalg.norm(w))
-        gw = (L.T @ w/n) if n > 0 else np.zeros_like(d)
+        gw = (L.T @ w/n) if n > 0 else np.zeros_like(u)
         return -(a - lam_1*gw)/lam_1**2
 
-    cons = [dict(type='ineq', fun=lambda d: delta**2 - d @ d, jac=lambda d: -2*d)]
+    cons = [dict(type='ineq', fun=lambda u: 1.0 - u @ u, jac=lambda u: -2*u)]
     na = float(np.linalg.norm(a))
-    starts = [np.zeros(len(g1))] + ([delta*a/na] if na > 0 else [])
-    best, best_d = np.inf, np.zeros(len(g1))
+    starts = [np.zeros(len(g1))] + ([a/na] if na > 0 else [])
+    best, best_u = np.inf, np.zeros(len(g1))
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        for d0 in starts:
-            res = minimize(neg, d0, jac=neg_grad, method='SLSQP', constraints=cons,
+        for u0 in starts:
+            res = minimize(neg, u0, jac=neg_grad, method='SLSQP', constraints=cons,
                            options=dict(maxiter=300, ftol=1e-16))
-            d = np.asarray(res.x, dtype=float)
-            nd = float(np.linalg.norm(d))
-            if nd > delta:
-                d = d*(delta/nd)
-            if neg(d) < best:
-                best, best_d = neg(d), d
-    return best_d
+            u = np.asarray(res.x, dtype=float)
+            nu = float(np.linalg.norm(u))
+            if nu > 1.0:
+                u = u/nu
+            if neg(u) < best:
+                best, best_u = neg(u), u
+    return delta*best_u
 
 
 def _step_concave_sdp(model, delta):
@@ -490,17 +494,25 @@ def _step_concave_sdp(model, delta):
 
     Ms, g1, Lam = model['Ms'], model['g1'], model['Lam']
     lam_1, lam_k, m, n_p = model['lam_1'], model['lam_k'], model['m'], len(model['g1'])
-    d = cp.Variable(n_p)
+    # IN `z = d/delta`, WITH THE BLOCK OF ORDER ONE. In absolute units the conic solver's own
+    # tolerances exceeded the whole feasible set at small radii: it returned a step worse than
+    # d = 0, which became gain 0, crit 0 and "first-order optimal" at a shape whose true
+    # criticality was 0.061 (N = 6, lam_6/lam_1, radius 7.6e-6; 2026-11-08).
+    s = max(float(np.abs(Ms).max()), float(np.abs(Lam).max())/delta, np.finfo(float).tiny)
+    z = cp.Variable(n_p)
     t = cp.Variable()
-    S = Lam + sum(d[i]*Ms[i] for i in range(n_p))
-    prob = cp.Problem(cp.Maximize((t*lam_1 - lam_k*(g1 @ d))/lam_1**2),
-                      [S - t*np.eye(m) >> 0, cp.norm(d) <= delta])
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
-        prob.solve()
-    if d.value is None:
-        return np.zeros(n_p)
-    return np.asarray(d.value, dtype=float)
+    S = Lam/(delta*s) + sum(z[i]*(Ms[i]/s) for i in range(n_p))
+    prob = cp.Problem(cp.Maximize(t - (lam_k/lam_1)*((g1/s) @ z)),
+                      [S - t*np.eye(m) >> 0, cp.norm(z) <= 1])
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            prob.solve()
+    except cp.SolverError:
+        return None
+    if z.value is None or prob.status not in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
+        return None
+    return delta*np.asarray(z.value, dtype=float)
 
 
 def _step_convex(model, delta, rng=None):
@@ -578,26 +590,44 @@ def _step_interior(model, delta, rng=None, n_rand=8):
     """
     n_p = len(model['g1'])
     rng = np.random.default_rng(0) if rng is None else rng
-    seeds = [_step_convex(model, delta, rng=rng),
-             _step_concave_2x2(model, delta) if model['m'] == 2
-             else _step_concave_sdp(model, delta)]
+    concave = (_step_concave_2x2(model, delta) if model['m'] == 2
+               else _step_concave_sdp(model, delta))
+    seeds = [_step_convex(model, delta, rng=rng)] + ([] if concave is None else [concave])
     r = rng.normal(size=(n_rand, n_p))
     seeds += list(delta*r/np.linalg.norm(r, axis=1, keepdims=True))
+    return _unit_ball_search(model, delta, seeds)
 
-    cons = [dict(type='ineq', fun=lambda d: delta**2 - d @ d, jac=lambda d: -2*d)]
+
+def _unit_ball_search(model, delta, seeds, lin=None):
+    """The best step for the EXACT model from `seeds`, by SLSQP in `z = d/delta`.
+
+    IN UNIT-BALL COORDINATES, as every subproblem here is. The objective is then `gain/delta`,
+    of order one at any radius, where in `d` it was of order `delta` and the ball constraint
+    `delta**2`, below what the optimizer can resolve once the radius is small."""
+    n_p = len(seeds[0])
+    cons = [dict(type='ineq', fun=lambda z: 1.0 - z @ z, jac=lambda z: -2*z)]
+    if lin is not None and len(_active_rows(lin, delta)):
+        rows = _active_rows(lin, delta)
+        c, A = lin[0][rows]/delta, lin[1][rows]
+        cons.append(dict(type='ineq', fun=lambda z: c + A @ z, jac=lambda z: A))
     best, best_d = -np.inf, np.zeros(n_p)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         for d0 in seeds:
-            res = minimize(lambda d: -model_gain(model, d), d0, method='SLSQP',
-                           constraints=cons, options=dict(maxiter=200, ftol=1e-14))
-            d = np.asarray(res.x, dtype=float)
-            nd = float(np.linalg.norm(d))
-            if nd > delta:
-                d = d*(delta/nd)
-            g = model_gain(model, d)
+            res = minimize(lambda z: -model_gain(model, delta*z)/delta, np.asarray(d0)/delta,
+                           method='SLSQP', constraints=cons,
+                           options=dict(maxiter=200, ftol=1e-14))
+            z = np.asarray(res.x, dtype=float)
+            if not np.all(np.isfinite(z)):
+                continue
+            nz = float(np.linalg.norm(z))
+            if nz > 1.0:
+                z = z/nz
+            if not _feasible(delta*z, lin):
+                continue                       # SLSQP returned something infeasible; discard
+            g = model_gain(model, delta*z)
             if g > best:
-                best, best_d = g, d
+                best, best_d = g, delta*z
     return best_d
 
 
@@ -627,27 +657,9 @@ def _step_constrained(model, delta, lin, rng=None, n_rand=8):
     n_p = len(model['g1']) if model['mode'] == 'cluster' else len(model['grad'])
     rng = np.random.default_rng(0) if rng is None else rng
 
-    cons = [dict(type='ineq', fun=lambda d: delta**2 - d @ d, jac=lambda d: -2*d),
-            dict(type='ineq', fun=lambda d: c + A @ d, jac=lambda d: A)]
     r = rng.normal(size=(n_rand, n_p))
     seeds = [np.zeros(n_p)] + list(0.5*delta*r/np.linalg.norm(r, axis=1, keepdims=True))
-
-    best, best_d = -np.inf, np.zeros(n_p)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
-        for d0 in seeds:
-            res = minimize(lambda d: -model_gain(model, d), d0, method='SLSQP',
-                           constraints=cons, options=dict(maxiter=200, ftol=1e-14))
-            d = np.asarray(res.x, dtype=float)
-            nd = float(np.linalg.norm(d))
-            if nd > delta:
-                d = d*(delta/nd)
-            if np.min(c + A @ d) < -1e-9*max(1.0, float(np.abs(c).max())):
-                continue                       # SLSQP returned something infeasible; discard
-            g = model_gain(model, d)
-            if g > best:
-                best, best_d = g, d
-    return best_d
+    return _unit_ball_search(model, delta, seeds, lin=lin)
 
 
 def trust_region_step(model, delta, rng=None, lin=None):
@@ -663,16 +675,26 @@ def trust_region_step(model, delta, rng=None, lin=None):
     case; when one is, `_step_constrained` takes over, because none of the reductions survive the
     extra rows.
     """
+    d, gain, _ = _subproblem(model, delta, rng=rng, lin=lin)
+    return d, gain
+
+
+def _subproblem(model, delta, rng=None, lin=None):
+    """`(d, gain, ok)`, the dispatch behind `trust_region_step`. `ok` False says gain 0 is a
+    failure to solve, which must not be read as optimality: the iterate is outside the
+    constraints, or no solver found a step at all."""
     if lin is not None and len(_active_rows(lin, delta)):
         d = _step_constrained(model, delta, lin, rng=rng)
         gain = model_gain(model, d)
-        return (d, float(gain)) if np.isfinite(gain) and gain > 0 else (np.zeros_like(d), 0.0)
+        ok = _feasible(np.zeros_like(d), lin)
+        return (d, float(gain), ok) if np.isfinite(gain) and gain > 0 else (np.zeros_like(d), 0.0, ok)
 
     if model['mode'] == 'smooth':
         d = _step_smooth(model, delta)
-        return d, max(0.0, model_gain(model, d))
+        return d, max(0.0, model_gain(model, d)), True
 
     m, j = model['m'], model['j']
+    n_p = len(model['g1'])
     if j == 0:
         d = _step_concave_2x2(model, delta) if m == 2 else _step_concave_sdp(model, delta)
     elif j == m - 1:
@@ -680,19 +702,27 @@ def trust_region_step(model, delta, rng=None, lin=None):
     else:
         d = _step_interior(model, delta, rng=rng)
 
+    # A step worse than none means the solver failed, whatever status it gave.
+    if d is None or not np.all(np.isfinite(d)) or not model_gain(model, np.asarray(d, float)) >= 0:
+        rng = np.random.default_rng(0) if rng is None else rng
+        r = rng.normal(size=(8, n_p))
+        seeds = [np.zeros(n_p)] + list(0.5*delta*r/np.linalg.norm(r, axis=1, keepdims=True))
+        d = _unit_ball_search(model, delta, seeds)
+        gain = model_gain(model, d)
+        if not np.isfinite(gain) or gain <= 0:
+            return np.zeros(n_p), 0.0, False
+
     d = np.asarray(d, dtype=float)
     nd = float(np.linalg.norm(d))
-    if not np.all(np.isfinite(d)):
-        return np.zeros(len(model['g1'])), 0.0
     if nd > delta:                       # SLSQP satisfies the trust region to its own tolerance
         d = d*(delta/nd)
     gain = model_gain(model, d)
     if not np.isfinite(gain) or gain < 0:
-        return np.zeros(len(model['g1'])), 0.0
-    return d, float(gain)
+        return np.zeros(n_p), 0.0, False
+    return d, float(gain), True
 
 
-def _degeneracy_move(evaluator, p, F, k, gain_tol=0.0):
+def _degeneracy_move(evaluator, p, F, k, gain_tol=0.0, constraints=None):
     """Try crossing to the other representation of a nearly-degenerate shape.
 
     TWO MOVES, ONE MECHANISM. Both cross a discontinuity in the parametrization that no local
@@ -742,7 +772,7 @@ def _degeneracy_move(evaluator, p, F, k, gain_tol=0.0):
             q = gauge_vector(v, fam.perim, anchor=0)
         except (ValueError, TypeError):
             continue
-        if not fam.is_valid(q):
+        if not fam.is_valid(q) or (constraints is not None and not constraints.is_feasible(q)):
             continue
         try:
             # REPLAN, not merely reseed. The candidate has one corner FEWER than the shape the
@@ -848,9 +878,14 @@ class _Opts:
     window_floor: float = 1e-9
     tau_g: object = None
     prec_final: object = None
+    crit_factor: float = 10.0
 
 
 FLOOR_REJECTIONS = 3
+#: Below this radius a trial that refuses shrinks instead of re-planning: a new plan moves `F` by
+#: its own discrete jump, which at these steps is larger than anything the step could gain.
+REPLAN_MIN_RADIUS = 1e-5
+NONCONVEX_PREC = 1e-11
 
 
 @dataclass
@@ -879,6 +914,9 @@ class _State:
     eps_g: float = np.nan
     floor_reason: str = ''
     prec_tried: bool = False
+    prec_start: object = None             # the precision before `_escalate`
+    last_crit: float = np.nan             # the latest criticality, whatever the iteration became
+    model_plan: object = None             # the plan the last model was built on
     prec_final_reached: object = None     # None: not asked for
     degeneracy_moves: bool = True
     n_cluster_steps: int = 0
@@ -904,11 +942,12 @@ class _State:
     gain1: float = np.nan                 # first order; `gain` becomes the second-order one
     crit: float = 0.0
     rho: float = -np.inf
+    sub_ok: bool = True                   # did this iteration's subproblem solve (`_subproblem`)
 
     def begin_iteration(self, it):
         self.it = it
         self.model, self.lin, self.d = None, None, None
-        self.gain, self.crit, self.rho = 0.0, 0.0, -np.inf
+        self.gain, self.crit, self.rho, self.sub_ok = 0.0, 0.0, -np.inf, True
         self.gain1 = np.nan
 
     def adopt(self, p, F, lams, solver):
@@ -952,7 +991,7 @@ def _sigma_abort(st, o, ev, tally):
                           f'sigma_abort={o.sigma_abort:.0e} and measured on a basis '
                           f'REPLANNED at the shape itself -- the row would be excluded '
                           f'on worst_sigma however long it ran')
-            st.success = False
+            st.success, st.floor_reason = False, 'sigma_abort'
             return Outcome.STOP
     else:
         st.sigma_streak = 0
@@ -970,6 +1009,7 @@ def _build_model(st, o, ev, tally):
     except (ShapeRefusal, DegenerateSpectrum) as refusal:
         return _model_refused(st, o, ev, refusal)
     st.scale = st.model['scale']
+    st.model_plan = _plan_of(ev)
     if st.model['mode'] == 'cluster':
         st.n_cluster_steps += 1
         if 0 < st.model['j'] < st.model['m'] - 1:
@@ -992,18 +1032,33 @@ def _model_refused(st, o, ev, refusal):
     why = f'{type(refusal).__name__}: {refusal}'
     if st.previous is None:
         st.message = f'no local model at this iterate and no earlier one to go back to; {why}'
-        st.success = False
+        st.success, st.floor_reason = False, 'refusal_streak'
         return Outcome.STOP
-    if st.refusal_streak >= o.max_unresolved_streak:
+    if st.refusal_streak >= _streak_limit(st, o):
         st.message = (f'{st.refusal_streak} consecutive refusals within delta={st.delta:.3g} '
                       f'of this iterate; the last was {why}')
-        st.success = False
+        st.success, st.floor_reason = False, 'refusal_streak'
         return Outcome.STOP
     st.p, st.F, st.lams, st.solver = st.previous
     st.previous = None
     st.delta *= 0.5
+    if st.model_plan is not _plan_of(ev):     # its value was on another plan: `_resync`
+        try:
+            lams, solver = ev.eigenvalues(st.p)
+        except ShapeRefusal as again:
+            st.message = (f'the iterate before a refused model refuses the current plan too: '
+                          f'{type(again).__name__}: {again}')
+            st.success, st.floor_reason = False, 'refusal_streak'
+            return Outcome.STOP
+        st.F, st.lams, st.solver = _ratio(lams, o.k), lams, solver
     st.reseed(ev)
     return Outcome.NEXT_ITER
+
+
+def _streak_limit(st, o):
+    """Refusals allowed in a row. Halving from a large radius is the ordinary way to find a
+    servable step, so `max_unresolved_streak` counts from radius 1e-4 down."""
+    return o.max_unresolved_streak + max(0, int(np.ceil(np.log2(st.delta/1e-4))))
 
 
 def _update_curvature(st, o, ev, tally):
@@ -1056,11 +1111,24 @@ def _floor_stop(st, o):
     if st.floor_run < FLOOR_REJECTIONS:
         return False
     st.resolution, st.floor_reason = st.crit, 'eps_f'
-    st.success = bool(st.crit + st.eps_g <= o.plateau_max)
+    st.success = st.sub_ok and st.crit <= _crit_tol(st, o)
     st.message = (f'stationary to within eps_g (estimated): criticality {st.crit:.3g}, eps_g '
-                  f'{st.eps_g:.3g}; first-order gain {st.gain1:.3g} at radius {st.delta:.3g} '
-                  f'is below eps_f = {st.eps_f:.3g} on {st.floor_run} rejections in a row')
+                  f'{st.eps_g:.3g}' if st.success else
+                  f'accuracy floor reached, not certified: criticality {st.crit:.3g} is above '
+                  f'{_crit_tol(st, o):.3g}, what eps_g {st.eps_g:.3g} supports')
+    st.message += (f'; first-order gain {st.gain1:.3g} at radius {st.delta:.3g} is below eps_f = '
+                   f'{st.eps_f:.3g} on {st.floor_run} rejections in a row')
+    if st.lin is not None and len(_active_rows(st.lin, st.delta)):
+        st.message += ', against a constraint'
     return True
+
+
+def _crit_tol(st, o):
+    """The criticality the derivatives' accuracy can vouch for: `crit_factor*eps_g`, never below
+    `gain_tol`, and `crit + eps_g` stays inside `plateau_max` however inaccurate they are."""
+    if not np.isfinite(st.eps_g):
+        return o.plateau_max
+    return min(max(o.gain_tol, o.crit_factor*st.eps_g), o.plateau_max - st.eps_g)
 
 
 def _first_order_step(st, o, ev, tally):
@@ -1077,10 +1145,11 @@ def _first_order_step(st, o, ev, tally):
     WORSE ones). What identifies the floor is that criticality stops depending on the radius:
     re-solve the first-order model at `delta*plateau_shrink` and compare. Two subproblem solves,
     no eigensolve. `resolution` is the criticality actually achieved and is part of the answer."""
-    st.d, st.gain = trust_region_step(st.model, st.delta, rng=o.rng, lin=st.lin)
+    st.d, st.gain, st.sub_ok = _subproblem(st.model, st.delta, rng=o.rng, lin=st.lin)
     st.gain1 = st.gain
     st.eps_f, st.eps_g = _error_floor(st, o)
     st.crit = st.gain/st.delta if st.delta > 0 else 0.0
+    st.last_crit = st.crit
     stop = _stationary(st, o)
     if _escalate(st, o, ev, stop is not None):
         return Outcome.NEXT_ITER
@@ -1091,7 +1160,15 @@ def _first_order_step(st, o, ev, tally):
 
 
 def _stationary(st, o):
-    """`(resolution, message)` when the first-order model says this iterate is optimal."""
+    """`(resolution, message)` when the first-order model says this iterate is optimal.
+
+    WITH A MEASURED GRADIENT ERROR THE TEST IS AGAINST THAT ERROR (2026-11-08). The plateau below
+    cannot fail on a smooth model, where `gain/delta` is the same at every radius, so it reduced
+    to `crit <= plateau_max`: 127 of 172 certified rows in v1 and v2 had crit above 1e-5."""
+    if not st.sub_ok:
+        return None
+    if np.isfinite(st.eps_g):
+        return _certified(st, o)
     if st.crit <= o.gain_tol:
         return st.crit, (f'criticality {st.crit:.3g} (gain {st.gain:.3g} at radius '
                          f'{st.delta:.3g}) below gain_tol: first-order optimal')
@@ -1107,28 +1184,52 @@ def _stationary(st, o):
     return None
 
 
+def _certified(st, o):
+    """`crit` within what the derivatives can resolve (`_crit_tol`), and not contradicted. A
+    concave model's criticality cannot grow with the radius, so positive gain at a larger radius
+    means the subproblem failed at this one; the check costs one subproblem, no eigensolve."""
+    tol = _crit_tol(st, o)
+    if st.crit > tol:
+        return None
+    if st.model['mode'] == 'cluster' and st.model['j'] == 0:
+        wide = max(1e3*st.delta, 1e-3)
+        _, gain_w, ok = _subproblem(st.model, wide, rng=o.rng, lin=st.lin)
+        st.crit = st.last_crit = max(st.crit, gain_w/wide)
+        if not ok or st.crit > tol:
+            return None
+    return st.crit, (f'criticality {st.crit:.3g} (radius {st.delta:.3g}) is within '
+                     f'{tol:.3g}, what eps_g {st.eps_g:.3g} (estimated) can resolve: first-order '
+                     f'optimal to the accuracy of its derivatives')
+
+
 def _escalate(st, o, ev, stopping):
     """Ask for `prec_final`, once, when the run has used up its starting precision: the step
-    gains no more than 10 prec F, or a stop is about to fire. Only on a convex iterate
-    (re-entrant corners floor near 1e-11). True when the iterate was re-solved, so the model must
+    gains no more than 10 prec F, or a stop is about to fire. A list is a ladder, tightest first,
+    and the first rung delivered is kept. True when the iterate was re-solved, so the model must
     be rebuilt; a shape that cannot deliver stays where it is and the ending reports that."""
     if o.prec_final is None or st.prec_tried or not hasattr(ev, 'set_prec'):
         return False
     if not (stopping or st.gain1 <= 10*ev.prec*st.F):
         return False
     st.prec_final_reached = False
+    # A re-entrant corner floors near 1e-11, so only the rungs a non-convex shape can reach.
+    ladder = [float(q) for q in np.atleast_1d(o.prec_final)]
     if not is_convex(o.fam.vertices(st.p)):
+        ladder = [q for q in ladder if q >= NONCONVEX_PREC]
+    if not ladder:
         return False
-    st.prec_tried = True
-    try:
-        lams, solver = ev.set_prec(st.p, o.prec_final)
-    except (ShapeRefusal, DegenerateSpectrum):
-        return False
-    st.prec_final_reached = True
-    st.adopt(st.p, _ratio(lams, o.k), lams, solver)
-    st.reject_run = []
-    st.reseed(ev)
-    return True
+    st.prec_tried, st.prec_start = True, ev.prec
+    for prec in ladder:
+        try:
+            lams, solver = ev.set_prec(st.p, prec)
+        except (ShapeRefusal, DegenerateSpectrum):
+            continue
+        st.prec_final_reached = True
+        st.adopt(st.p, _ratio(lams, o.k), lams, solver)
+        st.reject_run = []
+        st.reseed(ev)
+        return True
+    return False
 
 
 def _second_order_step(st, o, ev, tally):
@@ -1193,12 +1294,18 @@ def _trial_step(st, o, ev, tally):
                                  and not o.constraints.is_feasible(q)):
         st.delta *= 0.5
         st.n_infeasible += 1
+        _note_rejection(st, 0.0)              # blocked at the constraint, or row 9's collapse
         return Outcome.CONTINUE
+    if hasattr(ev, 'may_replan'):
+        ev.may_replan = st.delta >= REPLAN_MIN_RADIUS
     try:
         lams_q, solver_q = (ev.eigenvalues(q) if windows is None
                             else ev.eigenvalues(q, windows=windows))
     except ShapeRefusal as refusal:
         return _refused_trial(st, o, ev, refusal)
+    finally:
+        if hasattr(ev, 'may_replan'):
+            ev.may_replan = True
     F_q = _ratio(lams_q, o.k)
     swapped = _plan_of(ev) is not plan0
     if swapped:
@@ -1238,10 +1345,11 @@ def _refused_trial(st, o, ev, refusal):
     st.reseed(ev)
     if o.callback is not None:
         o.callback(st.p, st.F, st.model, st.delta, -np.inf)
-    if st.refusal_streak >= o.max_unresolved_streak:
+    if st.refusal_streak >= _streak_limit(st, o):
         st.message = (f'the solver refused {st.refusal_streak} consecutive trial '
                       f'shapes within delta={st.delta:.3g} of this iterate; the last '
                       f'was {type(refusal).__name__}: {refusal}')
+        st.floor_reason = 'refusal_streak'
         return Outcome.STOP
     return Outcome.NEXT_ITER
 
@@ -1376,7 +1484,7 @@ def _degeneracy_stage(st, o, ev, tally):
     if not (st.rho <= o.eta and st.degeneracy_moves and st.delta < 0.05*o.delta0
             and (near_kink or pinned)):
         return Outcome.CONTINUE
-    moved = _degeneracy_move(ev, st.p, st.F, o.k)
+    moved = _degeneracy_move(ev, st.p, st.F, o.k, constraints=o.constraints)
     if moved is not None:
         st.adopt(*moved)
         st.delta = float(o.delta0)
@@ -1408,6 +1516,15 @@ _STAGES = (_sigma_abort, _build_model, _update_curvature, _first_order_step,
            _finish_iteration)
 
 
+def _close_ending(st):
+    """EVERY ENDING SAYS HOW STATIONARY IT GOT AND WHY IT STOPPED, the unsuccessful ones most of
+    all: a refused row used to report `resolution` nan and no reason."""
+    if not np.isfinite(st.resolution):
+        st.resolution = st.last_crit
+    if not st.success and not st.floor_reason:
+        st.floor_reason = 'max_iter'
+
+
 def _verify_final(st, o, ev, tally):
     """Re-solve the endpoint from cold. NOT OPTIONAL IN SPIRIT: these runs converge ONTO a
     degeneracy, the one place tracking is least reliable (measured: a tracked endpoint 5.4e-09
@@ -1417,18 +1534,37 @@ def _verify_final(st, o, ev, tally):
     same in a ledger."""
     lams_tracked, F_tracked = np.asarray(st.lams).copy(), st.F
     verified = bool(o.verify_final)
-    if o.verify_final:
-        try:
-            with _watch_warnings(tally):
-                ev.reset_continuation()
-                lams, _ = ev.eigenvalues(st.p)
-            st.lams, st.F = lams, _ratio(lams, o.k)
-        except ShapeRefusal as exc:
-            verified, st.success = False, False
-            st.message = (f'the endpoint could not be verified: {exc.__class__.__name__} on a '
-                          f'fresh solve -- the tracked values are reported and are NOT confirmed')
-            st.lams, st.F = lams_tracked, F_tracked
+    if not o.verify_final:
+        return lams_tracked, F_tracked, verified
+    try:
+        with _watch_warnings(tally):
+            lams = _fresh_values(st, ev)
+    except ShapeRefusal as exc:
+        verified, st.success = False, False
+        st.message += (f'; the endpoint could not be verified: {exc.__class__.__name__} on a '
+                       f'fresh solve -- the tracked values are reported and are NOT confirmed')
+        return lams_tracked, F_tracked, verified
+    st.lams, st.F = lams, _ratio(lams, o.k)
+    # A FRESH VALUE THAT MOVED IS NOT A CONFIRMATION, and until 2026-11-08 this was only a test
+    # that the solve did not refuse.
+    allowed = max(10*st.eps_f if np.isfinite(st.eps_f) else 0.0, 1e-9*abs(F_tracked))
+    if abs(st.F - F_tracked) > allowed:
+        verified, st.success = False, False
+        st.message += (f'; the fresh solve disagrees with the tracked value by '
+                       f'{abs(st.F - F_tracked):.3g}, above {allowed:.3g}')
     return lams_tracked, F_tracked, verified
+
+
+def _fresh_values(st, ev):
+    """A cold solve at the endpoint, falling back from `prec_final` to the precision the run
+    started at: a shape that cannot deliver the final precision cold can still be checked."""
+    ev.reset_continuation()
+    try:
+        return ev.eigenvalues(st.p)[0]
+    except ShapeRefusal:
+        if not st.prec_final_reached or st.prec_start is None:
+            raise
+        return ev.set_prec(st.p, st.prec_start)[0]
 
 
 def _result(st, o, ev, tally, lams_tracked, F_tracked, verified):
@@ -1511,7 +1647,8 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                    verify_final=True, constraints=None, degeneracy_moves=True,
                    quasi_newton=True, max_unresolved_streak=5, discontinuity_halvings=4,
                    discontinuity_ratio=2.0, sigma_abort=1e-6, sigma_abort_streak=3,
-                   window_factor=2.5, window_floor=1e-9, tau_g=1e-6, prec_final=None):
+                   window_factor=2.5, window_floor=1e-9, tau_g=1e-6, prec_final=None,
+                   crit_factor=10.0):
     """Trust-region ascent on `lam_k/lam_1`, valid through a degeneracy.
 
     `evaluator` must be a `SpectrumEvaluator` with `degenerate_tol=0` -- the guard that normally
@@ -1650,7 +1787,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
               discontinuity_ratio=discontinuity_ratio, sigma_abort=sigma_abort,
               sigma_abort_streak=sigma_abort_streak, fam=evaluator.family,
               window_factor=float(window_factor), window_floor=float(window_floor),
-              tau_g=tau_g, prec_final=prec_final)
+              tau_g=tau_g, prec_final=prec_final, crit_factor=float(crit_factor))
     p = np.array(p0, dtype=float)
     tally = dict(n=0, n_hadamard_short=0, seen=set())   # warnings in the loop: `_watch_warnings`
     with _watch_warnings(tally):
@@ -1674,5 +1811,6 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                     break
             if out is Outcome.STOP:
                 break
+    _close_ending(st)
     lams_tracked, F_tracked, verified = _verify_final(st, o, evaluator, tally)
     return _result(st, o, evaluator, tally, lams_tracked, F_tracked, verified)

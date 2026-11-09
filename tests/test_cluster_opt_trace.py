@@ -226,6 +226,6 @@ def test_the_fake_reaches_the_square_through_the_cluster():
 
 if __name__ == "__main__" and "--record" in sys.argv:
     trace, result = run()
-    GOLDEN.write_text(json.dumps(dict(trace=trace, result=result), indent=1))
+    GOLDEN.write_text(json.dumps(dict(recorded_on=_HERE, trace=trace, result=result), indent=1))
     print(f"recorded {len(trace)} callbacks; fun={result['fun']:.12f}, "
           f"message={result['message']!r}, cluster steps={result['n_cluster_steps']}")

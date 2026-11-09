@@ -70,11 +70,12 @@ def constraints_for(fam, convex=False):
 
 def make_evaluator(N, k, *, n_eigs=None, prec=1e-10, backend='chladni', perim=PERIM,
                    degenerate_tol=0.0, warn_gap=0.0, plan_at=None, fam=None):
-    """The evaluator a ratio run uses: `n_eigs = k + 2` by default (the k-th ratio and one
-    level of headroom for the cluster), the degeneracy guard off (`maximize_ratio` handles
+    """The evaluator a ratio run uses: `n_eigs = k + 3` by default (the k-th ratio and two
+    levels of headroom, so a third nearly equal level above `lam_k` is seen), the degeneracy
+    guard off (`maximize_ratio` handles
     degeneracies itself) and the gap warning off (these runs converge onto a crossing)."""
     fam = family_for(N, perim) if fam is None else fam
-    n_eigs = (k + 2) if n_eigs is None else int(n_eigs)
+    n_eigs = (k + 3) if n_eigs is None else int(n_eigs)
     if backend == 'chladni':
         from .chladni_backend import SpectrumEvaluator
         return SpectrumEvaluator(fam, n_eigs=n_eigs, prec=prec, degenerate_tol=degenerate_tol,

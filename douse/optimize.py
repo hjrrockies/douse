@@ -139,7 +139,7 @@ def descend(obj, p0, is_valid=None, max_iter=200, alpha0=0.02, grow=1.6, shrink=
 
 def gauss_newton(evaluator, match, p0, max_iter=30, max_step=0.1, mu0=1e-3, grow=4.0,
                  shrink=0.25, rtol=1e-14, gtol=1e-12, max_backtrack=12, callback=None,
-                 admissible=None):
+                 admissible=None, prec=None):
     """Levenberg-Marquardt on the inverse problem: `p -> ||match.residual(lams(p))||^2`.
 
     `descend` is a gradient method, and on a spectral match it is slow in the way gradient
@@ -154,7 +154,8 @@ def gauss_newton(evaluator, match, p0, max_iter=30, max_step=0.1, mu0=1e-3, grow
     an L-BFGS run nine minutes of refusal, 2026-10-14), and a `ShapeRefusal` at a trial point is
     treated as a rejected step: the damping grows and the step shortens. `admissible(q)`, when
     given, is a further test on the trial `q` alone, and a trial failing it is rejected the same
-    way (counted in `n_outside`); the start is the caller's to choose.
+    way (counted in `n_outside`); the start is the caller's to choose. `prec`, when given, raises
+    `rtol` and `gtol` to what solves of that precision can resolve.
 
     A trial that re-planned is compared with `p` re-evaluated on the new plan, never with its
     value on the old one (`cluster_opt._resync`); if `p` refuses the new plan the old one comes
@@ -189,22 +190,26 @@ def gauss_newton(evaluator, match, p0, max_iter=30, max_step=0.1, mu0=1e-3, grow
 
     for it in range(1, max_iter + 1):
         g = J.T @ r
+        if prec is not None:                  # below these the solves cannot tell (2026-11-08)
+            rtol = max(rtol, K*float(prec)**2)
+            gtol = max(gtol, 10*float(prec)*np.sqrt(K)*float(np.linalg.norm(J, 2)))
         if loss < rtol:
             success, message = True, f'loss {loss:.3g} below rtol={rtol:g}'
             break
         if float(np.linalg.norm(g)) < gtol:
             success, message = True, f'gradient norm {np.linalg.norm(g):.3g} below gtol={gtol:g}'
             break
-        stepped = False
+        stepped, cap, refused_here, outside_here = False, max_step, 0, 0
         for _ in range(max_backtrack):
             A = J.T @ J + mu * np.eye(len(p))
             d = -np.linalg.solve(A, g)
             n = float(np.linalg.norm(d))
-            if n > max_step:
-                d *= max_step / n
+            if n > cap:
+                d *= cap / n
             q = p + d
             if admissible is not None and is_valid(q) and not admissible(q):
                 n_outside += 1
+                outside_here += 1
             elif is_valid(q):
                 before = plan_of()
                 saved = evaluator.plan_state() if hasattr(evaluator, 'plan_state') else None
@@ -212,7 +217,12 @@ def gauss_newton(evaluator, match, p0, max_iter=30, max_step=0.1, mu0=1e-3, grow
                     r2, J2 = residual(q)
                     nfev += 1
                 except ShapeRefusal:
+                    # The solve can re-plan and then refuse the derivative: bring the plan back.
+                    if plan_of() is not before:
+                        evaluator.restore_plan(saved)
                     n_refused += 1
+                    refused_here += 1
+                    cap *= 0.5
                     r2 = None
                 if r2 is not None and plan_of() is not before:
                     after = plan_of()
@@ -222,6 +232,7 @@ def gauss_newton(evaluator, match, p0, max_iter=30, max_step=0.1, mu0=1e-3, grow
                     except ShapeRefusal:
                         evaluator.restore_plan(saved)
                         n_refused += 1
+                        refused_here += 1
                         r2 = None
                     else:
                         loss, g = float(r @ r), J.T @ r
@@ -235,7 +246,10 @@ def gauss_newton(evaluator, match, p0, max_iter=30, max_step=0.1, mu0=1e-3, grow
                         break
             mu *= grow
         if not stepped:
-            message = (f'no decrease after {max_backtrack} damped steps (mu {mu:.3g}); the '
+            message = (f'no step could be tried: of {max_backtrack} damped steps {refused_here} '
+                       f'were refused and {outside_here} left the box (mu {mu:.3g})'
+                       if refused_here + outside_here >= max_backtrack else
+                       f'no decrease after {max_backtrack} damped steps (mu {mu:.3g}); the '
                        f'residual is probably at the spectrum\'s own accuracy')
             break
         if callback is not None:
