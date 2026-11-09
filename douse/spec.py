@@ -21,6 +21,7 @@ import pathlib
 import subprocess
 import tomllib
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 
 import numpy as np
 
@@ -155,28 +156,46 @@ def run_dir(*parts):
     return str(pathlib.PurePosixPath('benchmarks', 'run', *parts))
 
 
+@lru_cache(maxsize=8)
 def git_sha(path):
-    """The short HEAD SHA of the repository at `path`, or None."""
+    """The short HEAD SHA of the repository at `path`, `-dirty` if tracked files have changed, or
+    None. Cached: `code_shas` reads it at process start, not when the row is written days later,
+    by which time the checkout may have moved."""
     try:
         out = subprocess.run(['git', '-C', str(path), 'rev-parse', '--short', 'HEAD'],
-                             capture_output=True, text=True, timeout=5)
-        return out.stdout.strip() or None
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+        if not out:
+            return None
+        dirty = subprocess.run(['git', '-C', str(path), 'status', '--porcelain',
+                                '--untracked-files=no'],
+                               capture_output=True, text=True, timeout=5).stdout.strip()
+        return out + ('-dirty' if dirty else '')
     except Exception:                                                 # noqa: BLE001
         return None
+
+
+@lru_cache(maxsize=1)
+def code_shas():
+    """`(douse_sha, chladni_sha, lock_sha)` for this process. Call it when a run starts."""
+    import douse
+    root = pathlib.Path(douse.__file__).resolve().parent.parent
+    lock = root/'uv.lock'
+    lock_sha = hashlib.sha256(lock.read_bytes()).hexdigest()[:12] if lock.exists() else None
+    try:
+        import chladni
+        chladni_sha = git_sha(pathlib.Path(chladni.__file__).resolve().parents[2])
+    except Exception:                                                 # noqa: BLE001
+        chladni_sha = None
+    return git_sha(root), chladni_sha, lock_sha
 
 
 def provenance(ev=None, spec=None):
     """WHICH CODE AND WHICH RECIPE WROTE A ROW: the backend and its precision, the SHAs of douse
     and chladni, and the spec's name and content hash when the run came from one."""
-    import douse
+    douse_sha, chladni_sha, lock_sha = code_shas()
     row = dict(backend=(getattr(ev, 'backend', None) or 'chladni'),
                prec=(None if ev is None else float(getattr(ev, 'prec', float('nan')))),
-               douse_sha=git_sha(pathlib.Path(douse.__file__).resolve().parent.parent))
-    try:
-        import chladni
-        row['chladni_sha'] = git_sha(pathlib.Path(chladni.__file__).resolve().parents[2])
-    except Exception:                                                 # noqa: BLE001
-        row['chladni_sha'] = None
+               douse_sha=douse_sha, chladni_sha=chladni_sha, lock_sha=lock_sha)
     if spec is not None:
         row.update(spec=spec.name, spec_sha=spec.sha)
     return row

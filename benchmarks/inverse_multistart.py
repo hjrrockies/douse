@@ -482,11 +482,13 @@ def run_one(spec, rid, ci, K, sigma, draw, start):
     return row
 
 
-def _done_ids(path):
+def _done_ids(path, spec_sha):
+    """The ids to skip on resume: rows this spec wrote that did not end in an error."""
     if not path.exists():
         return set()
     with open(path) as fh:
-        return {json.loads(line)['id'] for line in fh if line.strip()}
+        rows = [json.loads(line) for line in fh if line.strip()]
+    return {r['id'] for r in rows if r.get('spec_sha') == spec_sha and r.get('status') != 'error'}
 
 
 def run(spec, task, ntasks, out, limit=None):
@@ -494,7 +496,7 @@ def run(spec, task, ntasks, out, limit=None):
     mine = list(range(task, len(todo_all), ntasks))
     path = pathlib.Path(out)/f'task_{task}.jsonl'
     path.parent.mkdir(parents=True, exist_ok=True)
-    done = _done_ids(path)
+    done = _done_ids(path, spec.sha)
     todo = [i for i in mine if i not in done]
     if limit is not None:
         todo = todo[:limit]

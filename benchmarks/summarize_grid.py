@@ -135,15 +135,16 @@ def cell_ledgers(root):
 
 
 def load_cell(paths):
-    """The rows of one cell pooled over its ledgers, deduped by start across them (the last
-    file in sorted order wins, as the last row within a file does -- `load`)."""
+    """The rows of one cell pooled over its ledgers, deduped by (spec, start) across them (the
+    last file in sorted order wins, as the last row within a file does -- `load`). A start number
+    means something only within its spec: a seeded start 1 is not a random start 1."""
     by_start, loose = {}, []
     for path in paths:
         for r in load(path):
             if r.get('start') is None:
                 loose.append(r)
             else:
-                by_start[r['start']] = r
+                by_start[(str(r.get('spec_sha')), r['start'])] = r
     return [by_start[i] for i in sorted(by_start)] + loose
 
 
@@ -261,6 +262,20 @@ def _spec_mix(rows):
     return mix
 
 
+def _endings(rows):
+    """How the rows of a cell ended: counts by `floor_reason` ('certified' for a success without
+    one) and what they could resolve."""
+    done = [r for r in rows if r.get('ok', True)]
+    reasons = {}
+    for r in done:
+        key = r.get('floor_reason') or ('certified' if r.get('success') else 'other')
+        reasons[key] = reasons.get(key, 0) + 1
+    eps_g = [r['eps_g'] for r in done if r.get('eps_g') is not None and np.isfinite(r['eps_g'])]
+    return dict(reasons=reasons, n_prec_final=sum(1 for r in done if r.get('prec_final_reached')),
+                eps_g=float(np.median(eps_g)) if eps_g else None,
+                n_warm_refused=int(sum(r.get('n_warm_refused') or 0 for r in done)))
+
+
 def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5, basin_rtol=1e-6):
     """Best certified value in a cell, and how many starts agree with it."""
     rows = [ledger.normalize(r) for r in rows]
@@ -296,6 +311,10 @@ def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5, basin_r
     #
     # `res_max` survives as a reported sharpness, `n_sharp`, not as a gate.
     good = [r for r in clean if r.get('success')]
+    # A VERIFIED CLEAN ROW IS A VALID LOWER BOUND WHETHER OR NOT IT CERTIFIED, and leaving it out
+    # printed 5.0433 for N6_k4 beside a verified row at 5.0814 (final audit, 2026-11-08).
+    verified = [r for r in clean if r.get('verified', True)]
+    best_found = max(verified, key=lambda r: r['fun']) if verified else None
     n_sharp = sum(1 for r in good if np.isfinite(r.get('resolution', np.nan))
                   and r['resolution'] <= res_max)
     if not good:
@@ -304,7 +323,8 @@ def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5, basin_r
                     n_skipped_mode=len(skipped), n_sharp=0, n_uncertified=len(uncertified),
                     n_drifted=len(drifted), n_certified=0, n_agree=0, n_near=0,
                     n_clean=len(clean),
-                    best_uncertified=(max((r['fun'] for r in clean), default=None)))
+                    best_uncertified=(max((r['fun'] for r in clean), default=None)),
+                    best_found=best_found, endings=_endings(rows))
     best = max(good, key=lambda r: r['fun'])
     agreeing = [r for r in good if abs(r['fun'] - best['fun']) <= agree_rtol*abs(best['fun'])]
     spread = float(np.ptp([r['fun'] for r in agreeing])) if len(agreeing) > 1 else float('nan')
@@ -320,7 +340,8 @@ def summarize(rows, sigma_max, res_max, agree_rtol=1e-6, near_rtol=1e-5, basin_r
                 n_skipped_mode=len(skipped), n_sharp=n_sharp, n_uncertified=len(uncertified),
                 schema_mix=ledger.schema_mix(rows), spec_mix=_spec_mix(rows),
                 n_drifted=len(drifted), n_certified=len(good), n_agree=len(agreeing),
-                n_near=n_near, spread=spread, best_uncertified=None)
+                n_near=n_near, spread=spread, best_uncertified=None, best_found=best_found,
+                endings=_endings(rows))
 
 
 def main():
@@ -333,6 +354,8 @@ def main():
     ap.add_argument('--basin-rtol', type=float, default=1e-6,
                     help='certified endpoints whose F values chain within this relative '
                          'tolerance are one basin')
+    ap.add_argument('--allow-mixed', action='store_true',
+                    help='pool rows written by different specs in one cell (refused otherwise)')
     ap.add_argument('--verify', action='store_true',
                     help='re-solve each reported best shape on a FRESH plan and flag disagreement '
                          '(catches a missed eigenvalue, which `worst_sigma` cannot). One solve '
@@ -353,17 +376,21 @@ def main():
         # unconstrained cell of the same `(N, k)` would silently mix a constrained optimum into
         # an unconstrained answer. Keyed and labelled separately instead.
         N, k = rows[0]['N'], rows[0]['k']
-        conv = bool(rows[0].get('convex', False)) or name.endswith('_convex')
+        if len(_spec_mix(rows)) > 1 and not args.allow_mixed:
+            raise SystemExit(f'{name} mixes specs {sorted(_spec_mix(rows))}; a best over them '
+                             f'is a different claim, so pass --allow-mixed to mean it')
+        conv = 'mirror' if (rows[0].get('mirror') or 'mirror' in str(rows[0].get('spec'))) else \
+            bool(rows[0].get('convex', False)) or name.endswith('_convex')
         cells.append((N, k, conv, summarize(rows, args.sigma_max, args.res_max,
                                             basin_rtol=args.basin_rtol)))
-    cells.sort(key=lambda c: (c[0], c[1], c[2]))
+    cells.sort(key=lambda c: (c[0], c[1], str(c[2])))
 
     print(f'{len(cells)} cell(s) from {args.dir}\n')
     print('   N   k  family   max lam_k/lam_1     spread   resolution  agree near cert/tot'
           ' sharp  basins: F x count (best start)   oracle (N=4)')
     print('  ' + '-'*130)
     for N, k, conv, s in cells:
-        fam = 'convex' if conv else 'all   '
+        fam = 'mirror' if conv == 'mirror' else 'convex' if conv else 'all   '
         if s['best'] is None:
             got = (f"{s['best_uncertified']:.10f}" if s['best_uncertified'] is not None else '-')
             print(f"  {N:2d}  {k+1:2d}  {fam}  {got:>16s}   NONE CERTIFIED    -   "
@@ -381,6 +408,21 @@ def main():
               f"{b['resolution']:10.2e}  {s['n_agree']:2d}/{s['n_certified']:<2d} "
               f"{s['n_near']:2d}/{s['n_clean']:<2d} {s['n_certified']}/{s['n_total']}"
               f" {s['n_sharp']:2d}/{s['n_certified']:<2d}  {basin_line(s['basins'])}{oracle}")
+
+    print('\n  best found (verified and clean, certified or not) where it beats the best certified:')
+    for N, k, conv, s in cells:
+        f, b = s.get('best_found'), s['best']
+        if f is not None and (b is None or f['fun'] > b['fun'] + 1e-9):
+            print(f"  N={N:2d} k={k+1:2d}: {f['fun']:.10f} (start {f.get('start', '?')}), crit "
+                  f"{f.get('resolution', float('nan')):.2e}, not certified; best certified "
+                  + (f"{b['fun']:.10f}" if b is not None else 'none'))
+
+    print('\n  how the rows ended, and what they could resolve:')
+    for N, k, conv, s in cells:
+        e = s['endings']
+        print(f"  N={N:2d} k={k+1:2d}: {e['reasons']}  prec_final reached {e['n_prec_final']}, "
+              f"median eps_g {e['eps_g'] if e['eps_g'] is None else format(e['eps_g'], '.1e')}, "
+              f"warm solves refused {e['n_warm_refused']}")
 
     print('\n  shapes of the best certified point in each cell:')
     for N, k, conv, s in cells:

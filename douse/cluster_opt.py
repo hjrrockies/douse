@@ -74,6 +74,7 @@ of radius `Delta` could merge": `M(d)` moves the cluster members by at most
 was wanted: a converged run ends with an active set containing exactly the modes that are
 genuinely degenerate.
 """
+import time
 import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -84,7 +85,7 @@ from scipy.optimize import minimize, minimize_scalar
 
 from . import degeneracy as _dg
 from .derivative import cluster_matrices, dlams_dp, partition_levels, whole_clusters
-from .errors import DegenerateSpectrum
+from .errors import DegenerateSpectrum, TimeBudget
 from .evaluate import ShapeRefusal, SolverRefusal
 from .polygon import gauge_vector, is_convex
 from .optimize import OptimizeResult
@@ -879,6 +880,7 @@ class _Opts:
     tau_g: object = None
     prec_final: object = None
     crit_factor: float = 10.0
+    deadline: object = None               # `time.time()` past which the run raises `TimeBudget`
 
 
 FLOOR_REJECTIONS = 3
@@ -1648,7 +1650,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                    quasi_newton=True, max_unresolved_streak=5, discontinuity_halvings=4,
                    discontinuity_ratio=2.0, sigma_abort=1e-6, sigma_abort_streak=3,
                    window_factor=2.5, window_floor=1e-9, tau_g=1e-6, prec_final=None,
-                   crit_factor=10.0):
+                   crit_factor=10.0, deadline=None):
     """Trust-region ascent on `lam_k/lam_1`, valid through a degeneracy.
 
     `evaluator` must be a `SpectrumEvaluator` with `degenerate_tol=0` -- the guard that normally
@@ -1787,7 +1789,8 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
               discontinuity_ratio=discontinuity_ratio, sigma_abort=sigma_abort,
               sigma_abort_streak=sigma_abort_streak, fam=evaluator.family,
               window_factor=float(window_factor), window_floor=float(window_floor),
-              tau_g=tau_g, prec_final=prec_final, crit_factor=float(crit_factor))
+              tau_g=tau_g, prec_final=prec_final, crit_factor=float(crit_factor),
+              deadline=deadline)
     p = np.array(p0, dtype=float)
     tally = dict(n=0, n_hadamard_short=0, seen=set())   # warnings in the loop: `_watch_warnings`
     with _watch_warnings(tally):
@@ -1803,6 +1806,8 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                     n_replans_seen=int(getattr(evaluator, 'n_replans', 0)),
                     degeneracy_moves=bool(degeneracy_moves))
         for it in range(1, max_iter + 1):
+            if o.deadline is not None and time.time() >= o.deadline:
+                raise TimeBudget(f'deadline reached at iteration {it}')
             st.begin_iteration(it)
             out = Outcome.CONTINUE
             for stage in _STAGES:

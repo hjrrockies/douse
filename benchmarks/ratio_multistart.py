@@ -62,6 +62,7 @@ from douse import spectral_guard
 from douse.sampling import random_convex
 
 from douse.cluster_opt import maximize_ratio
+from douse.errors import TimeBudget
 from douse.evaluate import ShapeRefusal
 from douse.chladni_backend import _quiet
 from douse import ledger, runs
@@ -147,7 +148,8 @@ def _sigma(row):
 
 
 def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_redraws=3,
-            prec=1e-10, backend='chladni', spec=None, seed=None, mirror=False):
+            prec=1e-10, backend='chladni', spec=None, seed=None, mirror=False, ckpt=None,
+            deadline=None):
     """One start. A start that cannot be SOLVED AT ALL is redrawn rather than lost.
 
     Measured over the 18-cell grid: **all nine crashed runs died at the start shape**, before a
@@ -169,8 +171,10 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
     is the point of the start. With `mirror` the seed is symmetrized about its best mirror line
     and the run stays in `MirrorPolygon`; see `run_mirror`.
     """
+    spec_mod.code_shas()                  # now, not when the row is written days later
     if mirror:
-        return run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec)
+        return run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec, ckpt,
+                          deadline)
     fam = runs.family_for(N, PERIM)
     # `Convexity` is a RESTRICTION and it is meant to be: it asks the convex question. The
     # answer belongs in its own ledger -- see `--convex` in `main`.
@@ -200,9 +204,14 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
                                 edges=[float(t) for t in np.sort(dg.edge_lengths(v))]))
             ev.reset_continuation()
     t0 = time.perf_counter()
+    p0, delta0, max_iter, on_iter = _resume(ckpt, ev, p0, delta0, max_iter)
     try:
         res = maximize_ratio(ev, p0, k=k, max_iter=max_iter, constraints=cons, delta0=delta0,
-                             prec_final=None if spec is None else spec.prec_final)
+                             prec_final=None if spec is None else spec.prec_final,
+                             callback=on_iter, deadline=deadline)
+    except TimeBudget:
+        ckpt.flush()
+        return None
     except ShapeRefusal as exc:
         # A REFUSAL AT THE START SHAPE IS FATAL BY DESIGN -- a run cannot begin from a shape whose
         # spectrum it cannot index -- but the outer handler builds its crash row from the
@@ -224,7 +233,7 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
     # old rows onto the same names.
     return ledger.result_row(
         res, health=ev.health(), N=N, k=k, start=i, convex=bool(convex), redraws=redraws,
-        seeded=seed is not None,
+        seeded=seed is not None, n_resumes=(0 if ckpt is None else ckpt.resumes),
         start_index=(i if not redraws else i + 1000*len(redraws)),
         seconds=round(time.perf_counter() - t0, 1),
         edges=[float(t) for t in np.sort(dg.edge_lengths(v))],
@@ -232,7 +241,28 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
         deficit_tol=float(spectral_guard.DEFICIT_TOL), **spec_mod.provenance(ev, spec))
 
 
-def run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec):
+def _resume(ckpt, ev, p0, delta0, max_iter):
+    """`(p0, delta0, max_iter, callback)` for this start: where a checkpoint left it, if one did.
+    The curvature model restarts, which costs a few iterations, not correctness."""
+    if ckpt is None:
+        return p0, delta0, max_iter, None
+    ckpt.ev = ev
+    state = ckpt.load()
+    if state is None:
+        return p0, delta0, max_iter, ckpt
+    x = np.asarray(state['x'], dtype=float)
+    ev.replan(x)                          # the plan frozen at the draw is days of drift away
+    if state.get('prec') is not None and state['prec'] != ev.prec:
+        try:
+            ev.set_prec(x, state['prec'])
+        except ShapeRefusal:              # the optimizer escalates again from the starting prec
+            ev.replan(x)
+    print(f"  resuming from iteration {state['nit']} (F = {state['F']:.10f})", flush=True)
+    return x, state['delta'], max(max_iter - state['nit'], 1), ckpt
+
+
+def run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec, ckpt=None,
+               deadline=None):
     """One start in `MirrorPolygon`, then the test of whether its optimum is a maximum among ALL
     N-gons: `certify.antisymmetric_hessian` along the symmetry-breaking directions, evaluated by
     a `VertexPolygon` evaluator (a fresh one, so nothing of the symmetric run's frozen plan is
@@ -247,11 +277,18 @@ def run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec):
     cons = ConstraintSet(MinEdgeLength(fam))
     ev = runs.make_evaluator(N, k, n_eigs=n_eigs, fam=fam, prec=prec, backend=backend)
     t0 = time.perf_counter()
-    res = maximize_ratio(ev, q0, k=k, max_iter=max_iter, constraints=cons, delta0=delta0,
-                         prec_final=None if spec is None else spec.prec_final)
+    q0, delta0, max_iter, on_iter = _resume(ckpt, ev, q0, delta0, max_iter)
+    try:
+        res = maximize_ratio(ev, q0, k=k, max_iter=max_iter, constraints=cons, delta0=delta0,
+                             prec_final=None if spec is None else spec.prec_final,
+                             callback=on_iter, deadline=deadline)
+    except TimeBudget:
+        ckpt.flush()
+        return None
     v = fam.vertices(res.x)
     row = ledger.result_row(
         res, health=ev.health(), N=N, k=k, start=i, convex=False, redraws=[], seeded=True,
+        n_resumes=(0 if ckpt is None else ckpt.resumes),
         family='mirror', axis=fam.axis, seed_defect=float(defect),
         start_index=i, seconds=round(time.perf_counter() - t0, 1),
         edges=[float(t) for t in np.sort(dg.edge_lengths(v))],
@@ -276,7 +313,8 @@ def run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec):
     try:
         pr = antisymmetric_hessian(F, v, fam.antisymmetric_basis(res.x))
         row['antisym'] = dict(F_full=pr['F0'], ts=pr['ts'], worst=pr['worst'],
-                              verdict=pr['verdict'], hess_eigs=_clean_list(pr['hess_eigs']),
+                              verdict=pr['verdict'], n_done=pr['n_done'], n_probes=pr['n_probes'],
+                              hess_eigs=_clean_list(pr['hess_eigs']),
                               diag=_clean_list([np.diag(D) for D in pr['D']]),
                               scaling=_clean_list(pr['scaling']),
                               seconds=round(time.perf_counter() - t1, 1))
@@ -402,10 +440,21 @@ def _run_cell(args, spec=None):
     extra = dict(seed=None, mirror=mirror)
     path = out if out.endswith('.jsonl') else os.path.join(out, name)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    # A crash is retried on resume, and so is a row another recipe wrote: same `start`, not the
+    # same run.
     done = {r['start'] for r in ledger.read_rows(path, dedupe=False)
-            if r.get('ok', True) and r.get('start') is not None}  # a crash is retried on resume
+            if r.get('ok', True) and r.get('start') is not None
+            and (spec is None or r.get('spec_sha') == spec.sha)}
     if done:
         print(f'resuming {path}: {len(done)} start(s) already recorded', flush=True)
+
+    def checkpoint(i):
+        return runs.Checkpoint(f'{path}.start{i}.ckpt', key=None if spec is None else spec.sha)
+
+    # A budget from the spec's Slurm limit, two hours short so the checkpoint and exit are clean.
+    deadline = None
+    if spec is not None and spec.slurm_time:
+        deadline = time.time() + runs.slurm_seconds(spec.slurm_time) - 7200
 
     todo = [i for i in range(args.starts) if i not in done]
     if spec is not None and spec.seeds:
@@ -423,7 +472,8 @@ def _run_cell(args, spec=None):
             os.environ.setdefault(var, str(threads))
         jobs = [dict(N=args.N, k=args.k, i=i, max_iter=args.max_iter, seed0=args.seed0,
                      delta0=args.delta0, n_eigs=args.n_eigs, convex=args.convex, prec=prec,
-                     backend=backend, spec=spec, threads=threads,
+                     backend=backend, spec=spec, threads=threads, ckpt=checkpoint(i),
+                     deadline=deadline,
                      **dict(extra, seed=seeds[i] if seeds else None)) for i in todo]
         print(f'running {len(jobs)} start(s) on {args.workers} worker(s), '
               f'{threads} thread(s) each', flush=True)
@@ -437,9 +487,13 @@ def _run_cell(args, spec=None):
             futs = {ex.submit(_cell, j): j['i'] for j in jobs}
             for fut in as_completed(futs):
                 row = fut.result()
+                if row is None:
+                    print(f'  start {futs[fut]}: out of time, checkpointed', flush=True)
+                    continue
                 # WRITTEN FROM THE PARENT ONLY, one row at a time, so concurrent workers cannot
                 # interleave partial lines into the ledger.
                 ledger.write_row(path, row)
+                checkpoint(futs[fut]).clear()
                 print(start_line(row), flush=True)
         todo = []
 
@@ -456,7 +510,8 @@ def _run_cell(args, spec=None):
         try:
             row = run_one(args.N, args.k, i, args.max_iter, args.seed0, args.delta0,
                           args.n_eigs, convex=args.convex, prec=prec, backend=backend,
-                          spec=spec, **dict(extra, seed=seeds[i] if seeds else None))
+                          spec=spec, ckpt=checkpoint(i), deadline=deadline,
+                          **dict(extra, seed=seeds[i] if seeds else None))
         except Exception as exc:
             row = dict(N=args.N, k=args.k, start=i, convex=bool(args.convex), ok=False,
                        error=f'{type(exc).__name__}: {exc}',
@@ -464,7 +519,11 @@ def _run_cell(args, spec=None):
             print(f'  start {i:3d}: FAILED  {row["error"][:88]}', flush=True)
             ledger.write_row(path, row)
             continue
+        if row is None:
+            print(f'  start {i}: out of time, checkpointed; resubmit to continue', flush=True)
+            continue
         ledger.write_row(path, row)
+        checkpoint(i).clear()
         print(start_line(row), flush=True)
 
     allrows = ledger.read_rows(path)             # deduped by start, normalized

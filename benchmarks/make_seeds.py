@@ -56,15 +56,15 @@ def parse_cell(c):
     return int(N[1:]), int(k[1:])
 
 
-def certified_rows(N, k, roots=FROM):
-    """The cell's certified rows over `roots`, best first: a clean bound, no missed mode, and
-    the optimizer's own first-order certificate."""
+def found_rows(N, k, roots=FROM):
+    """The cell's verified rows over `roots`, best first: a clean bound and no missed mode. Not
+    only certified ones: a seed needs a good shape, and the best is not always certified."""
     rows = []
     for root in roots:
         paths = sg.cell_ledgers(str(root)).get(f'N{N}_k{k}', [])
         rows += [ledger.normalize(r) for r in sg.load_cell(paths) if r.get('ok', True)]
     rows = [r for r in rows if r.get('worst_bound') is not None and r['worst_bound'] <= SIGMA_MAX
-            and not sg.row_deficit(r) > spectral_guard.DEFICIT_TOL and r.get('success')]
+            and not sg.row_deficit(r) > spectral_guard.DEFICIT_TOL and r.get('verified', True)]
     return sorted(rows, key=lambda r: -r['fun'])
 
 
@@ -106,9 +106,9 @@ def edge_bends(u, l_min, bend=0.03):
 
 
 def split_seeds(N, k, roots=FROM):
-    rows = certified_rows(N - 1, k, roots)
+    rows = found_rows(N - 1, k, roots)
     if not rows:
-        raise SystemExit(f'no certified N{N - 1}_k{k} row to split')
+        raise SystemExit(f'no verified N{N - 1}_k{k} row to split')
     best = rows[0]
     u = vertices(best)
     l_min = PERIM/(10.0*N)                       # `MinEdgeLength`'s default for N-gons
@@ -120,7 +120,7 @@ def split_seeds(N, k, roots=FROM):
 
 
 def mirror_seeds(N, k, roots=FROM, n=2):
-    rows = certified_rows(N, k, roots)[:n]
+    rows = found_rows(N, k, roots)[:n]
     return [(vertices(r), f'N{N}_k{k} {r.get("spec", "?")} start {r["start"]} (F={r["fun"]:.10f})')
             for r in rows]
 

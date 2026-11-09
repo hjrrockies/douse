@@ -4,7 +4,12 @@ Kept in their own module so `evaluate` (which re-exports them) and `chladni_back
 import them without an import cycle.
 """
 
-__all__ = ['ShapeRefusal', 'SolverRefusal', 'UnresolvedSpectrum', 'DegenerateSpectrum']
+__all__ = ['ShapeRefusal', 'SolverRefusal', 'UnresolvedSpectrum', 'DegenerateSpectrum', 'TimeBudget']
+
+
+class TimeBudget(RuntimeError):
+    """A run reached its deadline. Not a refusal and not an ending: the driver saves where it got
+    to and exits, and resubmitting continues from there (`runs.Checkpoint`)."""
 
 
 class ShapeRefusal(RuntimeError):

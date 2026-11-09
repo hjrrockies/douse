@@ -23,7 +23,7 @@ import numpy as np
 HERE = pathlib.Path(__file__).resolve().parent
 ROWS = HERE/'lockin_rows.json'
 SPEC = HERE.parent/'specs'/'thesis_ratio_v2.toml'
-PREC_FINAL = 1e-12
+PREC_FINAL = [1e-12, 1e-11, 1e-10]
 LOSS_TOL = 1e-6
 
 

@@ -194,6 +194,7 @@ def antisymmetric_hessian(F, vertices, basis, ts=(0.01, 0.03)):
     r = B.shape[1]
     F0 = float(F(v))
     Ds, eigs, worst = [], [], -np.inf
+    n_done, n_probes = 0, 0
     for t in ts:
         D = np.full((r, r), np.nan)
         for i in range(r):
@@ -205,6 +206,8 @@ def antisymmetric_hessian(F, vertices, basis, ts=(0.01, 0.03)):
                 except Exception:                                    # noqa: BLE001
                     pass
         worst = max(worst, np.nanmax(D)) if np.isfinite(D).any() else worst
+        n_done += int(np.isfinite(D[np.triu_indices(r)]).sum())
+        n_probes += len(D[np.triu_indices(r)])
         diag = np.diag(D).copy()
         H = D - (diag[:, None] + diag[None, :])/2                   # (D(ei+ej) - D(ei) - D(ej))/2
         H[np.diag_indices(r)] = diag
@@ -214,8 +217,12 @@ def antisymmetric_hessian(F, vertices, basis, ts=(0.01, 0.03)):
     with np.errstate(divide='ignore', invalid='ignore'):
         scaling = np.diagonal(Ds[0])/np.diagonal(Ds[-1])
     ok = np.isfinite(worst)
+    # A probe that refused says nothing, so a "local maximum" needs most of them to have answered.
+    enough = n_done >= 0.75*n_probes
     return dict(F0=F0, ts=list(ts), D=Ds, hess_eigs=eigs, worst=float(worst) if ok else None,
-                scaling=scaling,
+                scaling=scaling, n_done=n_done, n_probes=n_probes,
                 verdict=('no evaluations' if not ok else
+                         'refuted: F increases along a symmetry-breaking direction' if worst > 0 else
+                         f'inconclusive: only {n_done} of {n_probes} probes were served' if not enough else
                          'consistent with a local maximum among all polygons' if worst <= 0 else
                          'refuted: F increases along a symmetry-breaking direction'))

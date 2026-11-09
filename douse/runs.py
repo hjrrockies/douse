@@ -4,6 +4,10 @@ Until today `regular` was defined nine times, `_perturbed` four, `start_shape` t
 signatures), and the evaluator was constructed in ~40 places, a dozen of them still passing
 lappy-only options the chladni evaluator silently ignores (2026-10-14).
 """
+import json
+import os
+import time
+
 import numpy as np
 
 from .constraints import ClosingBudget, ConstraintSet, Convexity, MinEdgeLength
@@ -53,6 +57,57 @@ def convex_start_shape(N, i, seed0=0, min_interior_deg=15.0, perim=PERIM):
         return start_shape(N, 0, seed0, perim)
     return random_convex(N, perim, np.random.default_rng(seed0 + 1000*i + N),
                          min_interior_deg=min_interior_deg, min_edge=perim/(10.0*N))
+
+
+class Checkpoint:
+    """One start's progress on disk, so a Slurm limit costs a resubmission and not the run. Passed
+    as `maximize_ratio`'s callback; `key` (the spec's hash) keeps another recipe's state out."""
+
+    def __init__(self, path, key=None, every=1800.0):
+        self.path, self.key, self.every = str(path), key, float(every)
+        self.last, self.state, self.nit, self.resumes = time.time(), None, 0, 0
+        self.ev = None                    # set on resume; its precision is saved with the shape
+
+    def load(self):
+        """The saved state, or None. A state written by another spec is ignored."""
+        if not os.path.exists(self.path):
+            return None
+        with open(self.path) as fh:
+            state = json.load(fh)
+        if state.get('key') != self.key:
+            return None
+        self.nit, self.resumes = int(state['nit']), int(state['resumes']) + 1
+        return state
+
+    def __call__(self, p, F, model, delta, rho):
+        self.nit += 1
+        self.state = dict(key=self.key, x=[float(t) for t in p], delta=float(delta), F=float(F),
+                          nit=self.nit, resumes=self.resumes)
+        if time.time() - self.last >= self.every:
+            self.flush()
+
+    def flush(self):
+        """Write the latest state, atomically: a job killed mid-write leaves the previous one."""
+        if self.state is None:
+            return
+        if self.ev is not None:
+            self.state['prec'] = float(self.ev.prec)
+        tmp = self.path + '.tmp'
+        with open(tmp, 'w') as fh:
+            json.dump(self.state, fh)
+        os.replace(tmp, self.path)
+        self.last = time.time()
+
+    def clear(self):
+        if os.path.exists(self.path):
+            os.remove(self.path)
+
+
+def slurm_seconds(limit):
+    """Seconds in a Slurm time limit, `[D-]HH:MM:SS`."""
+    days, _, clock = str(limit).rpartition('-')
+    h, m, s = [int(t) for t in clock.split(':')]
+    return 86400*int(days or 0) + 3600*h + 60*m + s
 
 
 def family_for(N, perim=PERIM):
