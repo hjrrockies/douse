@@ -566,7 +566,7 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
       - acceptance: the N=4/N=5 table in "Where things stand" reproduced, and the rc1 rows that
         refused re-run under both charts from the same starts.
 
-      GO/NO-GO, PROPOSED (fix it before the comparison runs, not after): smoke tests first --
+      GO/NO-GO, ADOPTED 2026-11-10, fixed before any comparison run: smoke tests first --
       chart round trip, `dv/dz` against finite differences, the regular-polygon and rectangle
       spectra, N=4 `max lam_3/lam_1` to 35/11. Then the same starts (row 13 start 1, row 17
       start 7, and the rc1 rows that ended on refusals) under `VertexPolygon`, Fourier s = 0 and
