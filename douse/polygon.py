@@ -55,7 +55,8 @@ def polygon_perimeter(vertices):
     return float(np.sum(edge_lengths(vertices)))
 
 __all__ = ['polygon_vertices', 'd_vertices_dp', 'param_vector', 'gauge_vector',
-           'perimeter_gradient', 'VertexPolygon', 'n_params', 'n_vertices', 'in_box', 'is_convex']
+           'perimeter_gradient', 'VertexPolygon', 'FourierPolygon', 'signed_frequency', 'n_params',
+           'n_vertices', 'in_box', 'is_convex']
 
 
 #: The polygons the thesis claims chladni + douse handle (the lock-in gate, 2026-11-07; the
@@ -578,3 +579,141 @@ class MirrorPolygon:
         if r != n - 2:
             raise AssertionError(f'antisymmetric subspace has rank {r}, expected {n - 2}')
         return U[:, :r]
+
+
+def signed_frequency(k, n):
+    """Mode `k` of an `n`-point sequence as a signed frequency in (-n/2, n/2]: `n - 1` is -1."""
+    k = int(k) % n
+    return k if 2*k <= n else k - n
+
+
+class FourierPolygon:
+    """`n`-gons of fixed perimeter in discrete Fourier coordinates: `2n - 4` real parameters,
+    no vertex special.
+
+    THE CHART. With `w = exp(2 pi i/n)` and the vertices' DFT `X_k = (1/n) sum_j v_j w^(-jk)`,
+    translation is `X_0` and a rotation-and-scale multiplies every `X_k` by the same complex
+    number, so the shape is the ratios `z_k = X_k/X_1`, k = 2..n-1 -- an affine chart on
+    Kendall's shape space `CP^(n-2)`. The raw polygon
+
+        u_j = w^j + sum_{k=2}^{n-1} z_k w^(jk)
+
+    is rescaled to perimeter `perim`. Relabelling the vertices (`z_k -> w^((k-1)r) z_k`) and
+    reflecting (`z_k -> conj(z_k)`) are isometries of `z`, so no labelling is preferred -- the
+    reason this exists (`docs/todo.md`, the FourierPolygon item: under `VertexPolygon` the
+    endpoint of a run depends on which vertex is pinned). The one hole is `X_1 = 0`;
+    `x1_share` reports how close a polygon is to it.
+
+    THE PARAMETERS ARE SCALED for the trust region: `p = [Re y_2..y_{n-1}, Im y_2..y_{n-1}]`,
+    `y_k = c sqrt(w_k) z_k`, with
+
+    * `c = sqrt(n) perim / P_regular`, which makes `d_vertices_dp` an isometry at the regular
+      n-gon when `s = 0` (Parseval, and the perimeter is stationary there), so a trust radius
+      means what it means for `VertexPolygon`;
+    * `w_k = |k~|^(2s)`, `k~` the signed frequency of mode k (`signed_frequency`): a Sobolev
+      weight. Constant and diagonal, so the optimizer's Euclidean ball in `p` IS the weighted
+      ball in `z` and nothing downstream changes. The affine mode `n - 1` (`k~ = -1`) costs
+      what the base mode does; the zigzag modes cost most; a needle, a one-vertex displacement
+      flat across all modes, is expensive. `s = 0` is the plain chart.
+    """
+
+    def __init__(self, n, perim=1.0, s=0.0):
+        if n < 3:
+            raise ValueError(f'a polygon needs at least 3 vertices, got n={n}')
+        if perim <= 0:
+            raise ValueError(f'perim must be positive, got {perim}')
+        self.n, self.perim, self.s = int(n), float(perim), float(s)
+        self.modes = np.arange(2, self.n)
+        self.weights = np.array([abs(signed_frequency(k, self.n)) for k in self.modes],
+                                dtype=float)**(2*self.s)
+        self.c = np.sqrt(self.n)*self.perim/(2*self.n*np.sin(np.pi/self.n))
+        self._scale = self.c*np.sqrt(self.weights)                      # y_k = scale_k z_k
+        j = np.arange(self.n)
+        self._base = np.exp(2j*np.pi*j/self.n)
+        E = np.exp(2j*np.pi*np.outer(j, self.modes)/self.n)/self._scale  # (n, n-2): du/dy_k
+        self._W = np.hstack([E, 1j*E])                                   # (n, 2n-4), complex
+
+    def __repr__(self):
+        return f'FourierPolygon(n={self.n}, perim={self.perim:g}, s={self.s:g})'
+
+    @property
+    def n_params(self):
+        return 2*self.n - 4
+
+    def _check(self, p):
+        p = np.asarray(p, dtype=float)
+        if p.shape != (self.n_params,):
+            raise ValueError(f'p must have length {self.n_params} for {self!r}, got {p.shape}')
+        return p
+
+    def z(self, p):
+        """The shape coordinates `z_2..z_{n-1}` (complex), unscaled."""
+        p = self._check(p)
+        m = self.n - 2
+        return (p[:m] + 1j*p[m:])/self._scale
+
+    def _raw(self, p):
+        return self._base + self._W @ self._check(p)
+
+    def vertices(self, p):
+        u = self._raw(p)
+        return self.perim*u/polygon_perimeter(u)
+
+    def d_vertices_dp(self, p):
+        """`(2n, 2n - 4)`, rows `[x_0..x_{n-1}, y_0..y_{n-1}]` as for `VertexPolygon`. The raw
+        vertices are affine in `p`; the rescaling `v = perim u / P(u)` is differentiated exactly,
+        as in `MirrorPolygon`."""
+        u = self._raw(p)
+        P, g = perimeter_gradient(u)
+        dP = (np.conj(g)[:, None]*self._W).real.sum(axis=0)
+        dv = self.perim*(self._W/P - np.outer(u, dP)/P**2)
+        return np.vstack([dv.real, dv.imag])
+
+    def from_vertices(self, vertices, min_share=1e-3):
+        """`p` for a polygon given by its vertices, in the given labelling (reversed first if it
+        is clockwise). Smooth in the vertices, unlike `param_vector`; refuses a polygon too near
+        the chart's hole (`x1_share < min_share`)."""
+        v = np.asarray(vertices, dtype=complex)
+        if len(v) != self.n:
+            raise ValueError(f'expected {self.n} vertices, got {len(v)}')
+        if polygon_area(v) < 0:
+            v = v[::-1]
+        X = np.fft.fft(v)/self.n
+        share = _x1_share(X)
+        if share < min_share:
+            raise ValueError(f'|X_1|^2 is {share:.1e} of the non-translational energy, below '
+                             f'{min_share:g}: this polygon is at the edge of the Fourier chart')
+        y = self._scale*X[self.modes]/X[1]
+        return np.concatenate([y.real, y.imag])
+
+    def x1_share(self, p):
+        """`|X_1|^2 / sum_{k != 0} |X_k|^2`: 1 at the regular n-gon, 0 at the chart's hole."""
+        return _x1_share(np.fft.fft(self.vertices(p))/self.n)
+
+    def __call__(self, p, **kwargs):
+        v = self.vertices(p)
+        if polygon_area(v) <= 0:
+            raise ValueError('this p gives a clockwise or degenerate polygon, outside the '
+                             'parametrization\'s range')
+        from chladni.geometry import Polygon
+        kwargs.setdefault('bc', 'dir')
+        return Polygon(v, **kwargs)
+
+    def lappy_domain(self, p, **kwargs):
+        from lappy import Polygon
+        return Polygon(self.vertices(p), **kwargs)
+
+    def is_valid(self, p):
+        try:
+            self(p)
+            return True
+        except (ValueError, TypeError):
+            return False
+
+    def perimeter(self, p):
+        return polygon_perimeter(self.vertices(p))
+
+
+def _x1_share(X):
+    e = np.abs(X[1:])**2
+    return float(e[0]/e.sum())

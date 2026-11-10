@@ -16,7 +16,7 @@ from . import spectral_guard
 from . import quasi_newton
 
 # classes and functions available directly from douse
-from .polygon import VertexPolygon, polygon_vertices, param_vector
+from .polygon import VertexPolygon, FourierPolygon, polygon_vertices, param_vector
 from .derivative import (dlam_dp, dlam_dvertices, dlams_dp, cluster_matrices,
                          detect_cluster, directional_derivatives)
 from .objective import (EigenvalueObjective, RatioObjective, SpectralMatch,
