@@ -577,6 +577,25 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
 
 ## Optimizer and infrastructure
 
+- [ ] **Every run keeps the spectrum it computed, at every evaluation** (added 2026-11-10).
+      Diagnostics now recompute: the rc1 analyses re-solved endpoints cold to get a model or an
+      eigenfunction back, minutes per shape, and a re-solve is not guaranteed to land on the
+      same plan. A row keeps only its endpoint `lams`, the refused trials and a solve-kind
+      `trace`. Eigenvalues alone do not give the eigenfunctions back: the pencil depends on the
+      basis, so a record has to name the plan too. Done means:
+      - one record per evaluation, accepted AND trial AND refused: `p`, every level's value and
+        bound, the precision asked, warm/cold/re-plan, and the plan it was solved on;
+      - each plan stored once per run (`plan_at`, rung, `prec`, chladni SHA), referenced by
+        index; chladni's `Plan` has no serializer, so a rebuild from `plan_at` must be shown to
+        reproduce it, or the serializer goes in chladni;
+      - a helper that turns a record into the `MPSPencil` at that shape and plan, and evaluates
+        eigenfunctions (a whole cluster's space where the level is multiple) at the stored
+        eigenvalues without an eigensolve;
+      - written beside the row (one file per row, not inside it: rows stay summaries), flushed
+        as the run goes so a task killed at the time limit still leaves its history;
+      - tested: a short run's records rebuild pencils whose smallest singular values at the
+        stored eigenvalues sit within each level's bound.
+
 - [ ] **A real constraint, not an `inf` barrier.** The admissible set has a boundary (the
       closing-budget condition) and `descend` merely refuses to cross it. scipy's L-BFGS-B stalls
       at iteration 1 against `inf`. A smooth self-intersection constraint — sketched in the
