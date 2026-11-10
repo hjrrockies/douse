@@ -81,6 +81,8 @@ def _ending(r):
         return 'collapsed'
     if 'stationary to within' in m or 'accuracy floor' in m:
         return 'floor'
+    if 'as far as F resolves' in m:
+        return 'value_limit'
     if 'streak' in m or 'in a row' in m or 'refus' in m:
         return 'refused'
     if 'max_iter' in m:

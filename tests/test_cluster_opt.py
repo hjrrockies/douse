@@ -580,3 +580,27 @@ def test_a_run_cut_off_after_a_step_says_its_case_is_stale():
         res = maximize_ratio(ev, p0, k=1, max_iter=1)
     assert not np.array_equal(res.x, p0), 'the one iteration should have moved'
     assert res.final_case is not None and res.final_case['at_endpoint'] is False
+
+
+@pytest.mark.parametrize('seed', range(5))
+@pytest.mark.parametrize('crit', [4.6e-6, 1e-7])
+def test_the_sdp_step_finds_a_small_criticality_exactly(seed, crit):
+    """A full-rank dual `Y` makes the optimum a closed form, `||w(Y)||`, and `crit` is built in.
+    Left to cvxpy's default solver the step here had negative gain (rc1 row 0, 2026-11-10)."""
+    rng = np.random.default_rng(seed)
+    m, n, lam_1, lam_k = 3, 8, 28.0, 144.0
+    Ms = rng.normal(size=(n, m, m))*60.0
+    Ms = (Ms + Ms.transpose(0, 2, 1))/2
+    Q = np.linalg.qr(rng.normal(size=(m, m)))[0]
+    Y = (Q*np.array([0.1, 0.3, 0.6])) @ Q.T
+    # `w` orthogonal to every trace-free direction of `Y`, so that this `Y` is the minimizer.
+    E = [np.outer(np.eye(m)[a], np.eye(m)[b]) for a, b in zip(*np.triu_indices(m))]
+    free = [e + e.T - 2*np.trace(e)*np.eye(m)/m for e in E]
+    A = np.array([[np.sum(Mi*E) for E in free] for Mi in Ms])
+    w = np.linalg.svd(A, full_matrices=True)[0][:, -1]*crit
+    g1 = (np.einsum('ijk,jk->i', Ms, Y)*lam_1 - lam_1**2*w)/lam_k
+    model = dict(mode='cluster', m=m, j=0, Ms=Ms, g1=g1, Lam=np.zeros((m, m)), lam_1=lam_1,
+                 lam_k=lam_k)
+    delta = 1.5e-6
+    d = _step_concave_sdp(model, delta)
+    assert model_gain(model, d)/delta == pytest.approx(crit, abs=1e-9)

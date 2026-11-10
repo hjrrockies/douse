@@ -482,6 +482,23 @@ def _step_concave_2x2(model, delta):
     return delta*best_u
 
 
+#: Stopping tolerances for the conic solves, in `z = d/delta` with the data of order one.
+CONIC_TOL = 1e-11
+
+
+def _solve_conic(prob):
+    """Solve with CLARABEL, named. Left to choose, cvxpy took SCS for the SDP, a first-order method
+    good to about 1e-4: at rc1 row 0's endpoint (2026-11-10) it returned |z| = 1.8e-3 and a gain of
+    -1.1e-5 per unit radius where the exact criticality was 4.58e-6, so the branch's own method was
+    replaced and the search that took over reported 2.5e-7. CLARABEL at this tolerance gets the
+    closed form's digits."""
+    import cvxpy as cp
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        prob.solve(solver=cp.CLARABEL, tol_gap_abs=CONIC_TOL, tol_gap_rel=CONIC_TOL,
+                   tol_feas=CONIC_TOL)
+
+
 def _step_concave_sdp(model, delta, lin=None):
     """`lam_min` of an m x m block, m >= 3: the SDP itself, through `cvxpy`.
 
@@ -513,9 +530,7 @@ def _step_concave_sdp(model, delta, lin=None):
         cons.append(lin[0][rows]/delta + lin[1][rows] @ z >= 0)
     prob = cp.Problem(cp.Maximize(t - (lam_k/lam_1)*((g1/s) @ z)), cons)
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            prob.solve()
+        _solve_conic(prob)
     except cp.SolverError:
         return None
     if z.value is None or prob.status not in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
@@ -668,9 +683,7 @@ def _step_smooth_constrained(model, delta, lin):
     prob = cp.Problem(cp.Maximize((g/ng) @ z),
                       [cp.norm(z) <= 1, lin[0][rows]/delta + lin[1][rows] @ z >= 0])
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            prob.solve()
+        _solve_conic(prob)
     except cp.SolverError:
         return None
     if z.value is None or prob.status not in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
