@@ -972,9 +972,14 @@ class _Opts:
     prec_final: object = None
     crit_factor: float = 10.0
     deadline: object = None               # `time.time()` past which the run raises `TimeBudget`
+    floor_policy: str = 'value_limit'     # what a run does at the accuracy floor: `_floor_stop`
 
 
 FLOOR_REJECTIONS = 3
+FLOOR_POLICIES = ('value_limit', 'accept_steps')
+#: `floor_policy='accept_steps'`: the halvings a step needs to come down to the distance left, the
+#: steps a run may take on the gradient's word, and the drop in criticality each must show.
+FLOOR_REJECTIONS_STEPS, MAX_FLOOR_STEPS, FLOOR_STEP_DROP = 8, 10, 0.9
 #: Below this radius a trial that refuses shrinks instead of re-planning: a new plan moves `F` by
 #: its own discrete jump, which at these steps is larger than anything the step could gain.
 REPLAN_MIN_RADIUS = 1e-5
@@ -1006,6 +1011,8 @@ class _State:
     eps_f: float = np.nan                 # at the model's iterate: `_error_floor`
     eps_g: float = np.nan
     floor_reason: str = ''
+    n_floor_steps: int = 0                # steps taken on the gradient's word: `_floor_step_accepted`
+    floor_F: object = None                # F when the first of them was taken
     prec_tried: bool = False
     prec_start: object = None             # the precision before `_escalate`
     last_crit: float = np.nan             # the latest criticality, whatever the iteration became
@@ -1275,14 +1282,20 @@ def _note_rejection(st, dF):
 def _floor_stop(st, o):
     """THREE rejections in a row with nothing resolvable left: end here and say how stationary
     this is. Errors on one plan correlate, so a single rejection below `eps_f` proves nothing."""
-    if st.floor_run < FLOOR_REJECTIONS:
+    limit = FLOOR_REJECTIONS_STEPS if o.floor_policy == 'accept_steps' else FLOOR_REJECTIONS
+    if st.floor_run < limit:
         return False
-    st.resolution, st.floor_reason = st.crit, 'eps_f'
-    st.success = st.sub_ok and st.crit <= _crit_tol(st, o)
-    st.message = (f'stationary to within eps_g (estimated): criticality {st.crit:.3g}, eps_g '
+    tol = _crit_tol(st, o)
+    st.success = st.sub_ok and st.crit <= _floor_tol(st, o)
+    by_value = st.success and st.crit > tol
+    st.resolution, st.floor_reason = st.crit, 'eps_f_value_limit' if by_value else 'eps_f'
+    st.message = (f'stationary as far as F resolves: criticality {st.crit:.3g} is within '
+                  f'sqrt(2 eps_f) = {_floor_tol(st, o):.3g}, above the {tol:.3g} eps_g '
+                  f'{st.eps_g:.3g} supports' if by_value else
+                  f'stationary to within eps_g (estimated): criticality {st.crit:.3g}, eps_g '
                   f'{st.eps_g:.3g}' if st.success else
                   f'accuracy floor reached, not certified: criticality {st.crit:.3g} is above '
-                  f'{_crit_tol(st, o):.3g}, what eps_g {st.eps_g:.3g} supports')
+                  f'{_floor_tol(st, o):.3g}, what eps_g {st.eps_g:.3g} supports')
     st.message += (f'; first-order gain {st.gain1:.3g} at radius {st.delta:.3g} is below eps_f = '
                    f'{st.eps_f:.3g} on {st.floor_run} rejections in a row')
     if st.lin is not None and len(_active_rows(st.lin, st.delta)):
@@ -1303,6 +1316,50 @@ def _crit_tol(st, o):
     if not np.isfinite(st.eps_g):
         return -np.inf if _measures_accuracy(st) else o.plateau_max
     return min(max(o.gain_tol, o.crit_factor*st.eps_g), o.plateau_max - st.eps_g)
+
+
+def _floor_tol(st, o):
+    """The criticality an ending AT THE FLOOR may claim (2026-11-09). Steps are accepted on a
+    measured change in `F`, and a slope `g` a distance `g/L` from the optimum is worth `g^2/(2L)`,
+    so `F` known to `eps_f` cannot drive `crit` below about `sqrt(2 L eps_f)` however accurate the
+    gradient is. Measured on the square (lam_2/lam_1): edges 1.75e-6 from equal, crit 8.2e-7 at
+    every radius from 1e-6 to 1e-2, L about 0.45, the rest of the climb worth 7e-13 against `eps_f`
+    2.5e-11. The strict test called that `not_converged`. `L` is taken as 1, which is a scale and
+    not a measurement; `floor_reason` says when a run passed only by this test."""
+    tol = _crit_tol(st, o)
+    if o.floor_policy != 'value_limit' or not (np.isfinite(st.eps_f) and np.isfinite(st.eps_g)):
+        return tol
+    return max(tol, min(np.sqrt(2*st.eps_f), o.plateau_max - st.eps_g))
+
+
+def _floor_step_accepted(st, o, q, F_q, lams_q, solver_q, swapped):
+    """`floor_policy='accept_steps'`: take a step `F` cannot judge if the gradient says it helped.
+
+    Only when the predicted gain and the measured change are both below `eps_f`, so `F` has no
+    verdict to overrule, and the criticality at `q` has dropped, which costs a model and no
+    eigensolve. Bounded three ways: `MAX_FLOOR_STEPS`, `F` stays within `eps_f` of where the first
+    such step began so errors cannot add up, and never across a change of plan, where `dF` carries
+    the re-plan's own jump. A rejected step halves the radius, so it comes down to the distance
+    left. The certificate stays the strict one."""
+    if o.floor_policy != 'accept_steps' or swapped or not np.isfinite(st.eps_f):
+        return False
+    if st.n_floor_steps >= MAX_FLOOR_STEPS or not st.gain1 <= st.eps_f:
+        return False
+    start = st.F if st.floor_F is None else st.floor_F
+    if abs(F_q - st.F) > st.eps_f or F_q < start - st.eps_f:
+        return False
+    eps_abs = None if (not o.auto or st.scale is None) else st.delta*st.scale
+    try:
+        model = local_model(o.fam, q, solver_q, lams_q, k=o.k,
+                            eps_rel=(1e-3 if o.auto else o.eps_rel), eps_abs=eps_abs, tau_g=o.tau_g)
+    except (ShapeRefusal, DegenerateSpectrum):
+        return False
+    lin = None if o.constraints is None else o.constraints(q)
+    _, gain_q, ok = _subproblem(model, st.delta, rng=o.rng, lin=lin)
+    if not ok or gain_q/st.delta >= FLOOR_STEP_DROP*st.crit:
+        return False
+    st.floor_F, st.n_floor_steps = start, st.n_floor_steps + 1
+    return True
 
 
 def _first_order_step(st, o, ev, tally):
@@ -1558,7 +1615,7 @@ def _trial_step(st, o, ev, tally):
             return out
     st.refusal_streak = st.resync_streak = 0
     st.rho = (F_q - st.F)/st.gain if st.gain > 0 else -np.inf
-    if st.rho > o.eta:
+    if st.rho > o.eta or _floor_step_accepted(st, o, q, F_q, lams_q, solver_q, swapped):
         st.reject_run = []
         st.adopt(q, F_q, lams_q, solver_q)
         if swapped:
@@ -1860,6 +1917,7 @@ def _result(st, o, ev, tally, lams_tracked, F_tracked, verified):
                           health=health, final_case=final_case,
                           convergence=_convergence(st.success, final_case),
                           n_corrected=st.n_corrected, n_reanchors=st.n_reanchors,
+                          n_floor_steps=st.n_floor_steps,
                           n_cluster_steps=st.n_cluster_steps,
                           n_interior_steps=st.n_interior_steps,
                           n_infeasible=st.n_infeasible, n_unresolved=st.n_unresolved,
@@ -1927,7 +1985,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                    quasi_newton=True, max_unresolved_streak=5, discontinuity_halvings=4,
                    discontinuity_ratio=2.0, sigma_abort=1e-6, sigma_abort_streak=3,
                    window_factor=2.5, window_floor=1e-9, tau_g=1e-6, prec_final=None,
-                   crit_factor=10.0, deadline=None):
+                   crit_factor=10.0, deadline=None, floor_policy='value_limit'):
     """Trust-region ascent on `lam_k/lam_1`, valid through a degeneracy.
 
     `evaluator` must be a `SpectrumEvaluator` with `degenerate_tol=0` -- the guard that normally
@@ -2011,6 +2069,11 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     Stops when the model's best FIRST-ORDER gain per unit radius falls below `gain_tol`, OR when
     that quantity stops depending on the radius at all -- see `plateau_rtol`.
 
+    `floor_policy` is what a run does when `F` can no longer judge a step. 'value_limit' (default)
+    ends there and also accepts a criticality `F`'s accuracy cannot improve on (`_floor_tol`).
+    'accept_steps' keeps the strict certificate and takes up to `MAX_FLOOR_STEPS` more steps on the
+    gradient's word (`_floor_step_accepted`).
+
     `plateau_rtol`, `plateau_shrink`, `plateau_max` DEFINE THE SECOND STOP, AND IT IS THE ONE THAT
     FIRES IN PRACTICE. `gain_tol` is an absolute threshold on a quantity that has a floor set by
     the accuracy of the shape derivatives, so it certifies or does not according to where a given
@@ -2056,6 +2119,8 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     auto = isinstance(eps_rel, str)
     if auto and eps_rel != 'auto':
         raise ValueError(f"eps_rel must be a float or 'auto', got {eps_rel!r}")
+    if floor_policy not in FLOOR_POLICIES:
+        raise ValueError(f'floor_policy must be one of {FLOOR_POLICIES}, got {floor_policy!r}')
     o = _Opts(k=k, delta0=delta0, delta_max=delta_max, eps_rel=eps_rel, auto=auto,
               max_iter=max_iter, gain_tol=gain_tol, eta=eta, eta_grow=eta_grow,
               plateau_rtol=plateau_rtol, plateau_shrink=plateau_shrink, plateau_max=plateau_max,
@@ -2067,7 +2132,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
               sigma_abort_streak=sigma_abort_streak, fam=evaluator.family,
               window_factor=float(window_factor), window_floor=float(window_floor),
               tau_g=tau_g, prec_final=prec_final, crit_factor=float(crit_factor),
-              deadline=deadline)
+              deadline=deadline, floor_policy=floor_policy)
     p = np.array(p0, dtype=float)
     tally = dict(n=0, n_hadamard_short=0, seen=set())   # warnings in the loop: `_watch_warnings`
     with _watch_warnings(tally):
