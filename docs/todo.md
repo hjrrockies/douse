@@ -522,6 +522,59 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
       earns its place because `min lam_1` is not scale-invariant and shares the parametrization.
       Worth knowing before anyone "simplifies" it away.
 
+- [ ] **`FourierPolygon`: a vertex-symmetric parametrization, fully supported for shape
+      optimization AND shape inversion** (added 2026-11-10). The question behind it: six rc1
+      validation rows stalled on refusals with a spike at or beside the PINNED vertex
+      (`v_{N-1} = 0`), so the gauge may steer runs, not only the trust region. The cheap test is
+      running first -- same start, three different pinned vertices
+      (`$DOUSE_RUNS/relabel_test/relabel_test.py`, ARC job 8588426); read its verdict before
+      building this. The chart, with `w = exp(2 pi i/N)` and `X_k = (1/N) sum_j v_j w^(-jk)`:
+
+          v_j = w^j + sum_{k=2}^{N-1} z_k w^(jk),    z_k = X_k/X_1
+
+      `2N-4` real parameters, no vertex special, the map `z -> v` AFFINE (so `dv/dz` is a
+      constant matrix), relabelling and reflection are isometries of `z`
+      (`z_k -> w^((k-1)s) z_k`, `z_k -> conj(z_k)`), and symmetric polygons are coordinate
+      subspaces. It is an affine chart on Kendall's shape space `CP^(N-2)`. Done means:
+      - a `FourierPolygon` family beside `VertexPolygon`, behind the same interface `runs`,
+        `cluster_opt`, `optimize` and the evaluators already use, with `param_vector` /
+        `polygon_vertices` round-tripping to 1e-14 and the shape derivative chained through the
+        constant `dv/dz`;
+      - scale handled the way the objective needs: free for ratios (scale-invariant), and the
+        perimeter fixed for `min lam_1` and for inversion by rescaling the vertices -- no implicit
+        solve, so no pole and no `ClosingBudget`; `x_0` and the re-anchoring in `8a53ebd` have no
+        counterpart and should go;
+      - `MinEdgeLength`, `Convexity` and simplicity re-expressed on the vertices (they already
+        are; only their Jacobians change);
+      - the chart's one hole, `X_1 = 0`, checked: is it ever reached by a simple polygon, and if
+        not, how close does a run get (report `|X_1|` per iterate);
+      - optionally a Sobolev-weighted trust region (weights growing in the cyclic distance of `k`
+        from 1), so steps prefer smooth deformations to sawtooth ones -- measured against plain,
+        not assumed;
+      - the inverse problem (`SpectralMatch`, `gauss_newton`) running on it, and the posterior
+        machinery where the prior is written in shape coordinates;
+      - acceptance: the N=4/N=5 table in "Where things stand" reproduced, and the rc1 rows that
+        refused re-run under both charts from the same starts.
+
+- [ ] **A reliable SHAPE DISTANCE between two polygons** (added 2026-11-10). Needed to say
+      whether two runs found the same optimum (basin counts, the stability protocol), to score
+      inversion, and to compare endpoints across charts -- two `p` (or `z`) vectors can be far
+      apart for the same shape, because of the `2N` relabellings/reflections and, in
+      `VertexPolygon`, the anchor choice. Definition: with `u = (1, z)` from each polygon's
+      vertices, the Fubini--Study angle `arccos(|<u1,u2>|/(|u1||u2|))` minimized over the dihedral
+      group `D_N` acting on the second (equivalently: full Procrustes over rotation, scale,
+      translation and relabelling). Done means:
+      - ALIGN pairwise, never compare canonical forms: any canonical labelling jumps at symmetric
+        shapes, which is exactly where optima sit;
+      - computed by the chord `|u1/|u1| - e^(i phi) u2/|u2||`, not by `arccos` of a number near 1,
+        so a distance of 1e-9 is resolved and not lost to cancellation;
+      - returns the aligning relabelling, reflection and phase alongside the distance;
+      - works from vertices, so it serves both charts and the ledgers as they are;
+      - tested: zero under every `D_N` element, similarity and starting-vertex change; symmetric
+        under swap; the triangle inequality on random triples; exact on shapes with symmetry
+        (regular N-gon, rectangles, isosceles); small distances against a high-precision
+        reference.
+
 ## Optimizer and infrastructure
 
 - [ ] **A real constraint, not an `inf` barrier.** The admissible set has a boundary (the
