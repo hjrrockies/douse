@@ -525,10 +525,14 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
 - [ ] **`FourierPolygon`: a vertex-symmetric parametrization, fully supported for shape
       optimization AND shape inversion** (added 2026-11-10). The question behind it: six rc1
       validation rows stalled on refusals with a spike at or beside the PINNED vertex
-      (`v_{N-1} = 0`), so the gauge may steer runs, not only the trust region. The cheap test is
-      running first -- same start, three different pinned vertices
-      (`$DOUSE_RUNS/relabel_test/relabel_test.py`, ARC job 8588426); read its verdict before
-      building this. The chart, with `w = exp(2 pi i/N)` and `X_k = (1/N) sum_j v_j w^(-jk)`:
+      (`v_{N-1} = 0`), so the gauge may steer runs, not only the trust region. Tested 2026-11-10
+      (`$DOUSE_RUNS/relabel_test/`, ARC job 8588426: same start, three pinned vertices, a nudged
+      control): spikes do NOT follow the pin, but the ENDPOINT depends on the labelling -- row 13
+      start 1 reaches the regular pentagon under one labelling and a square plus a 3.6 degree
+      needle (refused at prec 1e-7 AND 1e-6 when solved cold) under the original one; the nudged
+      controls reproduce their originals. **Decided 2026-11-10 (with the advisor): a measured
+      chance at making this the thesis chart**, falling back to `VertexPolygon` on the rule
+      below. The chart, with `w = exp(2 pi i/N)` and `X_k = (1/N) sum_j v_j w^(-jk)`:
 
           v_j = w^j + sum_{k=2}^{N-1} z_k w^(jk),    z_k = X_k/X_1
 
@@ -548,13 +552,49 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
         are; only their Jacobians change);
       - the chart's one hole, `X_1 = 0`, checked: is it ever reached by a simple polygon, and if
         not, how close does a run get (report `|X_1|` per iterate);
-      - optionally a Sobolev-weighted trust region (weights growing in the cyclic distance of `k`
-        from 1), so steps prefer smooth deformations to sawtooth ones -- measured against plain,
-        not assumed;
+      - a Sobolev-weighted trust region, `||dz||_W^2 = sum_k w_k |dz_k|^2` with
+        `w_k = |k~|^(2s)`, `k~` the SIGNED frequency of mode k in (-N/2, N/2] (so `z_{N-1}`, the
+        affine mode, costs the same as the base mode, and the zigzag modes cost most). Constant
+        and diagonal, so it is exactly the change of variables `y_k = sqrt(w_k) z_k` and the
+        optimizer needs no change; it preserves the `D_N` isometries. A needle is a one-vertex
+        displacement, flat across all modes, so it is expensive; a bulge is cheap. Costs: the
+        certificate's dual norm changes units (recalibrate `gain_tol`/plateau or report both),
+        and genuinely sharp optima (rc1 row17's best has a 19 degree corner) are reached more
+        slowly. Start at s = 1 against s = 0;
       - the inverse problem (`SpectralMatch`, `gauss_newton`) running on it, and the posterior
         machinery where the prior is written in shape coordinates;
       - acceptance: the N=4/N=5 table in "Where things stand" reproduced, and the rc1 rows that
         refused re-run under both charts from the same starts.
+
+      GO/NO-GO, PROPOSED (fix it before the comparison runs, not after): smoke tests first --
+      chart round trip, `dv/dz` against finite differences, the regular-polygon and rectangle
+      spectra, N=4 `max lam_3/lam_1` to 35/11. Then the same starts (row 13 start 1, row 17
+      start 7, and the rc1 rows that ended on refusals) under `VertexPolygon`, Fourier s = 0 and
+      Fourier s = 1, at the rc1 settings. GO if weighted Fourier ends on refusal or at a corner
+      under 10 degrees in at most half as many runs as `VertexPolygon`, and loses no more than
+      1e-6 in F on any start where both reach a stationary point. Decide by 2026-11-13 so the
+      result runs can still be submitted by about 2026-11-15; `thesis-lock-1` is tagged on
+      `VertexPolygon` regardless, as the fallback, and a GO becomes `thesis-lock-2`.
+
+- [ ] **A NEEDLE IS SPECTRALLY INVISIBLE, SO A RUN HAS NO REASON TO REMOVE ONE** (added
+      2026-11-10). Row 13 start 1 (above) reaches the square by iteration ~16 with F -> 5/2,
+      carrying its two surplus vertices as a needle rather than as flat vertices. Both are the
+      same square to the spectrum: under Dirichlet the eigenfunctions vanish in a thin spike, so
+      the needle's length and tip angle barely move F and its shape derivative is near zero. The
+      flat-vertex form is inside chladni's envelope; the needle form is not, and the run died on
+      refusals there (edge floor not binding: shortest edge 0.22). A `MinInteriorAngle(theta)`
+      constraint with `theta` from chladni's measured envelope would make the needle infeasible
+      and leave the flat form open -- a guarantee in either chart, where the Sobolev weighting is
+      only a bias. Complements the Fourier item; does not replace it. Animations:
+      `$DOUSE_RUNS/relabel_test/row13_original_*.mp4`.
+
+- [ ] **Measure chladni's envelope: certified digits against corner angle and needle aspect,
+      solved COLD** (added 2026-11-10). The feasibility pilot was meant to answer this and was
+      set aside for the lock. Needed to state the thesis's domain of validity as a number, to set
+      `MinInteriorAngle`'s `theta`, and because tracked solves currently accept iterates a cold
+      solve refuses (row 13 iterates 24-28 were accepted by tracking; cold, the same chladni
+      commit refuses them at 1e-7 and 1e-6). Decide whether an iterate a cold solve cannot
+      certify may count toward a result.
 
 - [ ] **A reliable SHAPE DISTANCE between two polygons** (added 2026-11-10). Needed to say
       whether two runs found the same optimum (basin counts, the stability protocol), to score
@@ -576,6 +616,26 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
         reference.
 
 ## Optimizer and infrastructure
+
+- [ ] **Hadamard warnings for the warm-start WINDOWS spam the logs** (added 2026-11-10).
+      `ChladniSolver.predicted_moves` (`douse/chladni_backend.py`) sizes each warm solve's
+      windows from Hadamard blocks of EVERY returned level, headroom levels and joint groups
+      included, through the same full-`prec` `_hadamard` call the objective uses -- so a level
+      the objective never reads raises chladni's `PrecisionWarning` ("good to 4.7e-12, short of
+      prec = 1e-12: a near neighbour") on nearly every iterate of an rc1 log. A window needs a
+      digit or two. Fix on both sides: douse asks for window-only blocks at a loose tolerance
+      (or `report=True` with the warning suppressed and the shortfall kept), chladni gives a way
+      to ask for an estimate without a warning. CAUTION, not every warning is a window's: a
+      relabel-test smoke run warned on `lam_1` itself (1.5e-7 against prec 1e-7), which IS the
+      objective, so keep that one loud and count it.
+
+- [ ] **More evidence for the shape-derivative accuracy claims** (added 2026-11-10). The
+      Hadamard pipeline is stable (graded panels, local coordinates, cluster blocks); the
+      accuracy it reaches near a cluster is what still needs numbers. Closed forms first:
+      rectangles (`d lam/d L` of `pi^2(m^2/L^2 + n^2/H^2)` exactly, including at crossings, where
+      the block's eigenvalues are known), then regular N-gons against high-precision finite
+      differences of cold solves, then the same against the cluster gap, so the floor `resolution`
+      reports can be quoted as a measured function of the gap rather than an estimate.
 
 - [ ] **Every run keeps the spectrum it computed, at every evaluation** (added 2026-11-10).
       Diagnostics now recompute: the rc1 analyses re-solved endpoints cold to get a model or an
