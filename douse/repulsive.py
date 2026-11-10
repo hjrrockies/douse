@@ -34,6 +34,13 @@ _GL_X, _GL_W = np.polynomial.legendre.leggauss(8)
 _GL_X = 0.5 * (_GL_X + 1)
 _GL_W = 0.5 * _GL_W
 
+_NEAR_X, _NEAR_W = np.polynomial.legendre.leggauss(16)
+_NEAR_X = 0.5 * (_NEAR_X + 1)
+_NEAR_W = 0.5 * _NEAR_W
+_NEAR_CUTS = (1.5, 4.0, 9.0)   # panels in the sinh variable: the peak, then its tails
+_NEAR_GROW = 2.0  # panel growth away from the outer integral's breakpoints
+_NEAR = 0.5       # non-adjacent edges closer than this times the shorter edge use _near_pair_w
+
 
 def _chord(gap, P):
     """Intrinsic distance of two boundary points `gap` apart in arclength: the chord of a circle
@@ -83,22 +90,23 @@ def _closest(p, e, q, f):
     """Closest parameters (s, t) in [0,1]^2 and distance of segments p + s e, q + t f; d = 0 if
     they cross."""
     cr = lambda u, v: (u.conjugate() * v).imag
-    den = cr(e, f)
+    w = q - p                     # only differences of vertices: rounding follows the polygon's
+    den = cr(e, f)                # size, not its distance from the origin
     if den != 0:
-        s = cr(q - p, f) / den
-        t = cr(q - p, e) / den
+        s = cr(w, f) / den
+        t = cr(w, e) / den
         if 0 <= s <= 1 and 0 <= t <= 1:
             return s, t, 0.0
 
-    def proj(x, a, g):
-        return float(np.clip(((x - a) * g.conjugate()).real / abs(g) ** 2, 0, 1))
+    def proj(x, g):
+        return float(np.clip((x * g.conjugate()).real / abs(g) ** 2, 0, 1))
     cands = []
     for s in (0.0, 1.0):
-        t = proj(p + s * e, q, f)
-        cands.append((abs(p + s * e - q - t * f), s, t))
+        t = proj(s * e - w, f)
+        cands.append((abs(s * e - w - t * f), s, t))
     for t in (0.0, 1.0):
-        s = proj(q + t * f, p, e)
-        cands.append((abs(p + s * e - q - t * f), s, t))
+        s = proj(w + t * f, e)
+        cands.append((abs(s * e - w - t * f), s, t))
     d, s, t = min(cands)
     return s, t, d
 
@@ -122,19 +130,65 @@ def _graded(L, s0, h, hmin=1e-7):
     return x, w
 
 
+def _edge_frame(z, e, l, i, j, t):
+    """Points of edge j at arclength t, in the frame of edge i (origin at its start, its tangent
+    along the real axis): the coordinate along edge i and the distance from its line."""
+    T = e[i].conjugate() / l[i]
+    w, step = (z[j] - z[i]) * T, e[j] / l[j] * T
+    return w.real + t * step.real, np.abs(w.imag + t * step.imag)
+
+
 def _pair_w(z, e, l, cum, P, i, j, s0, t0, d, a, b, c):
     """Ordered pair (x on edge i, y on edge j), non-adjacent, with the arclength weight."""
     s, ws = _graded(l[i], s0, d)
     t, wt = _graded(l[j], t0, d)
-    x = z[i] + s * e[i]
-    y = z[j] + t * e[j]
-    r = y[None, :] - x[:, None]
-    ar = np.abs(r)
+    f, h = _edge_frame(z, e, l, i, j, t * l[j])
+    ar = np.hypot(f[None, :] - (s * l[i])[:, None], h[None, :])
     gap = np.abs((cum[i] + s * l[i])[:, None] - (cum[j] + t * l[j])[None, :])
     D = _chord(gap, P)
-    T = e[i] / l[i]
-    k = np.abs((T.conjugate() * r).imag) ** a / ar ** b * (D / ar) ** c
+    k = h[None, :] ** a / ar ** b * (D / ar) ** c
     return l[i] * l[j] * np.einsum('i,ij,j', ws, k, wt)
+
+
+def _near_pair_w(z, e, l, cum, P, i, j, d, a, b, c):
+    """Ordered pair (x on edge i, y on edge j) of edges a distance d apart, d small against both.
+
+    `_pair_w` grades toward one closest point, but nearly parallel edges are close along their
+    whole overlap: its nodes then face each other across the gap and it sees d^(a-b-c) instead of
+    the true d^(a-b-c+1). Here x is integrated separately for each y, with nodes clustered at the
+    foot of y (a sinh map of width dist(y, edge i)), so the nearly singular part is resolved at
+    every y. What is left as a function of y only changes quickly within d of the ends of edge j
+    and of the projections of edge i's ends, where the y panels are graded.
+    """
+    U = e[j] / l[j]
+    foot = [((p - z[j]) * U.conjugate()).real for p in (z[i], z[(i + 1) % len(z)])]
+    br = {0.0, l[j]}
+    for t0 in [0.0, l[j]] + [float(np.clip(f, 0, l[j])) for f in foot]:
+        br.add(t0)
+        k = d / 2
+        while k < l[j]:
+            br.update(t for t in (t0 - k, t0 + k) if 0 < t < l[j])
+            k *= _NEAR_GROW
+    br = np.array(sorted(br))
+    lo, hi = br[:-1], br[1:]
+    t = (lo[:, None] + (hi - lo)[:, None] * _NEAR_X[None, :]).ravel()
+    wt = ((hi - lo)[:, None] * _NEAR_W[None, :]).ravel()
+
+    f, h = _edge_frame(z, e, l, i, j, t)
+    f0 = np.clip(f, 0, l[i])
+    dist = np.hypot(f - f0, h)
+    tot = np.zeros(len(t))
+    for side, room in ((-1.0, f0), (1.0, l[i] - f0)):
+        W = np.arcsinh(room / dist)
+        cuts = [np.zeros_like(W)] + [np.minimum(c, W) for c in _NEAR_CUTS] + [W]
+        for lo, hi in zip(cuts[:-1], cuts[1:]):
+            w = lo[:, None] + (hi - lo)[:, None] * _NEAR_X[None, :]
+            off = side * dist[:, None] * np.sinh(w)      # x - foot, never formed by subtraction
+            ws = dist[:, None] * np.cosh(w) * (hi - lo)[:, None] * _NEAR_W[None, :]
+            r = np.hypot((f - f0)[:, None] - off, h[:, None])
+            D = _chord(np.abs(cum[i] + f0[:, None] + off - (cum[j] + t)[:, None]), P)
+            tot += np.sum(ws * h[:, None] ** a / r ** b * (D / r) ** c, axis=1)
+    return wt @ tot
 
 
 def energy(z, a=A_EXP, b=B_EXP, c=C_EXP, parts=False):
@@ -167,8 +221,12 @@ def energy(z, a=A_EXP, b=B_EXP, c=C_EXP, parts=False):
             s0, t0, d = _closest(z[i], e[i], z[j], e[j])
             if d == 0.0:
                 return (np.inf, E_c, np.inf) if parts else np.inf
-            E_r += _pair_w(z, e, l, cum, P, i, j, s0, t0, d, a, b, c)
-            E_r += _pair_w(z, e, l, cum, P, j, i, t0, s0, d, a, b, c)
+            if d < _NEAR * min(l[i], l[j]):
+                E_r += _near_pair_w(z, e, l, cum, P, i, j, d, a, b, c)
+                E_r += _near_pair_w(z, e, l, cum, P, j, i, d, a, b, c)
+            else:
+                E_r += _pair_w(z, e, l, cum, P, i, j, s0, t0, d, a, b, c)
+                E_r += _pair_w(z, e, l, cum, P, j, i, t0, s0, d, a, b, c)
     scale = P ** (b - a - 2)
     E = (E_c + E_r) * scale
     return (E, E_c * scale, E_r * scale) if parts else E
