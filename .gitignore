@@ -160,9 +160,6 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-# uv lock
-uv.lock
-
 # .npz,.npy files
 *.npz
 *.npy

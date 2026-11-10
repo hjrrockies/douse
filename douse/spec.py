@@ -146,10 +146,10 @@ def run_dir(*parts):
     """Where a driver's outputs go by default: `$DOUSE_RUNS/<parts>` when the variable is set,
     else `benchmarks/run/<parts>` (relative, resolved against the douse checkout as before).
 
-    On a workstation `DOUSE_RUNS` points at one directory OUTSIDE every repository
-    (`~/projects/thesis-runs`), so the main checkout, its worktrees and the cluster's rsync all
-    read and write one copy, and removing a worktree removes no results. Left unset (the
-    cluster), paths stay relative and generated sbatch scripts stay portable.  (2026-11-03)"""
+    On every machine `DOUSE_RUNS` points at one directory OUTSIDE every repository (workstation
+    `~/projects/thesis-runs`, cluster `~/projects/thesis/runs`), so checkouts, worktrees and
+    releases all read and write one copy, and removing one removes no results. Left unset, paths
+    stay relative to the checkout.  (2026-11-03, the cluster 2026-11-09)"""
     env = os.environ.get('DOUSE_RUNS')
     if env:
         return str(pathlib.Path(env).expanduser().joinpath(*parts))

@@ -13,6 +13,7 @@ against its v2 value, refusal-streak endings drop, no success claims more than i
 can resolve, and no warm solve dies on a `windows` length.
 """
 import argparse
+import collections
 import dataclasses
 import json
 import pathlib
@@ -46,7 +47,7 @@ def _progress(ev, t0):
     return line
 
 
-def run(index, tau_g, out):
+def run(index, tau_g, out, floor_policy='value_limit'):
     import benchmarks.ratio_multistart as rm
     from douse import spec as spec_mod
     from douse.cluster_opt import maximize_ratio
@@ -56,11 +57,12 @@ def run(index, tau_g, out):
 
     def logged(ev, p0, **kw):
         kw['callback'] = _progress(ev, t0)
-        return maximize_ratio(ev, p0, tau_g=tau_g, **kw)
+        return maximize_ratio(ev, p0, tau_g=tau_g, floor_policy=floor_policy, **kw)
     rm.maximize_ratio = logged
     row = rm.run_one(r['N'], r['k'], r['start'], spec.max_iter, spec.seed0, spec.delta0,
                      prec=spec.prec, backend=spec.backend, spec=spec)
-    row.update(index=index, tau_g=tau_g, v2_fun=r['fun'], v2_kind=r['kind'],
+    row.update(index=index, tau_g=tau_g, floor_policy=floor_policy, v2_fun=r['fun'],
+               v2_kind=r['kind'],
                v2_seconds=r['seconds'], seconds_rerun=round(time.perf_counter() - t0, 1))
     out = pathlib.Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -87,18 +89,23 @@ def _ending(r):
 
 
 def _overclaims(r):
-    """A success whose criticality is above what `cluster_opt._crit_tol` allows at its `eps_g`."""
+    """A success whose criticality is above what `cluster_opt._crit_tol` allows at its `eps_g`, or
+    `_floor_tol` at its `eps_f` for a row that says it passed by that test."""
     eps_g, crit = r.get('eps_g'), r.get('resolution')
     if not r.get('success') or eps_g is None or crit is None or not np.isfinite(eps_g):
         return False
-    return crit > 1.001*min(max(GAIN_TOL, CRIT_FACTOR*eps_g), PLATEAU_MAX - eps_g)
+    tol = min(max(GAIN_TOL, CRIT_FACTOR*eps_g), PLATEAU_MAX - eps_g)
+    if r.get('floor_reason') == 'eps_f_value_limit':
+        tol = max(tol, min(np.sqrt(2*r['eps_f']), PLATEAU_MAX - eps_g))
+    return crit > 1.001*tol
 
 
 def compare(folder):
     new = [json.loads(line) for f in sorted(pathlib.Path(folder).glob('row*.jsonl'))
            for line in open(f) if line.strip()]
     print(f"{'row':>3} {'tau':>6} {'N':>2} {'k':>2} {'st':>2} {'v2':>10} {'now':>10} "
-          f"{'F change':>10} {'eps_g':>8} {'final':>6} {'h now':>6} {'h v2':>6}")
+          f"{'F change':>10} {'eps_g':>8} {'final':>6} {'h now':>6} {'h v2':>6} "
+          f"{'convergence':>23} {'case':>5}")
     losses, collapsed, overclaimed, windows, stalled = [], [], [], [], []
     for r in new:
         end = _ending(r)
@@ -106,7 +113,8 @@ def compare(folder):
         print(f"{r['index']:3d} {r['tau_g']:6.0e} {r['N']:2d} {r['k']:2d} {r['start']:2d} "
               f"{r['v2_kind']:>10} {end:>10} {d:+10.2e} {r.get('eps_g') or np.nan:8.1e} "
               f"{str(r.get('prec_final_reached')):>6} {r.get('seconds_rerun', 0)/3600:6.1f} "
-              f"{r['v2_seconds']/3600:6.1f}")
+              f"{r['v2_seconds']/3600:6.1f} {str(r.get('convergence')):>23} "
+              f"{str((r.get('final_case') or {}).get('row')):>5}")
         if not d >= -LOSS_TOL:
             losses.append((r['index'], r['tau_g'], d))
         if not r.get('success') and (r.get('resolution') or 0.0) > STALL_CRIT:
@@ -124,7 +132,8 @@ def compare(folder):
     print(f"\n{len(new)} rows. collapsed or errored: {collapsed or 'none'}. lost more than "
           f"{LOSS_TOL:g}: {losses or 'none'}. refusal endings: {now} (v2 sample: {v2}). "
           f"successes above the certificate: {overclaimed or 'none'}. windows crashes: "
-          f"{windows or 'none'}. stalled far from stationary: {stalled or 'none'}.")
+          f"{windows or 'none'}. stalled far from stationary: {stalled or 'none'}. convergence: "
+          f"{dict(collections.Counter(str(r.get('convergence')) for r in new))}.")
 
 
 def main(argv=None):
@@ -135,6 +144,7 @@ def main(argv=None):
     p.add_argument('index', type=int)
     p.add_argument('--tau-g', type=float, default=1e-6)
     p.add_argument('--out', required=True)
+    p.add_argument('--floor-policy', default='value_limit')
     p = sub.add_parser('compare')
     p.add_argument('folder')
     args = ap.parse_args(argv)
@@ -142,7 +152,7 @@ def main(argv=None):
         for i, r in enumerate(rows()):
             print(i, r)
     elif args.cmd == 'run':
-        run(args.index, args.tau_g, args.out)
+        run(args.index, args.tau_g, args.out, args.floor_policy)
     else:
         compare(args.folder)
 

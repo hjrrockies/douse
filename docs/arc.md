@@ -8,6 +8,19 @@ Placeholders: `<pid>` your VT PID, `<account>` your ARC allocation, `<cluster>` 
 (e.g. `tinkercliffs1.arc.vt.edu` or `owl1.arc.vt.edu`), `<partition>` (e.g. `normal_q`). Check
 them against ARC's docs or `sacctmgr show assoc user=$USER` once logged in.
 
+## Where things live
+
+```
+~/projects/thesis/{douse,chladni,lappy}   clones to fetch into; no job ever runs from these
+~/projects/thesis/releases/<name>/        the three at exact commits, with their own .venv; jobs run here
+~/projects/thesis/runs/                   $DOUSE_RUNS: ledgers and logs, same subfolders as the workstation's
+```
+
+chladni and lappy are EDITABLE path dependencies, so a `git pull` in a clone changes the code any
+task that has not started yet will import. A release is checked out once and never pulled. Code
+reaches the cluster only through GitHub, results leave only by rsync to the workstation, and
+nothing is edited here. Results stay in home (no purge); `/scratch` deletes files at 90 days.
+
 ## Once per cluster
 
 ```bash
@@ -26,16 +39,13 @@ git clone https://github.com/hjrrockies/lappy.git
 ```
 
 ```bash
-cd ~/projects/thesis/douse && git checkout claude/intelligent-turing-9278ef && uv sync
+mkdir -p ~/projects/thesis/runs && echo 'export DOUSE_RUNS="$HOME/projects/thesis/runs"' >> ~/.bashrc && source ~/.bashrc
 ```
 
 `.python-version` pins Python 3.12 (CI tests 3.11-3.13), and uv downloads it if the cluster
 lacks it. Without the pin uv takes the newest Python it finds, and on a release newer than the
 dependencies' wheels (3.15 on TinkerCliffs, 2026-10-30) it compiles cvxpy's `sparsediffpy`
 from source and fails on BLAS.
-
-chladni is cloned at `main`, which has the opt-in `coarse_bracket` path (chladni PR #20) that
-the v1 specs use. The douse branch is douse PR #2; once it merges, use douse `main`.
 
 To be mailed when a job ends or a task fails (one mail per array, not per task), set the
 address once on the cluster; both job generators read it (`--mail` overrides). It is kept out of
@@ -45,12 +55,33 @@ the specs because the repository is public:
 echo 'export DOUSE_SLURM_MAIL=<pid>@vt.edu' >> ~/.bashrc && source ~/.bashrc
 ```
 
+## A release: one per set of runs
+
+`<name>` is the tag the commits are to carry (`thesis-lock-1`), and `<douse commit>`,
+`<chladni commit>` are full commits on GitHub. `uv.lock` is tracked, so `--frozen` installs what
+was validated:
+
+```bash
+cd ~/projects/thesis && for r in douse chladni lappy; do git -C $r fetch --tags origin; done
+```
+
+```bash
+R=releases/<name>; git -C douse worktree add --detach ../$R/douse <douse commit>; git -C chladni worktree add --detach ../$R/chladni <chladni commit>; git -C lappy worktree add --detach ../$R/lappy HEAD
+```
+
+```bash
+cd ~/projects/thesis/releases/<name>/douse && uv sync --frozen
+```
+
 Then the environment check, on a COMPUTE node (it solves the unit square and checks the LAPACK
 route gsvd4py found; a failed solve here means nothing downstream is worth submitting):
 
 ```bash
-srun -A <account> -p <partition> -t 0:15:00 --mem=2G uv run python -m benchmarks.env_check
+srun -A <account> -p <partition> -t 0:15:00 --mem=2G .venv/bin/python -m benchmarks.env_check
 ```
+
+Every command below runs from that `douse` directory. After a job, keep its accounting with its
+results: `sacct -j <jobid> --format=JobID,State,Elapsed,MaxRSS > "$DOUSE_RUNS/.../sacct.txt"`.
 
 ## The triangle grid: pilot first
 
@@ -67,7 +98,7 @@ uv run python -m benchmarks.family_grid slurm benchmarks/specs/triangle_pilot_v1
 ```
 
 ```bash
-sbatch benchmarks/run/family_grid/triangle_pilot_v1/triangle_pilot_v1.sbatch
+sbatch "$DOUSE_RUNS/family_grid/triangle_pilot_v1/triangle_pilot_v1.sbatch"
 ```
 
 Watch, then pool and plot once tasks finish (both are safe to run on partial results):
@@ -98,27 +129,22 @@ uv run python -m benchmarks.family_grid slurm benchmarks/specs/triangle_pilot_v1
 ```
 
 ```bash
-sbatch benchmarks/run/family_grid/triangle_pilot_v1/repair/triangle_pilot_v1_repair.sbatch
+sbatch "$DOUSE_RUNS/family_grid/triangle_pilot_v1/repair/triangle_pilot_v1_repair.sbatch"
 ```
 
 Bring results home (ledgers are JSONL, a few MB) into the workstation's one results directory,
 `$DOUSE_RUNS` (`~/projects/thesis-runs`, outside every checkout; see its README). Every driver
-reads and writes there when the variable is set; on the cluster it stays unset, so paths there
-are `benchmarks/run/...` inside the checkout and generated sbatch scripts stay portable --
-generate them ON the cluster, since with `DOUSE_RUNS` set the default `--out` is an absolute
-local path:
+reads and writes under `$DOUSE_RUNS` on both machines. Generate sbatch scripts ON the cluster,
+since the default `--out` is an absolute path. One way, and never with `--delete`:
 
 ```bash
-rsync -av <pid>@<cluster>:projects/thesis/douse/benchmarks/run/family_grid/ ~/projects/thesis-runs/family_grid/
+rsync -av <pid>@<cluster>:projects/thesis/runs/ ~/projects/thesis-runs/
 ```
-
-The same for `slurm/` (ratio runs), `inverse/` and `triangle_posterior/`.
 
 ## The triangle posterior (after the grid)
 
 `benchmarks/triangle_posterior.py` does no solves: it interpolates the collected
-`triangle_grid_v1` ledgers, so it needs them in `benchmarks/run/family_grid/triangle_grid_v1/`
-(already there on the cluster that ran the grid). The whole of `triangle_posterior_v1` is
+`triangle_grid_v1` ledgers, so it needs them in `$DOUSE_RUNS/family_grid/triangle_grid_v1/`. The whole of `triangle_posterior_v1` is
 under 1 CPU-h (5454 posteriors, ~0.6 s each); 20 tasks finish in a few minutes. Build the
 surrogate once on the login node (~1 minute), then write the sbatch and submit:
 
@@ -131,7 +157,7 @@ uv run python -m benchmarks.triangle_posterior slurm benchmarks/specs/triangle_p
 ```
 
 ```bash
-sbatch benchmarks/run/triangle_posterior/triangle_posterior_v1/triangle_posterior_v1.sbatch
+sbatch "$DOUSE_RUNS/triangle_posterior/triangle_posterior_v1/triangle_posterior_v1.sbatch"
 ```
 
 ```bash
@@ -143,8 +169,8 @@ measure of the 90% region, the interpolant's cross-validated error) beside the l
 
 ## Notes
 
-- `--runner .venv/bin/python` (the venv `uv sync` built) rather than `uv run`: a hundred tasks
-  starting at once would each re-check the lock on the shared filesystem.
+- `--runner .venv/bin/python` (the venv `uv sync` built) rather than `uv run`, always: a hundred
+  tasks starting at once would each re-check the lock on the shared filesystem.
 - One CPU per task, BLAS threads pinned to 1: each point is one serial solve; a BLAS sizing
   itself from the node oversubscribes it.
 - Cost, M-series Mac, 2026-10-26, eight solves at once: ~5 s for triangles with angles pi/n,
