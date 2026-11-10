@@ -87,7 +87,7 @@ from . import degeneracy as _dg
 from .derivative import cluster_matrices, dlams_dp, partition_levels, whole_clusters
 from .errors import DegenerateSpectrum, TimeBudget
 from .evaluate import ShapeRefusal, SolverRefusal
-from .polygon import VertexPolygon, gauge_vector, is_convex
+from .polygon import FourierPolygon, VertexPolygon, gauge_vector, is_convex
 from .optimize import OptimizeResult
 from .quasi_newton import SR1, ScalarSecant, tr_subproblem
 
@@ -874,7 +874,9 @@ def _degeneracy_move(evaluator, p, F, k, gain_tol=0.0, constraints=None):
                else getattr(evaluator, '_plan_at', None))
     for v in cands:
         try:
-            q = gauge_vector(v, fam.perim, anchor=0)
+            # in the run's own chart: a FourierPolygon keeps the labelling, no gauge to choose
+            q = (fam.from_vertices(v) if isinstance(fam, FourierPolygon)
+                 else gauge_vector(v, fam.perim, anchor=0))
         except (ValueError, TypeError):
             continue
         if not fam.is_valid(q) or (constraints is not None and not constraints.is_feasible(q)):

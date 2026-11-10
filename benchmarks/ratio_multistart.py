@@ -149,7 +149,7 @@ def _sigma(row):
 
 def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_redraws=3,
             prec=1e-10, backend='chladni', spec=None, seed=None, mirror=False, ckpt=None,
-            deadline=None):
+            deadline=None, chart='vertex', s=0.0):
     """One start. A start that cannot be SOLVED AT ALL is redrawn rather than lost.
 
     Measured over the 18-cell grid: **all nine crashed runs died at the start shape**, before a
@@ -170,12 +170,15 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
     A SEEDED START (`seed`, complex vertices from the spec's `seeds`) is never redrawn: the seed
     is the point of the start. With `mirror` the seed is symmetrized about its best mirror line
     and the run stays in `MirrorPolygon`; see `run_mirror`.
+
+    `chart='fourier'` runs the same start in `FourierPolygon` coordinates with Sobolev exponent
+    `s` (the go/no-go trial, `docs/todo.md`); the row's `x` is then in that chart.
     """
     spec_mod.code_shas()                  # now, not when the row is written days later
     if mirror:
         return run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec, ckpt,
                           deadline)
-    fam = runs.family_for(N, PERIM)
+    fam = runs.family_for(N, PERIM, chart=chart, s=s)
     # `Convexity` is a RESTRICTION and it is meant to be: it asks the convex question. The
     # answer belongs in its own ledger -- see `--convex` in `main`.
     cons = runs.constraints_for(fam, convex)
@@ -191,7 +194,8 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
         # optimized. Its own endpoint tensions are 7.0e-13 to 3.3e-12.
         ev = runs.make_evaluator(N, k, n_eigs=n_eigs, fam=fam, prec=prec, backend=backend)
         idx = i if attempt == 0 else i + 1000*attempt
-        p0 = param_vector(draw(N, idx, seed0) if seed is None else seed, PERIM)
+        v0 = draw(N, idx, seed0) if seed is None else seed
+        p0 = param_vector(v0, PERIM) if chart == 'vertex' else fam.from_vertices(v0)
         try:
             with _quiet():
                 ev.eigenvalues(p0)

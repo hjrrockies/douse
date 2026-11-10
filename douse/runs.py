@@ -11,7 +11,7 @@ import time
 import numpy as np
 
 from .constraints import ClosingBudget, ConstraintSet, Convexity, MinEdgeLength
-from .polygon import VertexPolygon
+from .polygon import FourierPolygon, VertexPolygon
 from .sampling import random_convex
 
 __all__ = ['PERIM', 'regular', 'perturbed', 'start_shape', 'convex_start_shape',
@@ -110,14 +110,22 @@ def slurm_seconds(limit):
     return 86400*int(days or 0) + 3600*h + 60*m + s
 
 
-def family_for(N, perim=PERIM):
-    return VertexPolygon(N, perim=perim)
+def family_for(N, perim=PERIM, chart='vertex', s=0.0):
+    """`chart='vertex'`: `VertexPolygon`, the default. `chart='fourier'`: `FourierPolygon` with
+    Sobolev exponent `s` (the go/no-go trial of `docs/todo.md`)."""
+    if chart == 'vertex':
+        return VertexPolygon(N, perim=perim)
+    if chart == 'fourier':
+        return FourierPolygon(N, perim=perim, s=s)
+    raise ValueError(f"chart must be 'vertex' or 'fourier', got {chart!r}")
 
 
 def constraints_for(fam, convex=False):
     """The grid's constraints: the edge floor (a gauge fixing) and the closing budget, plus
-    convexity for a convex sweep (a restriction, which is the point of that sweep)."""
-    cons = [MinEdgeLength(fam), ClosingBudget(fam)]
+    convexity for a convex sweep (a restriction, which is the point of that sweep). The closing
+    budget is `VertexPolygon`'s alone: it guards the implicit solve for `vertices[0]`, which no
+    other chart has."""
+    cons = [MinEdgeLength(fam)] + ([ClosingBudget(fam)] if isinstance(fam, VertexPolygon) else [])
     if convex:
         cons.append(Convexity(fam))
     return ConstraintSet(*cons)

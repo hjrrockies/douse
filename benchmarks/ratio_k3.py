@@ -1,6 +1,10 @@
 """`max lam_3/lam_1` over N-gons: the convex branch, and what it finds.
 
     uv run python -m benchmarks.ratio_k3 [--N 4 5] [--max-iter 250] [--no-constraints]
+                                         [--chart fourier --s 1]
+
+`--chart fourier` runs the same starts in `FourierPolygon` coordinates (`--s`, the Sobolev
+exponent): the 35/11 smoke test of the FourierPolygon go/no-go (`docs/todo.md`).
 
 WHY k=3 IS THE INTERESTING ONE. At a regular N-gon `lam_2` is the LOWEST member of its double and
 `lam_3` is the HIGHEST, so `d(lam_3)` is `lam_max` of an affine matrix function -- convex, and the
@@ -46,9 +50,9 @@ import warnings
 
 import numpy as np
 
-from douse import (ClosingBudget, ConstraintSet, MinEdgeLength, SpectrumEvaluator,
-                   VertexPolygon, param_vector)
+from douse import SpectrumEvaluator, param_vector
 from douse import degeneracy as dg
+from douse import runs
 from douse.cluster_opt import maximize_ratio
 
 PERIM = 4.0
@@ -69,15 +73,18 @@ def start_shape(N, jitter, seed):
 STARTS = (('from_regular', 0.02, 3), ('from_generic', 0.10, 11))
 
 
-def run_one(N, label, jitter, seed, max_iter=250, use_constraints=True, replan_tol=1e-9):
-    fam = VertexPolygon(N, perim=PERIM)
-    cons = ConstraintSet(MinEdgeLength(fam), ClosingBudget(fam)) if use_constraints else None
+def run_one(N, label, jitter, seed, max_iter=250, use_constraints=True, replan_tol=1e-9,
+            chart='vertex', s=0.0):
+    fam = runs.family_for(N, PERIM, chart=chart, s=s)
+    cons = runs.constraints_for(fam) if use_constraints else None
     ev = SpectrumEvaluator(fam, n_eigs=4, warn_gap=0.0, degenerate_tol=0.0,
                            lam_max_window=8, replan_tol=replan_tol)
     t0 = time.perf_counter()
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        res = maximize_ratio(ev, param_vector(start_shape(N, jitter, seed), PERIM), k=2,
+        v0 = start_shape(N, jitter, seed)
+        p0 = param_vector(v0, PERIM) if chart == 'vertex' else fam.from_vertices(v0)
+        res = maximize_ratio(ev, p0, k=2,
                              max_iter=max_iter, constraints=cons)
     v = fam.vertices(res.x)
     rep = dg.report(v)
@@ -90,6 +97,8 @@ def main():
     ap.add_argument('--max-iter', type=int, default=250)
     ap.add_argument('--no-constraints', action='store_true')
     ap.add_argument('--replan-tol', type=float, default=1e-9)
+    ap.add_argument('--chart', choices=['vertex', 'fourier'], default='vertex')
+    ap.add_argument('--s', type=float, default=0.0)
     args = ap.parse_args()
 
     os.makedirs(OUT, exist_ok=True)
@@ -97,8 +106,10 @@ def main():
     for N in args.N:
         for label, jitter, seed in STARTS:
             res, rep, v, secs = run_one(N, label, jitter, seed, args.max_iter,
-                                        not args.no_constraints, args.replan_tol)
-            print(f'N={N} k=3 {label}: F = {res.fun:.12f}   (35/11 {res.fun-EXACT_QUAD:+.3e})')
+                                        not args.no_constraints, args.replan_tol,
+                                        args.chart, args.s)
+            tag = '' if args.chart == 'vertex' else f'_fourier_s{args.s:g}'
+            print(f'N={N} k=3 {label}{tag}: F = {res.fun:.12f}   (35/11 {res.fun-EXACT_QUAD:+.3e})')
             print(f'    nit={res.nit}/{args.max_iter} {secs:.0f}s  moves={res.n_degeneracy_moves} '
                   f'replans={res.n_replans}  worst_sigma={res.worst_sigma:.1e}')
             print(f'    lams   = {np.array2string(np.asarray(res.lams), precision=8)}')
@@ -112,7 +123,7 @@ def main():
                            worst_sigma=float(res.worst_sigma), n_replans=int(res.n_replans),
                            n_degeneracy_moves=int(res.n_degeneracy_moves),
                            message=str(res.message), seconds=round(secs, 1)),
-                      open(os.path.join(OUT, f'N{N}_{label}.json'), 'w'))
+                      open(os.path.join(OUT, f'N{N}_{label}{tag}.json'), 'w'))
 
 
 if __name__ == '__main__':
