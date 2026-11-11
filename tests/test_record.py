@@ -17,7 +17,7 @@ from douse import param_vector
 from douse.cluster_opt import maximize_ratio
 from douse.record import RunRecorder, read
 
-from tests.test_cluster_opt_trace import FakeRectEvaluator, _jsonable
+from test_cluster_opt_trace import FakeRectEvaluator, _jsonable
 
 
 def _fake_run(recorder=None, max_iter=30):
