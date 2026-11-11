@@ -615,6 +615,55 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
         (regular N-gon, rectangles, isosceles); small distances against a high-precision
         reference.
 
+- [ ] **Post-hoc local optimality analysis for ALL endpoint polygons, non-global optima
+      included** (added 2026-11-11). The goal is to say, for every shape a run ends at, whether
+      ANY polygonal perturbation -- not only moves of its own N vertices -- increases the ratio.
+      It is also how to answer the stall question: the failing runs drift toward a regular
+      M-gon, M < N, carrying the surplus vertices as an "inaudible" needle or notch (row 13: a
+      square plus a needle; row 18, in all three charts of the go/no-go: a pentagon plus a
+      268-degree notch; row 16, Fourier s=0: a near-rectangle with a 280-degree notch on edges
+      0.18 and 0.07). Either the M-gon is a genuine local maximizer among N-gons, or the drift is
+      an artifact of the chart plus the feature's near-zero shape derivative.
+      Why it can be genuine. F = lam_{k+1}/lam_1 with lam_1 simple, and Hadamard
+      `lam' = -int |d_n u|^2 V_n`. Insert a flat vertex at boundary point s and push it by a bump
+      W >= 0, outward or inward:
+      - if lam_{k+1} is SIMPLE: dF is proportional to +-g(s), with
+        `g = F |d_n u_1|^2 - |d_n u_{k+1}|^2`. N-gon stationarity makes g orthogonal to each
+        edge's linear velocities, but not zero pointwise. So a stationary N-gon with a simple
+        eigenvalue at the top of the ratio generically HAS an increasing polygonal perturbation:
+        add a vertex where g != 0;
+      - if lam_{k+1} is in a CLUSTER (regular polygons: lam_2 = lam_3 by symmetry), F is a kink.
+        For a point-like bump the cluster matrix `M(s) = (d_n U(s))(d_n U(s))^T` has rank 1. Inward
+        (a notch), the lower branch does not move at first order while lam_1 rises, so F
+        DECREASES wherever the notch is. Outward, dF is proportional to
+        `F |d_n u_1(s)|^2 - tr M(s)`. Inserted vertices give no increasing direction at first
+        order iff `rho(s) = tr M(s) / (F |d_n u_1(s)|^2) >= 1` along every edge. tr M is
+        basis-free over the cluster.
+      This also explains why a notch is never removed: it lowers F, but a feature of size delta
+      moves the eigenvalues by about `delta^2 |d_n u|^2`, so the force shrinking it is about
+      delta and vanishes as the notch shrinks. Chladni refuses the notch's corners before it
+      closes.
+      Done means, per endpoint (ledger rows and the go/no-go traces):
+      - within N-gons: the first-order certificate the run already reports (`final_case`,
+        criticality), plus a second-order check where first order is degenerate;
+      - inserted vertices: rho(s) for a cluster, or g(s) for a simple top eigenvalue, sampled
+        along every edge from chladni's Cauchy data. Report the minimum rho, or the maximum |g|,
+        and where it occurs, with the predicted first-order gain;
+      - perturbations at existing corners (cutting a corner, a vertex inserted next to one), where
+        every `d_n u -> 0` and the first order vanishes: governed by the corner singular
+        coefficients, so they need their own test;
+      - each prediction checked by a direct solve: the inserted vertex pushed +-eps at the worst s,
+        F against the formula's slope;
+      - a verdict per endpoint: a local max among ALL polygons, or not, with the increasing
+        direction named.
+      First, cheap, on easy shapes: rho(s) on the regular square and pentagon. rho > 1 along the
+      edges would make regular M-gons kink-type local maximizers among N-gons, and the thesis
+      could say so. In that case the needles and notches are an unconstrained chart's route to
+      them, and an angle constraint lands the run on the flat-vertex form of the same optimum.
+      Accuracy caveat: needs `d_n u` POINTWISE on the boundary, which is the quantity
+      `HadamardReport.attained` only estimates (see "More evidence for the shape-derivative
+      accuracy claims").
+
 ## Optimizer and infrastructure
 
 - [ ] **Hadamard warnings for the warm-start WINDOWS spam the logs** (added 2026-11-10).
