@@ -431,6 +431,19 @@ since been generalized to any m, and §6.1's LMI form is superseded (see below).
       raw N=12 convex draws violate it, i.e. are infeasible before the run begins) and
       `min_interior_deg = 15`, clear of the `sharp_ref/alpha` regime where a corner's block
       shrinks toward `M = 1`.
+- [x] **`AngleBounds(family, min_deg, max_deg)`: interior-angle bounds, OFF by default
+      (2026-11-11).** The `MinInteriorAngle` the needle item below asks for, plus the reflex side
+      for notches. Either side may be None; `max_deg = 180` is `Convexity(margin=0)`. Plumbed as
+      `runs.constraints_for(..., angle_bounds=, l_min=)`, `run_one(angle_bounds=, l_min=)` and
+      the spec fields `angle_min_deg`, `angle_max_deg`, `edge_min` (dropped from the hash when
+      None, so no existing spec's identity moved). With either set, a start outside the bounds is
+      redrawn on the record (a seeded one raises) and the row carries `angle_bounds`, `l_min` and
+      `active_constraints` at the endpoint, so a constrained optimum is never read as an
+      unconstrained one. With both unset the run is byte-for-byte what it was (a real run's full
+      trace diffed against the previous commit). The trial is `$DOUSE_RUNS/bounds_test/` at
+      25 to 250 degrees, provisional until the envelope item below sets them: 25 because the best
+      v1/v2 N=3 `lam_3/lam_1` triangle has a 28.1 degree corner and every refused endpoint had one
+      of 14 to 24.5; 250 because refused notches were 255 to 285 and no best optimum exceeds 223.5.
 - [ ] **Reentrant corners are IN SCOPE for `lappy`**, and eventually for the inverse problem, so
       the convex mode is a second question rather than a retreat from the first. The measured
       failure is at ~280 degrees; the envelope probe that maps certified digits against reflex

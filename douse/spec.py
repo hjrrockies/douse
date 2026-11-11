@@ -60,6 +60,11 @@ class RunSpec:
     perim: float = 4.0
     seeds: str = ''
     notes: str = ''
+    # OPTIONAL RESTRICTIONS (2026-11-11): interior-angle bounds in degrees (`AngleBounds`) and an
+    # edge floor overriding `perim/(10 N)`. None is off; a spec without them hashes as before.
+    angle_min_deg: object = None
+    angle_max_deg: object = None
+    edge_min: object = None
     # WHERE IT RUNS, NOT WHAT IS RUN: Slurm resources per task for `benchmarks/slurm.py`
     # (`slurm_mem = "4G"`, `slurm_time = "24:00:00"`, partition and account as ARC names them).
     # Left out of `content()` and so of the hash: the same recipe given more memory is the same
@@ -88,6 +93,13 @@ class RunSpec:
                 raise ValueError(f"{key} must be a string as sbatch takes it, got {v!r}")
 
     @property
+    def angle_bounds(self):
+        """`(min_deg, max_deg)` for `runs.constraints_for`, or None when neither is set."""
+        if self.angle_min_deg is None and self.angle_max_deg is None:
+            return None
+        return (self.angle_min_deg, self.angle_max_deg)
+
+    @property
     def convex(self):
         return self.family == 'convex'
 
@@ -100,6 +112,9 @@ class RunSpec:
         d['cells'] = [list(c) for c in self.cells]
         if d['prec_final'] is None:
             d.pop('prec_final')        # so a spec without it hashes as it did before it existed
+        for key in ('angle_min_deg', 'angle_max_deg', 'edge_min'):
+            if d[key] is None:
+                d.pop(key)             # likewise for the optional restrictions
         if not self.seeds:
             d.pop('seeds')             # so a spec without seeds hashes as it did before they existed
         else:

@@ -45,7 +45,8 @@ are ALREADY flat is exact, and `degeneracy.canonicalize` does that.
 """
 import numpy as np
 
-__all__ = ['Constraint', 'ConstraintSet', 'MinEdgeLength', 'ClosingBudget', 'Convexity']
+__all__ = ['Constraint', 'ConstraintSet', 'MinEdgeLength', 'ClosingBudget', 'Convexity',
+           'AngleBounds']
 
 
 class Constraint:
@@ -165,29 +166,104 @@ class Convexity(Constraint):
         return self.family.n
 
     def _on_vertices(self, vertices):
-        v = np.asarray(vertices, dtype=complex)
-        N = len(v)
-        a = v - np.roll(v, 1)                           # incoming edge at vertex k
-        b = np.roll(v, -1) - v                          # outgoing edge at vertex k
-        if np.any(np.abs(a) == 0):
-            raise ValueError('polygon has a zero-length edge; the turning angle and its gradient '
-                             'are undefined there. `MinEdgeLength` exists to keep you away.')
-        turn = np.angle(b/a)
-
-        # d angle(a)/d v_k = (-a_y, a_x)/|a|^2, and turn = angle(b) - angle(a), so the three
-        # vertices the angle at k depends on pick up the two terms with these signs.
-        ga = np.stack([-a.imag, a.real])/np.abs(a)**2   # (2, N), d angle(a_k)/d v_k
-        gb = np.stack([-b.imag, b.real])/np.abs(b)**2   # (2, N), d angle(b_k)/d v_{k+1}
-
-        dc = np.zeros((N, 2*N))
-        k = np.arange(N)
-        dc[k, (k - 1) % N] = ga[0]                      # -d/dv_{k-1} of -angle(a)
-        dc[k, N + (k - 1) % N] = ga[1]
-        dc[k, k] = -gb[0] - ga[0]
-        dc[k, N + k] = -gb[1] - ga[1]
-        dc[k, (k + 1) % N] = gb[0]
-        dc[k, N + (k + 1) % N] = gb[1]
+        turn, dc = _turning_angles(vertices)
         return turn - self.margin, dc
+
+
+class AngleBounds(Constraint):
+    """`min_deg <= interior angle <= max_deg` at every vertex. A RESTRICTION, like `Convexity`.
+
+    WHY (2026-11-11). Every refused run of the chart go/no-go (ARC job 8601223) and of validation
+    rc1 ended at a corner chladni could not solve to `prec = 1e-9` from that neighbourhood: a
+    spike of 14 to 25 degrees, or a notch with a reflex corner of 245 to 285 degrees on short
+    edges. Both ends sit INSIDE the lock-in box's claimed envelope (>= ~10 deg, <= ~300 deg), so a
+    bound that keeps runs solvable is tighter than the box, and it removes domains: an optimum
+    with a corner past it is unreachable, and the constrained run reports the best domain inside.
+    Hence off by default, reported when active at an endpoint (`run_one`'s `active_constraints`),
+    and its thresholds are inputs rather than constants -- they belong to chladni's measured
+    envelope, not to this module.
+
+    Either side may be None (that side unbounded). The rows are `turn - (pi - max)` (the reflex
+    side) then `(pi - min) - turn` (the sharp side), `N` each, so row `i` and row `N + i` are
+    vertex `i`'s two sides; only the sides asked for are present. Assumes a counter-clockwise
+    polygon, as every chart here produces. `max_deg = 180` is `Convexity(margin=0)`.
+
+    The turning angle wraps at `+-pi` (an interior angle of 0 or 360 degrees), so both bounds
+    must stay inside `(0, 360)`: the gradient is exact everywhere a bound can be active.
+    """
+
+    def __init__(self, family, min_deg=None, max_deg=None):
+        super().__init__(family)
+        if min_deg is None and max_deg is None:
+            raise ValueError('AngleBounds needs min_deg, max_deg or both')
+        self.min_deg = None if min_deg is None else float(min_deg)
+        self.max_deg = None if max_deg is None else float(max_deg)
+        for name, val in (('min_deg', self.min_deg), ('max_deg', self.max_deg)):
+            if val is not None and not 0.0 < val < 360.0:
+                raise ValueError(f'{name} must lie in (0, 360), got {val}')
+        if self.min_deg is not None and self.max_deg is not None and self.min_deg >= self.max_deg:
+            raise ValueError(f'min_deg={self.min_deg:g} must be below max_deg={self.max_deg:g}')
+        # The interior angles of a simple N-gon sum to (N - 2)*180.
+        n, total = family.n, (family.n - 2)*180.0
+        if self.min_deg is not None and n*self.min_deg >= total:
+            raise ValueError(f'min_deg={self.min_deg:g} admits no {n}-gon: its angles sum to '
+                             f'{total:g} degrees')
+        if self.max_deg is not None and n*self.max_deg <= total:
+            raise ValueError(f'max_deg={self.max_deg:g} admits no {n}-gon: its angles sum to '
+                             f'{total:g} degrees')
+
+    def __repr__(self):
+        return f'AngleBounds(min_deg={self.min_deg}, max_deg={self.max_deg})'
+
+    @property
+    def size(self):
+        return self.family.n*((self.min_deg is not None) + (self.max_deg is not None))
+
+    def _on_vertices(self, vertices):
+        turn, dturn = _turning_angles(vertices)
+        c, dc = [], []
+        if self.max_deg is not None:                  # interior <= max  <=>  turn >= pi - max
+            c.append(turn - (np.pi - np.radians(self.max_deg)))
+            dc.append(dturn)
+        if self.min_deg is not None:                  # interior >= min  <=>  turn <= pi - min
+            c.append((np.pi - np.radians(self.min_deg)) - turn)
+            dc.append(-dturn)
+        return np.concatenate(c), np.vstack(dc)
+
+    def describe(self, i):
+        """`(vertex, side)` of row `i`, side 'max' or 'min'."""
+        n = self.family.n
+        sides = [s for s, v in (('max', self.max_deg), ('min', self.min_deg)) if v is not None]
+        return i % n, sides[i//n]
+
+
+def _turning_angles(vertices):
+    """`(turn, d turn/dv)`: the turning angle at every vertex, in `(-pi, pi]`, and its gradient in
+    the `[x_0..x_{N-1}, y_0..y_{N-1}]` order. For a counter-clockwise polygon the interior angle
+    is `pi - turn`. Shared by `Convexity` and `AngleBounds`."""
+    v = np.asarray(vertices, dtype=complex)
+    N = len(v)
+    a = v - np.roll(v, 1)                           # incoming edge at vertex k
+    b = np.roll(v, -1) - v                          # outgoing edge at vertex k
+    if np.any(np.abs(a) == 0):
+        raise ValueError('polygon has a zero-length edge; the turning angle and its gradient '
+                         'are undefined there. `MinEdgeLength` exists to keep you away.')
+    turn = np.angle(b/a)
+
+    # d angle(a)/d v_k = (-a_y, a_x)/|a|^2, and turn = angle(b) - angle(a), so the three
+    # vertices the angle at k depends on pick up the two terms with these signs.
+    ga = np.stack([-a.imag, a.real])/np.abs(a)**2   # (2, N), d angle(a_k)/d v_k
+    gb = np.stack([-b.imag, b.real])/np.abs(b)**2   # (2, N), d angle(b_k)/d v_{k+1}
+
+    dc = np.zeros((N, 2*N))
+    k = np.arange(N)
+    dc[k, (k - 1) % N] = ga[0]                      # -d/dv_{k-1} of -angle(a)
+    dc[k, N + (k - 1) % N] = ga[1]
+    dc[k, k] = -gb[0] - ga[0]
+    dc[k, N + k] = -gb[1] - ga[1]
+    dc[k, (k + 1) % N] = gb[0]
+    dc[k, N + (k + 1) % N] = gb[1]
+    return turn, dc
 
 
 class ClosingBudget(Constraint):

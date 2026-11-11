@@ -10,12 +10,12 @@ import time
 
 import numpy as np
 
-from .constraints import ClosingBudget, ConstraintSet, Convexity, MinEdgeLength
+from .constraints import AngleBounds, ClosingBudget, ConstraintSet, Convexity, MinEdgeLength
 from .polygon import FourierPolygon, VertexPolygon
 from .sampling import random_convex
 
 __all__ = ['PERIM', 'regular', 'perturbed', 'start_shape', 'convex_start_shape',
-           'constraints_for', 'make_evaluator', 'family_for']
+           'constraints_for', 'active_constraints', 'make_evaluator', 'family_for']
 
 PERIM = 4.0
 
@@ -120,15 +120,36 @@ def family_for(N, perim=PERIM, chart='vertex', s=0.0):
     raise ValueError(f"chart must be 'vertex' or 'fourier', got {chart!r}")
 
 
-def constraints_for(fam, convex=False):
+def constraints_for(fam, convex=False, angle_bounds=None, l_min=None):
     """The grid's constraints: the edge floor (a gauge fixing) and the closing budget, plus
     convexity for a convex sweep (a restriction, which is the point of that sweep). The closing
     budget is `VertexPolygon`'s alone: it guards the implicit solve for `vertices[0]`, which no
-    other chart has."""
-    cons = [MinEdgeLength(fam)] + ([ClosingBudget(fam)] if isinstance(fam, VertexPolygon) else [])
+    other chart has.
+
+    `angle_bounds = (min_deg, max_deg)`, either side None, adds `AngleBounds` -- a restriction,
+    off by default. `l_min` overrides the edge floor's default `perim/(10 n)`. With both None the
+    set is exactly what it always was."""
+    edge = MinEdgeLength(fam) if l_min is None else MinEdgeLength(fam, l_min=l_min)
+    cons = [edge] + ([ClosingBudget(fam)] if isinstance(fam, VertexPolygon) else [])
     if convex:
         cons.append(Convexity(fam))
+    if angle_bounds is not None and any(b is not None for b in angle_bounds):
+        cons.append(AngleBounds(fam, *angle_bounds))
     return ConstraintSet(*cons)
+
+
+def active_constraints(cons, p, tol=1e-6):
+    """Which constraints hold with equality at `p` (value below `tol`): a list of
+    `{name, index, value}` and, for `AngleBounds`, the vertex and side. What a row reports so a
+    constrained optimum is never read as an unconstrained one."""
+    out, values = [], [c.value(p) for c in cons]
+    for c, val in zip(cons, values):
+        for i in np.flatnonzero(val < tol):
+            entry = dict(name=type(c).__name__, index=int(i), value=float(val[i]))
+            if isinstance(c, AngleBounds):
+                entry['vertex'], entry['side'] = c.describe(int(i))
+            out.append(entry)
+    return out
 
 
 def make_evaluator(N, k, *, n_eigs=None, prec=1e-10, backend='chladni', perim=PERIM,

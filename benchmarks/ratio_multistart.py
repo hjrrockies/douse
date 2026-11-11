@@ -149,7 +149,7 @@ def _sigma(row):
 
 def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_redraws=3,
             prec=1e-10, backend='chladni', spec=None, seed=None, mirror=False, ckpt=None,
-            deadline=None, chart='vertex', s=0.0):
+            deadline=None, chart='vertex', s=0.0, angle_bounds=None, l_min=None):
     """One start. A start that cannot be SOLVED AT ALL is redrawn rather than lost.
 
     Measured over the 18-cell grid: **all nine crashed runs died at the start shape**, before a
@@ -173,6 +173,13 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
 
     `chart='fourier'` runs the same start in `FourierPolygon` coordinates with Sobolev exponent
     `s` (the go/no-go trial, `docs/todo.md`); the row's `x` is then in that chart.
+
+    `angle_bounds = (min_deg, max_deg)` adds `AngleBounds`, and `l_min` raises the edge floor
+    (`runs.constraints_for`); both default to the spec's (`RunSpec.angle_bounds`, `edge_min`),
+    which default to None, and with both None the run is exactly what it always was. With either
+    set, a start outside the constraints is redrawn like an unsolvable one, recorded in
+    `redraws` (a seeded start raises instead), and the row reports them, with
+    `active_constraints` at the endpoint.
     """
     spec_mod.code_shas()                  # now, not when the row is written days later
     if mirror:
@@ -181,7 +188,12 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
     fam = runs.family_for(N, PERIM, chart=chart, s=s)
     # `Convexity` is a RESTRICTION and it is meant to be: it asks the convex question. The
     # answer belongs in its own ledger -- see `--convex` in `main`.
-    cons = runs.constraints_for(fam, convex)
+    if angle_bounds is None and spec is not None:
+        angle_bounds = spec.angle_bounds
+    if l_min is None and spec is not None:
+        l_min = spec.edge_min
+    restricted = angle_bounds is not None or l_min is not None
+    cons = runs.constraints_for(fam, convex, angle_bounds=angle_bounds, l_min=l_min)
     draw = convex_start_shape if convex else start_shape
     redraws = []
     for attempt in range(max_redraws + 1 if seed is None else 1):
@@ -196,6 +208,17 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
         idx = i if attempt == 0 else i + 1000*attempt
         v0 = draw(N, idx, seed0) if seed is None else seed
         p0 = param_vector(v0, PERIM) if chart == 'vertex' else fam.from_vertices(v0)
+        if restricted and not cons.is_feasible(p0):
+            # Checked only under the optional bounds, so a default run draws what it always drew.
+            i_w, c_w = cons.worst(p0)
+            if seed is not None:
+                raise ValueError(f'seeded start violates {cons!r}: row {i_w} at {c_w:.3g}')
+            v = fam.vertices(p0)
+            redraws.append(dict(start_index=idx, error=f'infeasible start: row {i_w} at {c_w:.3g}',
+                                angles=[float(t) for t in np.sort(np.degrees(
+                                    dg.interior_angles(v)))],
+                                edges=[float(t) for t in np.sort(dg.edge_lengths(v))]))
+            continue
         try:
             with _quiet():
                 ev.eigenvalues(p0)
@@ -207,6 +230,8 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
                                     dg.interior_angles(v)))],
                                 edges=[float(t) for t in np.sort(dg.edge_lengths(v))]))
             ev.reset_continuation()
+    if restricted and not cons.is_feasible(p0):
+        raise ValueError(f'no feasible start for {cons!r} in {max_redraws + 1} draws: {redraws}')
     t0 = time.perf_counter()
     p0, delta0, max_iter, on_iter = _resume(ckpt, ev, p0, delta0, max_iter)
     try:
@@ -242,7 +267,10 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
         seconds=round(time.perf_counter() - t0, 1),
         edges=[float(t) for t in np.sort(dg.edge_lengths(v))],
         angles=[float(t) for t in np.sort(np.degrees(dg.interior_angles(v)))],
-        deficit_tol=float(spectral_guard.DEFICIT_TOL), **spec_mod.provenance(ev, spec))
+        deficit_tol=float(spectral_guard.DEFICIT_TOL), **spec_mod.provenance(ev, spec),
+        **(dict(angle_bounds=(None if angle_bounds is None else list(angle_bounds)),
+                l_min=(None if l_min is None else float(l_min)),
+                active_constraints=runs.active_constraints(cons, res.x)) if restricted else {}))
 
 
 def _resume(ckpt, ev, p0, delta0, max_iter):
