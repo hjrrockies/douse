@@ -988,6 +988,7 @@ class _Opts:
     crit_factor: float = 10.0
     deadline: object = None               # `time.time()` past which the run raises `TimeBudget`
     floor_policy: str = 'value_limit'     # what a run does at the accuracy floor: `_floor_stop`
+    recorder: object = None               # a `douse.record.RunRecorder`: reads only
 
 
 FLOOR_REJECTIONS = 3
@@ -1204,6 +1205,8 @@ def _build_model(st, o, ev, tally):
         if 0 < st.model['j'] < st.model['m'] - 1:
             st.n_interior_steps += 1
     st.lin = None if o.constraints is None else o.constraints(st.p)
+    if o.recorder is not None:
+        o.recorder.model_built(st)
     return Outcome.CONTINUE
 
 
@@ -2000,7 +2003,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
                    quasi_newton=True, max_unresolved_streak=5, discontinuity_halvings=4,
                    discontinuity_ratio=2.0, sigma_abort=1e-6, sigma_abort_streak=3,
                    window_factor=2.5, window_floor=1e-9, tau_g=1e-6, prec_final=None,
-                   crit_factor=10.0, deadline=None, floor_policy='value_limit'):
+                   crit_factor=10.0, deadline=None, floor_policy='value_limit', recorder=None):
     """Trust-region ascent on `lam_k/lam_1`, valid through a degeneracy.
 
     `evaluator` must be a `SpectrumEvaluator` with `degenerate_tol=0` -- the guard that normally
@@ -2084,6 +2087,11 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
     Stops when the model's best FIRST-ORDER gain per unit radius falls below `gain_tol`, OR when
     that quantity stops depending on the radius at all -- see `plateau_rtol`.
 
+    `recorder`, a `douse.record.RunRecorder`, writes one line per iteration -- the model (`g1`,
+    `Ms`, `Lam`), the step, `rho`, criticality against `eps_f` and `eps_g`, the geometry -- and
+    the result. It only reads: the run is the same with or without it. Attach the same recorder
+    to the evaluator (`SpectrumEvaluator.recorder`) for the evaluations, solves and plans.
+
     `floor_policy` is what a run does when `F` can no longer judge a step. 'value_limit' (default)
     ends there and also accepts a criticality `F`'s accuracy cannot improve on (`_floor_tol`).
     'accept_steps' keeps the strict certificate and takes up to `MAX_FLOOR_STEPS` more steps on the
@@ -2147,7 +2155,7 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
               sigma_abort_streak=sigma_abort_streak, fam=evaluator.family,
               window_factor=float(window_factor), window_floor=float(window_floor),
               tau_g=tau_g, prec_final=prec_final, crit_factor=float(crit_factor),
-              deadline=deadline, floor_policy=floor_policy)
+              deadline=deadline, floor_policy=floor_policy, recorder=recorder)
     p = np.array(p0, dtype=float)
     tally = dict(n=0, n_hadamard_short=0, seen=set())   # warnings in the loop: `_watch_warnings`
     with _watch_warnings(tally):
@@ -2166,13 +2174,19 @@ def maximize_ratio(evaluator, p0, k=1, delta0=0.05, delta_max=0.5, eps_rel='auto
             if o.deadline is not None and time.time() >= o.deadline:
                 raise TimeBudget(f'deadline reached at iteration {it}')
             st.begin_iteration(it)
+            delta_in = st.delta
             out = Outcome.CONTINUE
             for stage in _STAGES:
                 out = stage(st, o, evaluator, tally)
                 if out is not Outcome.CONTINUE:
                     break
+            if recorder is not None:
+                recorder.iteration(st, o, evaluator, out, delta_in)
             if out is Outcome.STOP:
                 break
     _close_ending(st)
     lams_tracked, F_tracked, verified = _verify_final(st, o, evaluator, tally)
-    return _result(st, o, evaluator, tally, lams_tracked, F_tracked, verified)
+    res = _result(st, o, evaluator, tally, lams_tracked, F_tracked, verified)
+    if recorder is not None:
+        recorder.result(res)
+    return res

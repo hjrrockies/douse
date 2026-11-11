@@ -425,6 +425,9 @@ class SpectrumEvaluator:
         self.trace = []
         self.max_trace_kept = 400
         self._planned = None                # (p.tobytes(), record): the planner's own solve
+        #: A `douse.record.RunRecorder`, or None (the default): one line per evaluation, solve
+        #: and plan. It only reads; a run with one gives the same result as a run without.
+        self.recorder = None
 
     def __repr__(self):
         return (f"SpectrumEvaluator({self.family!r}, n_eigs={self.n_eigs}, "
@@ -453,6 +456,8 @@ class SpectrumEvaluator:
             # for the solve that follows at the same shape instead of computing it twice
             # (one solve per replan saved, 2026-10-14). Consumed once, by `_solve`.
             self._planned = (self._plan_built_at.tobytes(), rec, time.perf_counter() - t0)
+            if self.recorder is not None:
+                self.recorder.plan_built(self._plan, self._plan_built_at, self.prec)
         return self._plan
 
     @property
@@ -497,17 +502,27 @@ class SpectrumEvaluator:
         p = np.asarray(p, dtype=float)
         saved = self.plan_state()
         try:
-            return self._eigenvalues(p, windows)
-        except ShapeRefusal:
+            out = self._eigenvalues(p, windows)
+        except ShapeRefusal as e:
             self.restore_plan(saved)
+            self._note_evaluation(p, error=f"{type(e).__name__}: {e}")
             raise
-        except DegenerateSpectrum:
+        except DegenerateSpectrum as e:
+            self._note_evaluation(p, error=f"{type(e).__name__}: {e}")
             raise
         except _SHAPE_ERRORS as e:
             self.restore_plan(saved)
             self.n_solver_refusals += 1
             self._record(p, f"{type(e).__name__}: {e}")
+            self._note_evaluation(p, error=f"{type(e).__name__}: {e}")
             raise SolverRefusal(f"chladni could not solve this shape: {e}") from e
+        self._note_evaluation(p, spec=getattr(out[1], "record", None), lams=out[0])
+        return out
+
+    def _note_evaluation(self, p, spec=None, lams=None, error=None):
+        """This call's line in the run's record, when it has one (`douse.record`)."""
+        if self.recorder is not None:
+            self.recorder.evaluation(self, p, lams=lams, spec=spec, error=error)
 
     def _eigenvalues(self, p, windows):
         dom, verts = self._domain(p)
@@ -690,12 +705,15 @@ class SpectrumEvaluator:
         return spec, refusal
 
     def _trace(self, kind, reason, plan, spec, t0):
+        seconds = time.perf_counter() - t0
+        if self.recorder is not None:           # every solve, past the cap on `trace` too
+            self.recorder.solve(kind, reason, plan, spec, seconds)
         if len(self.trace) < self.max_trace_kept:
             d = None if spec is None else getattr(spec, "diagnostics", None)
             self.trace.append(SolveTrace(
                 kind=kind, reason=reason, rung=getattr(plan, "rung", None),
                 n_evals=int(getattr(d, "evaluations", 0) or 0),
-                seconds=time.perf_counter() - t0))
+                seconds=seconds))
 
     def _record(self, p, error, spec=None):
         if len(self.refusals) < self.max_refusals_kept:

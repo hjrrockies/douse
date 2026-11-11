@@ -149,7 +149,7 @@ def _sigma(row):
 
 def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_redraws=3,
             prec=1e-10, backend='chladni', spec=None, seed=None, mirror=False, ckpt=None,
-            deadline=None, chart='vertex', s=0.0, angle_bounds=None, l_min=None):
+            deadline=None, chart='vertex', s=0.0, angle_bounds=None, l_min=None, record=None):
     """One start. A start that cannot be SOLVED AT ALL is redrawn rather than lost.
 
     Measured over the 18-cell grid: **all nine crashed runs died at the start shape**, before a
@@ -180,11 +180,40 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
     set, a start outside the constraints is redrawn like an unsolvable one, recorded in
     `redraws` (a seeded start raises instead), and the row reports them, with
     `active_constraints` at the endpoint.
+
+    `record`, a path, keeps the run's record there (`douse.record`): every evaluation, solve,
+    plan and iteration, appended and flushed as the run goes, redraws and resumes included. It
+    only reads, so the row is the same with or without it.
     """
     spec_mod.code_shas()                  # now, not when the row is written days later
-    if mirror:
-        return run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec, ckpt,
-                          deadline)
+    rec = _recorder(record, N=N, k=k, start=i, chart=chart, s=s, prec=prec, backend=backend,
+                    spec=spec, seeded=seed is not None, mirror=bool(mirror),
+                    angle_bounds=angle_bounds, l_min=l_min, max_iter=max_iter, delta0=delta0)
+    try:
+        if mirror:
+            return run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec, ckpt,
+                              deadline, recorder=rec)
+        return _run_one(N, k, i, max_iter, seed0, delta0, n_eigs, convex, max_redraws, prec,
+                        backend, spec, seed, ckpt, deadline, chart, s, angle_bounds, l_min, rec)
+    finally:
+        if rec is not None:
+            rec.close()
+
+
+def _recorder(path, spec=None, **header):
+    """A `RunRecorder` at `path` with the run's identity in its ``head`` line, or None."""
+    if path is None:
+        return None
+    from douse.record import RunRecorder
+    douse_sha, chladni_sha, lock_sha = spec_mod.code_shas()
+    return RunRecorder(path, dict(header, douse_sha=douse_sha, chladni_sha=chladni_sha,
+                                  lock_sha=lock_sha,
+                                  spec=None if spec is None else spec.name,
+                                  spec_sha=None if spec is None else spec.sha))
+
+
+def _run_one(N, k, i, max_iter, seed0, delta0, n_eigs, convex, max_redraws, prec, backend, spec,
+             seed, ckpt, deadline, chart, s, angle_bounds, l_min, rec):
     fam = runs.family_for(N, PERIM, chart=chart, s=s)
     # `Convexity` is a RESTRICTION and it is meant to be: it asks the convex question. The
     # answer belongs in its own ledger -- see `--convex` in `main`.
@@ -205,6 +234,8 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
         # and was then EXCLUDED on `worst_sigma = 5.0e-04`, a number belonging to a shape it never
         # optimized. Its own endpoint tensions are 7.0e-13 to 3.3e-12.
         ev = runs.make_evaluator(N, k, n_eigs=n_eigs, fam=fam, prec=prec, backend=backend)
+        if rec is not None:
+            ev.recorder = rec
         idx = i if attempt == 0 else i + 1000*attempt
         v0 = draw(N, idx, seed0) if seed is None else seed
         p0 = param_vector(v0, PERIM) if chart == 'vertex' else fam.from_vertices(v0)
@@ -237,7 +268,8 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
     try:
         res = maximize_ratio(ev, p0, k=k, max_iter=max_iter, constraints=cons, delta0=delta0,
                              prec_final=None if spec is None else spec.prec_final,
-                             callback=on_iter, deadline=deadline)
+                             callback=on_iter, deadline=deadline,
+                             **({} if rec is None else dict(recorder=rec)))
     except TimeBudget:
         ckpt.flush()
         return None
@@ -294,7 +326,7 @@ def _resume(ckpt, ev, p0, delta0, max_iter):
 
 
 def run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec, ckpt=None,
-               deadline=None):
+               deadline=None, recorder=None):
     """One start in `MirrorPolygon`, then the test of whether its optimum is a maximum among ALL
     N-gons: `certify.antisymmetric_hessian` along the symmetry-breaking directions, evaluated by
     a `VertexPolygon` evaluator (a fresh one, so nothing of the symmetric run's frozen plan is
@@ -308,12 +340,15 @@ def run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec, ckp
     fam, q0, defect = MirrorPolygon.from_vertices(seed, PERIM)
     cons = ConstraintSet(MinEdgeLength(fam))
     ev = runs.make_evaluator(N, k, n_eigs=n_eigs, fam=fam, prec=prec, backend=backend)
+    if recorder is not None:
+        ev.recorder = recorder
     t0 = time.perf_counter()
     q0, delta0, max_iter, on_iter = _resume(ckpt, ev, q0, delta0, max_iter)
     try:
         res = maximize_ratio(ev, q0, k=k, max_iter=max_iter, constraints=cons, delta0=delta0,
                              prec_final=None if spec is None else spec.prec_final,
-                             callback=on_iter, deadline=deadline)
+                             callback=on_iter, deadline=deadline,
+                             **({} if recorder is None else dict(recorder=recorder)))
     except TimeBudget:
         ckpt.flush()
         return None
@@ -432,6 +467,9 @@ def main():
                          'run/ratio_multistart/), or a FILE ending .jsonl for a single cell, as '
                          'a per-task ledger N<N>_k<k>/task_<i>.jsonl that summarize_grid --dir '
                          'pools.')
+    ap.add_argument('--record', action='store_true',
+                    help="keep each start's full record (douse.record) beside the ledger, as "
+                         "<ledger>.start<i>.record.jsonl; DOUSE_RECORD=1 does the same")
     args = ap.parse_args()
     spec = None
     if args.spec:
@@ -483,6 +521,13 @@ def _run_cell(args, spec=None):
     def checkpoint(i):
         return runs.Checkpoint(f'{path}.start{i}.ckpt', key=None if spec is None else spec.sha)
 
+    # THE RUN'S RECORD (`douse.record`), beside the ledger, when asked for: `--record` or
+    # DOUSE_RECORD=1 in the environment, which reaches Slurm tasks without touching the spec.
+    recording = getattr(args, 'record', False) or os.environ.get('DOUSE_RECORD', '') not in ('', '0')
+
+    def record_path(i):
+        return f'{path}.start{i}.record.jsonl' if recording else None
+
     # A budget from the spec's Slurm limit, two hours short so the checkpoint and exit are clean.
     deadline = None
     if spec is not None and spec.slurm_time:
@@ -505,7 +550,7 @@ def _run_cell(args, spec=None):
         jobs = [dict(N=args.N, k=args.k, i=i, max_iter=args.max_iter, seed0=args.seed0,
                      delta0=args.delta0, n_eigs=args.n_eigs, convex=args.convex, prec=prec,
                      backend=backend, spec=spec, threads=threads, ckpt=checkpoint(i),
-                     deadline=deadline,
+                     deadline=deadline, record=record_path(i),
                      **dict(extra, seed=seeds[i] if seeds else None)) for i in todo]
         print(f'running {len(jobs)} start(s) on {args.workers} worker(s), '
               f'{threads} thread(s) each', flush=True)
@@ -543,6 +588,7 @@ def _run_cell(args, spec=None):
             row = run_one(args.N, args.k, i, args.max_iter, args.seed0, args.delta0,
                           args.n_eigs, convex=args.convex, prec=prec, backend=backend,
                           spec=spec, ckpt=checkpoint(i), deadline=deadline,
+                          record=record_path(i),
                           **dict(extra, seed=seeds[i] if seeds else None))
         except Exception as exc:
             row = dict(N=args.N, k=args.k, start=i, convex=bool(args.convex), ok=False,

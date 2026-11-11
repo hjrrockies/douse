@@ -270,7 +270,8 @@ def test_a_start_that_cannot_be_solved_is_redrawn_deterministically():
     and the discard recorded, which keeps the start distribution statable."""
     rm = pytest.importorskip('benchmarks.ratio_multistart')
     import inspect
-    src = inspect.getsource(rm.run_one)
+    # `run_one` opens the run's record and hands the start to `_run_one` (2026-11-11).
+    src = inspect.getsource(rm._run_one)
     assert 'max_redraws' in src and 'redraws.append' in src
     assert 'i + 1000*attempt' in src, 'the redraw must be deterministic'
     # the probe is an explicit evaluation, not an inspection of a traceback

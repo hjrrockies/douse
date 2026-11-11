@@ -718,6 +718,25 @@ cluster is what decides the algorithm — lowest ⇒ concave ⇒ tractable; high
       - tested: a short run's records rebuild pencils whose smallest singular values at the
         stored eigenvalues sit within each level's bound.
 
+      **PHASE 1 DONE 2026-11-11** (`douse/record.py`, `RunRecorder`; off by default). Per
+      evaluation: `p`, vertices, every level's value, multiplicity, bound, gap and chladni
+      cluster, flags, the count audit, the precision, the solves it took (kind, reason, rung,
+      tension evaluations, seconds) and the plan, by index. Per plan: where it was built, `prec`
+      and every `Plan` field (the plan is a frozen dataclass of choices, so phase 2 can test a
+      rebuild from them). Per iteration of `maximize_ratio`: the model (`g1`; `Ms` and `Lam` in
+      cluster mode, `gk` and `grad` when smooth -- the whole first-order information, so
+      criticality and the active branches can be recomputed), the step, predicted and actual
+      gains, `rho`, radius in and out, criticality, `eps_f`, `eps_g`, the Hadamard accuracy the
+      model rests on, the subproblem case, the counters, and angles, edges and constraint slack.
+      Switched on by `run_one(record=)`, `ratio_multistart --record` or `DOUSE_RECORD=1` (one
+      `<ledger>.start<i>.record.jsonl` per start) and `lockin_validate --record`. Read with
+      `douse.record.read`; drawn or summarized by `benchmarks/diagnostics/plot_record.py`. It
+      only reads: a recorded run gives the same row (`tests/test_record.py`; a real N=6 run
+      compared byte for byte against 3a0fb6d). OPEN, phase 2 (needs chladni, after the thesis):
+      the pencil and eigenfunction rebuild, and with it the pointwise `d_n u` the vertex-insertion
+      test needs. Also open: the chladni SHA per plan is the run's (in the ``head`` line), not
+      per plan.
+
 - [ ] **A real constraint, not an `inf` barrier.** The admissible set has a boundary (the
       closing-budget condition) and `descend` merely refuses to cross it. scipy's L-BFGS-B stalls
       at iteration 1 against `inf`. A smooth self-intersection constraint — sketched in the

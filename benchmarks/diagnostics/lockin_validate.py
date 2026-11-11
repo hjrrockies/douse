@@ -16,6 +16,7 @@ import argparse
 import collections
 import dataclasses
 import json
+import os
 import pathlib
 import time
 
@@ -47,7 +48,7 @@ def _progress(ev, t0):
     return line
 
 
-def run(index, tau_g, out, floor_policy='value_limit'):
+def run(index, tau_g, out, floor_policy='value_limit', record=False):
     import benchmarks.ratio_multistart as rm
     from douse import spec as spec_mod
     from douse.cluster_opt import maximize_ratio
@@ -59,8 +60,13 @@ def run(index, tau_g, out, floor_policy='value_limit'):
         kw['callback'] = _progress(ev, t0)
         return maximize_ratio(ev, p0, tau_g=tau_g, floor_policy=floor_policy, **kw)
     rm.maximize_ratio = logged
+    out = pathlib.Path(out)
+    rec = None
+    if record or os.environ.get('DOUSE_RECORD', '') not in ('', '0'):
+        out.mkdir(parents=True, exist_ok=True)
+        rec = str(out/f'row{index:02d}_tau{tau_g:.0e}.record.jsonl')
     row = rm.run_one(r['N'], r['k'], r['start'], spec.max_iter, spec.seed0, spec.delta0,
-                     prec=spec.prec, backend=spec.backend, spec=spec)
+                     prec=spec.prec, backend=spec.backend, spec=spec, record=rec)
     row.update(index=index, tau_g=tau_g, floor_policy=floor_policy, v2_fun=r['fun'],
                v2_kind=r['kind'],
                v2_seconds=r['seconds'], seconds_rerun=round(time.perf_counter() - t0, 1))
@@ -147,6 +153,8 @@ def main(argv=None):
     p.add_argument('--tau-g', type=float, default=1e-6)
     p.add_argument('--out', required=True)
     p.add_argument('--floor-policy', default='value_limit')
+    p.add_argument('--record', action='store_true',
+                   help='keep the run record (douse.record) beside the row; DOUSE_RECORD=1 too')
     p = sub.add_parser('compare')
     p.add_argument('folder')
     args = ap.parse_args(argv)
@@ -154,7 +162,7 @@ def main(argv=None):
         for i, r in enumerate(rows()):
             print(i, r)
     elif args.cmd == 'run':
-        run(args.index, args.tau_g, args.out, args.floor_policy)
+        run(args.index, args.tau_g, args.out, args.floor_policy, args.record)
     else:
         compare(args.folder)
 
