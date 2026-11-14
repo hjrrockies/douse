@@ -65,6 +65,12 @@ class RunSpec:
     angle_min_deg: object = None
     angle_max_deg: object = None
     edge_min: object = None
+    # THE CHART (2026-11-13): 'vertex' (`VertexPolygon`, or `MirrorPolygon` for family 'mirror')
+    # or 'fourier' (`FourierPolygon` with Sobolev exponent `s`, or `FourierMirrorPolygon`):
+    # thesis-lock-2's chart after the go/no-go. Seeds stay vertex polygons and are mapped in.
+    # The default is left out of the hash, so older specs hash as before.
+    chart: str = 'vertex'
+    s: float = 0.0
     # WHERE IT RUNS, NOT WHAT IS RUN: Slurm resources per task for `benchmarks/slurm.py`
     # (`slurm_mem = "4G"`, `slurm_time = "24:00:00"`, partition and account as ARC names them).
     # Left out of `content()` and so of the hash: the same recipe given more memory is the same
@@ -82,6 +88,12 @@ class RunSpec:
             raise ValueError(f"family must be 'all', 'convex' or 'mirror', got {self.family!r}")
         if self.family == 'mirror' and not self.seeds:
             raise ValueError("family 'mirror' starts from seeds: give `seeds`")
+        if self.chart not in ('vertex', 'fourier'):
+            raise ValueError(f"chart must be 'vertex' or 'fourier', got {self.chart!r}")
+        if self.chart == 'vertex' and self.s != 0.0:
+            raise ValueError("`s` is the Fourier chart's Sobolev exponent: set chart = 'fourier'")
+        if self.family == 'convex' and self.chart != 'vertex':
+            raise ValueError("family 'convex' runs in the vertex chart: chart must be 'vertex'")
         if self.backend not in ('chladni', 'lappy'):
             raise ValueError(f"backend must be 'chladni' or 'lappy', got {self.backend!r}")
         for N, k in cells:
@@ -115,6 +127,8 @@ class RunSpec:
         for key in ('angle_min_deg', 'angle_max_deg', 'edge_min'):
             if d[key] is None:
                 d.pop(key)             # likewise for the optional restrictions
+        if self.chart == 'vertex':
+            d.pop('chart'), d.pop('s')  # and for the default chart
         if not self.seeds:
             d.pop('seeds')             # so a spec without seeds hashes as it did before they existed
         else:

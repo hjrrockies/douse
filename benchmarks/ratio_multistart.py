@@ -56,7 +56,7 @@ import numpy as np
 from douse import (ClosingBudget, ConstraintSet, Convexity, MinEdgeLength, SpectrumEvaluator,
                    VertexPolygon, param_vector)
 from douse.certify import antisymmetric_hessian
-from douse.polygon import MirrorPolygon, gauge_vector
+from douse.polygon import FourierMirrorPolygon, MirrorPolygon, gauge_vector
 from douse import degeneracy as dg
 from douse import spectral_guard
 from douse.sampling import random_convex
@@ -186,6 +186,8 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
     only reads, so the row is the same with or without it.
     """
     spec_mod.code_shas()                  # now, not when the row is written days later
+    if chart == 'vertex' and spec is not None and spec.chart != 'vertex':
+        chart, s = spec.chart, spec.s     # the spec's chart, unless the caller chose one
     rec = _recorder(record, N=N, k=k, start=i, chart=chart, s=s, prec=prec, backend=backend,
                     spec=spec, seeded=seed is not None, mirror=bool(mirror),
                     angle_bounds=angle_bounds, l_min=l_min, max_iter=max_iter, delta0=delta0)
@@ -292,7 +294,7 @@ def _run_one(N, k, i, max_iter, seed0, delta0, n_eigs, convex, max_redraws, prec
     # THE ROW IS SCHEMA 2 (`douse.ledger`): the run's identity and provenance, the result, and
     # the backend's health under chladni's names, with the per-solve trace. Readers normalize
     # old rows onto the same names.
-    return ledger.result_row(
+    row = ledger.result_row(
         res, health=ev.health(), N=N, k=k, start=i, convex=bool(convex), redraws=redraws,
         seeded=seed is not None, n_resumes=(0 if ckpt is None else ckpt.resumes),
         start_index=(i if not redraws else i + 1000*len(redraws)),
@@ -303,6 +305,14 @@ def _run_one(N, k, i, max_iter, seed0, delta0, n_eigs, convex, max_redraws, prec
         **(dict(angle_bounds=(None if angle_bounds is None else list(angle_bounds)),
                 l_min=(None if l_min is None else float(l_min)),
                 active_constraints=runs.active_constraints(cons, res.x)) if restricted else {}))
+    if chart != 'vertex':
+        # `x` IS ALWAYS VERTEX COORDINATES, which every reader of a ledger assumes (summaries,
+        # plots, seeds, endpoint diagnostics); the chart's own coordinates go in `x_chart`, as a
+        # mirror run's go in `x_mirror`.
+        row.update(chart=chart, s=float(s), x_chart=row['x'],
+                   x=[float(t) for t in param_vector(v, PERIM)],
+                   vertices=[[float(z.real), float(z.imag)] for z in v])
+    return row
 
 
 def _resume(ckpt, ev, p0, delta0, max_iter):
@@ -327,7 +337,8 @@ def _resume(ckpt, ev, p0, delta0, max_iter):
 
 def run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec, ckpt=None,
                deadline=None, recorder=None):
-    """One start in `MirrorPolygon`, then the test of whether its optimum is a maximum among ALL
+    """One start in `MirrorPolygon` (or `FourierMirrorPolygon`, when the spec's chart is
+    'fourier'), then the test of whether its optimum is a maximum among ALL
     N-gons: `certify.antisymmetric_hessian` along the symmetry-breaking directions, evaluated by
     a `VertexPolygon` evaluator (a fresh one, so nothing of the symmetric run's frozen plan is
     reused).
@@ -337,7 +348,10 @@ def run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec, ckp
     parameters in `x_mirror`, the family's `axis`, the seed's own `seed_defect` (how far from
     symmetric it was) and the probe in `antisym`.
     """
-    fam, q0, defect = MirrorPolygon.from_vertices(seed, PERIM)
+    if spec is not None and spec.chart == 'fourier':
+        fam, q0, defect = FourierMirrorPolygon.from_vertices(seed, PERIM, s=spec.s)
+    else:
+        fam, q0, defect = MirrorPolygon.from_vertices(seed, PERIM)
     cons = ConstraintSet(MinEdgeLength(fam))
     ev = runs.make_evaluator(N, k, n_eigs=n_eigs, fam=fam, prec=prec, backend=backend)
     if recorder is not None:
@@ -363,6 +377,9 @@ def run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec, ckp
         deficit_tol=float(spectral_guard.DEFICIT_TOL), **spec_mod.provenance(ev, spec))
     row['x_mirror'], row['x'] = row['x'], [float(t) for t in param_vector(v, PERIM)]
     row['vertices'] = [[float(z.real), float(z.imag)] for z in v]
+    row['chart'] = 'fourier' if isinstance(fam, FourierMirrorPolygon) else 'vertex'
+    if row['chart'] == 'fourier':
+        row['s'] = float(fam.s)
 
     # THE PROBE. One anchor for every perturbed polygon -- the corner furthest from flat, as
     # `gauge_vector` asks -- so the labelling, and with it the full evaluator's frozen plan, is

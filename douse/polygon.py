@@ -561,24 +561,33 @@ class MirrorPolygon:
         rows `[x.., y..]`, with the two rigid motions that are antisymmetric (horizontal
         translation, rotation) removed. Along these `F(v + t d) = F(v - t d)` exactly (the
         mirror image is congruent), so first order vanishes and the curvature decides."""
-        v = self.vertices(q)
-        n, sig = self.n, self.mirror_index()
-        cols = []
-        for i in range(n):
-            for e in (1.0, 1j):
-                d = np.zeros(n, dtype=complex)
-                d[i] = e
-                cols.append(0.5*(d + np.conj(d[sig])))                 # minus its mirror image
-        A = np.array([np.concatenate([c.real, c.imag]) for c in cols]).T
-        rigid = np.array([np.concatenate([np.ones(n), np.zeros(n)]),
-                          np.concatenate([(1j*v).real, (1j*v).imag])]).T
-        Qr, _ = np.linalg.qr(rigid)
-        A = A - Qr @ (Qr.T @ A)
-        U, S, _ = np.linalg.svd(A, full_matrices=False)
-        r = int(np.sum(S > 1e-10*S[0]))
-        if r != n - 2:
-            raise AssertionError(f'antisymmetric subspace has rank {r}, expected {n - 2}')
-        return U[:, :r]
+        return antisymmetric_basis(self.vertices(q), self.mirror_index())
+
+
+def antisymmetric_basis(v, sig, a=-1.0):
+    """`MirrorPolygon.antisymmetric_basis` for any mirror-symmetric polygon `v` whose mirror
+    line passes through the origin: the symmetry is `z -> a conj(z)` (`|a| = 1`; -1 is the
+    y-axis, `MirrorPolygon`'s layout), sending vertex `i` to vertex `sig[i]`. Shared by
+    `MirrorPolygon` and `FourierMirrorPolygon`."""
+    v = np.asarray(v, dtype=complex)
+    n = len(v)
+    cols = []
+    for i in range(n):
+        for e in (1.0, 1j):
+            d = np.zeros(n, dtype=complex)
+            d[i] = e
+            cols.append(0.5*(d - a*np.conj(d[sig])))                   # minus its mirror image
+    A = np.array([np.concatenate([c.real, c.imag]) for c in cols]).T
+    t = 1j*np.sqrt(complex(a))*np.ones(n)        # the translation across the mirror line
+    rigid = np.array([np.concatenate([t.real, t.imag]),
+                      np.concatenate([(1j*v).real, (1j*v).imag])]).T
+    Qr, _ = np.linalg.qr(rigid)
+    A = A - Qr @ (Qr.T @ A)
+    U, S, _ = np.linalg.svd(A, full_matrices=False)
+    r = int(np.sum(S > 1e-10*S[0]))
+    if r != n - 2:
+        raise AssertionError(f'antisymmetric subspace has rank {r}, expected {n - 2}')
+    return U[:, :r]
 
 
 def signed_frequency(k, n):
@@ -717,3 +726,115 @@ class FourierPolygon:
 def _x1_share(X):
     e = np.abs(X[1:])**2
     return float(e[0]/e.sum())
+
+
+class FourierMirrorPolygon:
+    """Mirror-symmetric `n`-gons in `FourierPolygon` coordinates: `n - 2` real parameters, the
+    symmetric runs' chart once FourierPolygon became thesis-lock-2's (2026-11-13).
+
+    THE SUBSPACE. A mirror symmetry sends vertex `j` to vertex `r - j` for some shift `r`; with
+    the vertices relabelled so `r` is 0 or 1, it is `u_{r-j} = w^r conj(u_j)` (a reflection
+    after a rotation), and in the shape coordinates that reads `z_k = w^(-r(k-1)) conj(z_k)`:
+    every `z_k` lies on one real line, `z_k = t_k exp(-i pi r (k-1)/n)`, `t_k` real. So the
+    symmetric polygons are a LINEAR subspace of the Fourier chart, of the same dimension as
+    `MirrorPolygon`'s. `r = 0` puts the axis through vertex 0 (and vertex n/2 for even n):
+    `axis='vertex'`; `r = 1` (even n) puts it across edges: `axis='edge'`.
+
+    THE PARAMETERS are `q_k = c sqrt(w_k) t_k`, k = 2..n-1, so `p = B q` with `B` having
+    orthonormal columns: the trust region is the Fourier chart's Sobolev metric restricted to
+    the subspace, and `B^T p` is the orthogonal projection onto it (the average of a polygon
+    and its mirror image, in these coordinates).
+
+    The degeneracy moves of `douse.cluster_opt` do not apply, as for `MirrorPolygon`.
+    """
+
+    def __init__(self, n, axis='vertex', perim=1.0, s=0.0):
+        if axis not in ('vertex', 'edge'):
+            raise ValueError(f"axis must be 'vertex' or 'edge', got {axis!r}")
+        if axis == 'edge' and n % 2:
+            raise ValueError(f'an odd polygon\'s mirror line passes through a vertex; '
+                             f"axis='edge' needs even n, got n={n}")
+        self.full = FourierPolygon(n, perim=perim, s=s)
+        self.n, self.axis, self.perim, self.s = self.full.n, axis, self.full.perim, self.full.s
+        self.r = 0 if axis == 'vertex' else 1
+        phi = -np.pi*self.r*(self.full.modes - 1)/self.n
+        m = self.n - 2
+        self._B = np.vstack([np.diag(np.cos(phi)), np.diag(np.sin(phi))])     # (2n-4, n-2)
+
+    def __repr__(self):
+        return (f'FourierMirrorPolygon(n={self.n}, axis={self.axis!r}, perim={self.perim:g}, '
+                f's={self.s:g})')
+
+    @property
+    def n_params(self):
+        return self.n - 2
+
+    def _check(self, q):
+        q = np.asarray(q, dtype=float)
+        if q.shape != (self.n_params,):
+            raise ValueError(f'q must have length {self.n_params} for {self!r}, got {q.shape}')
+        return q
+
+    def to_full(self, q):
+        """The same polygon's `FourierPolygon` parameters."""
+        return self._B @ self._check(q)
+
+    def project(self, p):
+        """The symmetric part of `FourierPolygon` parameters `p`, as `q`."""
+        return self._B.T @ np.asarray(p, dtype=float)
+
+    def mirror_index(self):
+        """`sigma` with vertex `i` the image of vertex `sigma[i]`."""
+        return (self.r - np.arange(self.n)) % self.n
+
+    def vertices(self, q):
+        return self.full.vertices(self.to_full(q))
+
+    def d_vertices_dp(self, q):
+        return self.full.d_vertices_dp(self.to_full(q)) @ self._B
+
+    def x1_share(self, q):
+        return self.full.x1_share(self.to_full(q))
+
+    def __call__(self, q, **kwargs):
+        return self.full(self.to_full(q), **kwargs)
+
+    def lappy_domain(self, q, **kwargs):
+        return self.full.lappy_domain(self.to_full(q), **kwargs)
+
+    def is_valid(self, q):
+        try:
+            self(q)
+            return True
+        except (ValueError, TypeError):
+            return False
+
+    def perimeter(self, q):
+        return self.full.perimeter(self.to_full(q))
+
+    def antisymmetric_basis(self, q):
+        """As `MirrorPolygon.antisymmetric_basis`, in vertex coordinates. The mirror is
+        `z -> w^r conj(z)` about the centroid, which this chart keeps at the origin."""
+        return antisymmetric_basis(self.vertices(q), self.mirror_index(),
+                                   a=np.exp(2j*np.pi*self.r/self.n))
+
+    @classmethod
+    def from_vertices(cls, vertices, perim=1.0, s=0.0, rank=0):
+        """`(family, q, defect)`: the symmetric polygon nearest `vertices` about its `rank`-th
+        best mirror line (`mirror_axes`), as `MirrorPolygon.from_vertices` returns it. The
+        vertices are relabelled so the symmetry is `j -> r - j` with `r` 0 or 1, then projected
+        onto the subspace; `defect` is the line's, so a caller can see how far from symmetric
+        the input was."""
+        v = np.asarray(vertices, dtype=complex)
+        if polygon_area(v) < 0:
+            v = v[::-1]
+        N = len(v)
+        defect, sh, _ = mirror_axes(v)[rank]
+        if N % 2:
+            r, m = 0, (sh*(N + 1)//2) % N            # 2m = sh (mod N): 2 is invertible
+        else:
+            r, m = sh % 2, (sh - sh % 2)//2
+        u = np.roll(v, -m)                           # u_j = v_{j+m}: symmetric under j -> r - j
+        fam = cls(N, 'vertex' if r == 0 else 'edge', perim, s)
+        q = fam.project(fam.full.from_vertices(u))
+        return fam, q, defect

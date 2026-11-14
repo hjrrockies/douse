@@ -13,6 +13,11 @@ delta0 = 0.05
 prec = 1e-9
 prec_final = [1e-12, 1e-11, 1e-10]
 backend = "chladni"
+# thesis-lock-2 (2026-11-13): the Fourier chart with Sobolev exponent s = 1, chosen by the
+# go/no-go (douse docs/todo.md); a mirror spec runs it restricted to the symmetric polygons
+# (`FourierMirrorPolygon`). No angle bounds: off for the Fourier runs (decided 2026-11-13).
+chart = "fourier"
+s = 1.0
 family = "all"
 seeds = "benchmarks/seeds/split_v1.json"
 sigma_max = 1e-6
