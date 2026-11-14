@@ -43,7 +43,7 @@ import numpy as np
 import pytest
 
 # Every test here drives lappy's solver and lappy's Hadamard path: the deprecated backend
-# (douse[lappy]). The whole module is marked `lappy` and skips without a working lappy
+# (lappy by hand). The whole module is marked `lappy` and skips without a working lappy
 # (tests/conftest.py). The chladni backend's derivatives are checked in test_chladni_backend.py.
 pytestmark = pytest.mark.lappy
 lappy = pytest.importorskip("lappy")

@@ -1,8 +1,10 @@
 # Running douse on VT ARC (Slurm)
 
-The install is the CI recipe (`.github/workflows/tests.yml`): douse, chladni and lappy checked
-out SIDE BY SIDE, because chladni and lappy are path dependencies (`../chladni`, `../lappy`).
-lappy is never installed; its directory only has to exist for `uv sync` to resolve.
+The install is the CI recipe (`.github/workflows/tests.yml`): douse and chladni checked out SIDE
+BY SIDE, because chladni is a path dependency (`../chladni`). lappy is no longer a dependency of
+any kind (2026-11-13). A release at an OLDER douse commit (before that change, e.g.
+`thesis-lock-1` at 2b66d9b) still lists `../lappy` as a path source, so for those, and only those,
+a lappy checkout has to sit beside it for `uv sync` to resolve; lappy is never installed.
 
 Placeholders: `<pid>` your VT PID, `<account>` your ARC allocation, `<cluster>` the login host
 (e.g. `tinkercliffs1.arc.vt.edu` or `owl1.arc.vt.edu`), `<partition>` (e.g. `normal_q`). Check
@@ -11,12 +13,12 @@ them against ARC's docs or `sacctmgr show assoc user=$USER` once logged in.
 ## Where things live
 
 ```
-~/projects/thesis/{douse,chladni,lappy}   clones to fetch into; no job ever runs from these
-~/projects/thesis/releases/<name>/        the three at exact commits, with their own .venv; jobs run here
+~/projects/thesis/{douse,chladni,lappy}   clones to fetch into (lappy: old releases only); no job runs from these
+~/projects/thesis/releases/<name>/        douse and chladni at exact commits, with their own .venv; jobs run here
 ~/projects/thesis/runs/                   $DOUSE_RUNS: ledgers and logs, same subfolders as the workstation's
 ```
 
-chladni and lappy are EDITABLE path dependencies, so a `git pull` in a clone changes the code any
+chladni is an EDITABLE path dependency, so a `git pull` in its clone changes the code any
 task that has not started yet will import. A release is checked out once and never pulled. Code
 reaches the cluster only through GitHub, results leave only by rsync to the workstation, and
 nothing is edited here. Results stay in home (no purge); `/scratch` deletes files at 90 days.
@@ -35,7 +37,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 mkdir -p ~/projects/thesis && cd ~/projects/thesis
 git clone https://github.com/hjrrockies/douse.git
 git clone https://github.com/hjrrockies/chladni.git
-git clone https://github.com/hjrrockies/lappy.git
+git clone https://github.com/hjrrockies/lappy.git     # only for releases older than 2026-11-13
 ```
 
 ```bash
@@ -66,8 +68,11 @@ cd ~/projects/thesis && for r in douse chladni lappy; do git -C $r fetch --tags 
 ```
 
 ```bash
-R=releases/<name>; git -C douse worktree add --detach ../$R/douse <douse commit>; git -C chladni worktree add --detach ../$R/chladni <chladni commit>; git -C lappy worktree add --detach ../$R/lappy HEAD
+R=releases/<name>; git -C douse worktree add --detach ../$R/douse <douse commit>; git -C chladni worktree add --detach ../$R/chladni <chladni commit>
 ```
+
+For a release at a douse commit older than 2026-11-13 (whose `pyproject.toml` still has a
+`lappy` path source), also: `git -C lappy worktree add --detach ../$R/lappy f3a0824`.
 
 ```bash
 cd ~/projects/thesis/releases/<name>/douse && uv sync --frozen

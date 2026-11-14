@@ -56,7 +56,7 @@ from .errors import DegenerateSpectrum, ShapeRefusal, SolverRefusal, UnresolvedS
 
 from .derivative import dlams_dp
 
-try:                                    # lappy is an optional, deprecated extra (douse[lappy])
+try:                                    # lappy is deprecated and not a dependency (install by hand)
     from lappy import Eigenproblem, basis_plan as BP
     from lappy.asymp import weyl_est
     from lappy.core import EigensolverFailure, SourcesInsideDomain
@@ -94,10 +94,11 @@ class LappySpectrumEvaluator:
                  track_ttol=1e-8, use_track_set=True, replan_tol=1e-9, enforce_weyl=True,
                  spurious_tol=1e-4):
         """DEPRECATED (2026-10-14): douse's default backend is chladni, `SpectrumEvaluator`.
-        This lappy evaluator needs the `douse[lappy]` extra and is kept so older results
-        reproduce."""
+        This lappy evaluator needs lappy, installed by hand in its own environment (not a
+        dependency since 2026-11-13); kept so older results reproduce."""
         if not HAVE_LAPPY:
-            raise ImportError("LappySpectrumEvaluator needs lappy: install the douse[lappy] extra")
+            raise ImportError("LappySpectrumEvaluator needs lappy: install it by hand, in an "
+                              "environment of its own")
         warnings.warn("LappySpectrumEvaluator is deprecated: douse's backend is chladni "
                       "(`SpectrumEvaluator`). Kept so lappy results reproduce.",
                       DeprecationWarning, stacklevel=2)

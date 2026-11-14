@@ -4,7 +4,7 @@
 requested `prec` with a certified bound and flags per level, and supplies the Hadamard matrices
 (`chladni.eigensolver.Spectrum.hadamard`). This module adapts that to `douse`'s evaluator
 interface. The lappy backend survives, deprecated, as `douse.evaluate.LappySpectrumEvaluator`
-(`douse[lappy]`); `ChladniEvaluator` is this class's name from before the switch.
+(lappy by hand); `ChladniEvaluator` is this class's name from before the switch.
 
     ev = SpectrumEvaluator(VertexPolygon(5), n_eigs=3, prec=1e-10)
     lams, J = ev(p)                       # the spectrum and its (K, n_p) Jacobian

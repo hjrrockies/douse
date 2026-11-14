@@ -2,7 +2,7 @@
 
 These scripts drive `douse.evaluate.LappySpectrumEvaluator` or lappy's own solver internals
 (`sigma_at`, `mps.n_workers_default`, the tension plateau `sigma_base`, lappy's `rtol`). They need
-the `douse[lappy]` extra in an environment of their own: lappy passes `tola`/`tolb` to
+lappy, installed by hand in an environment of their own: lappy passes `tola`/`tolb` to
 `gsvd4py.gsvdvals`, which gsvd4py >= 0.4 (chladni's requirement) no longer accepts, so they do not
 run in the default environment. Kept so the lappy-era ledgers under `benchmarks/run/` can be
 reproduced and re-examined. Moved here 2026-10-14 when chladni became the backend.

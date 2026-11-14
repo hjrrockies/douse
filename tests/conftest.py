@@ -1,6 +1,6 @@
 """Shared test configuration.  (2026-10-14)
 
-chladni is douse's backend; lappy is a deprecated optional extra (`douse[lappy]`). Tests of the
+chladni is douse's backend; lappy is deprecated and not a dependency. Tests of the
 lappy backend's internals -- its tension thresholds, Weyl enforcement, tracking verification --
 are marked `lappy` and skip when lappy is not installed.
 """
@@ -30,14 +30,14 @@ HAVE_LAPPY = _lappy_works()
 
 
 def pytest_configure(config):
-    config.addinivalue_line("markers", "lappy: tests the deprecated lappy backend (douse[lappy])")
+    config.addinivalue_line("markers", "lappy: tests the deprecated lappy backend (lappy by hand)")
     config.addinivalue_line("markers", "slow: a long-running test")
 
 
 def pytest_collection_modifyitems(config, items):
     if HAVE_LAPPY:
         return
-    skip = pytest.mark.skip(reason="needs a working lappy, the deprecated backend (douse[lappy] "
+    skip = pytest.mark.skip(reason="needs a working lappy, the deprecated backend (lappy by hand "
                             "with a gsvd4py that still takes tola/tolb)")
     for item in items:
         if "lappy" in item.keywords:

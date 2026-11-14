@@ -348,7 +348,7 @@ class VertexPolygon:
         return Polygon(vertices, **kwargs)
 
     def lappy_domain(self, p, **kwargs):
-        """The `lappy.Polygon` for `p`. DEPRECATED: for the lappy backend only (douse[lappy])."""
+        """The `lappy.Polygon` for `p`. DEPRECATED: for the lappy backend only (lappy by hand)."""
         from lappy import Polygon
         vertices = self.vertices(p)
         if polygon_area(vertices) < 0:

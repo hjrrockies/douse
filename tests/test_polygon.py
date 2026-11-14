@@ -149,7 +149,7 @@ def test_the_family_builds_a_chladni_domain():
 
 
 def test_the_family_still_builds_a_lappy_domain_on_request():
-    """The deprecated lappy backend's domain, for `LappySpectrumEvaluator` (douse[lappy])."""
+    """The deprecated lappy backend's domain, for `LappySpectrumEvaluator` (lappy by hand)."""
     lappy = pytest.importorskip("lappy")
     fam = VertexPolygon(4, perim=PERIM)
     dom = fam.lappy_domain(_p('quad'))

@@ -13,7 +13,7 @@ shape-derivative chain rule, and the optimizers.
 **Backend (2026-10-14): chladni.** `SpectrumEvaluator` solves on chladni: a frozen basis plan
 (`chladni.plan`), warm-started from the previous iterate, with certified per-level bounds and a
 Weyl count audit, refusing what it cannot certify (`douse/chladni_backend.py`). The earlier
-backend, [`lappy`](../lappy), is a **deprecated** optional extra (`pip install douse[lappy]`):
+backend, [`lappy`](../lappy), is **deprecated** and no longer a dependency (install it by hand, in its own environment):
 `LappySpectrumEvaluator` reproduces older results, and the tests of its internals are marked
 `lappy` and skip without it. lappy-only options (`replan_tol`, `lam_max_window`, `track_ttol`,
 ...) are accepted by `SpectrumEvaluator` and ignored, with a one-time warning.

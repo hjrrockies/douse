@@ -24,11 +24,12 @@ with both answers looking entirely plausible. See lappy's `docs/polygon_contract
 """
 import numpy as np
 
-try:                    # the lappy Hadamard path, for the deprecated lappy backend (douse[lappy])
+try:                    # the lappy Hadamard path, for the deprecated lappy backend (lappy by hand)
     from lappy.eigfun_integrals import eigfun_cauchy_data, normal_velocity, weighted_integral
 except ImportError:
     def _needs_lappy(*_a, **_k):
-        raise ImportError("this derivative path is the lappy backend's: install douse[lappy]")
+        raise ImportError("this derivative path is the lappy backend's: install lappy by hand, "
+                          "in an environment of its own")
     eigfun_cauchy_data = normal_velocity = weighted_integral = _needs_lappy
 
 __all__ = ['vertex_velocity', 'velocity_fields', 'dlam_dvertices', 'dlam_dp',

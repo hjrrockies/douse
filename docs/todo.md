@@ -15,7 +15,7 @@ the evaluator run-health statistics the ledger can filter on (a row without one 
 UNCERTIFIED, never dropped), fixed the level-cut hazard (`lam_3/lam_1` on hexagons drives
 `lam_3` into the `lam_4 = lam_5` pair, and a truncated copy killed the run), let warnings reach
 `maximize_ratio`'s caller, and ran the inverse problem through `descend` for the first time
-(`tests/test_inverse_smoke.py`). lappy is a deprecated extra that cannot run beside chladni's
+(`tests/test_inverse_smoke.py`). lappy (deprecated, no longer a dependency since 2026-11-13) cannot run beside chladni's
 gsvd4py; its scripts are in `benchmarks/lappy/`. Still open from the audit
 (`../CODE_AUDIT_2026-10-13.md`): a single backend protocol instead of `hasattr` dispatch and
 `evaluator._last` writes; splitting `maximize_ratio`; speed near the k=2 cluster (chladni is
