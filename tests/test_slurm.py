@@ -45,6 +45,8 @@ def test_the_dry_run_on_v0_prints_one_array_job_per_cell(capsys, monkeypatch):
     for var in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
                 'VECLIB_NUM_THREADS'):
         assert out.count(f'export {var}=1') == 12
+    # Every task records its shape path (the user's rule since 2026-11-15).
+    assert out.count('export DOUSE_RECORD=1') == 12
     cmd = [ln for ln in out.splitlines() if 'benchmarks.ratio_multistart' in ln]
     assert len(cmd) == 12
     assert ('--spec benchmarks/specs/thesis_ratio_v0.toml --N 6 --k 2 --start-index '

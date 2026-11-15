@@ -20,6 +20,10 @@ THE LAYOUT, and why each piece is what it is:
   - MEMORY AND TIME FROM THE SPEC (`slurm_mem`, `slurm_time`, and optionally `slurm_partition`,
     `slurm_account`; `douse.spec`), which are not part of its content hash. A spec without them
     gets `DEFAULT_MEM`/`DEFAULT_TIME`, and the flags here override either.
+  - EVERY TASK KEEPS ITS RECORD (`export DOUSE_RECORD=1`; `ratio_multistart` then writes
+    `task_<i>.jsonl.start<i>.record.jsonl`, `douse.record`). F1 and F2 were submitted without
+    it and have endpoints but no shape paths (2026-11-15); the user's rule since then is that
+    every run records. In the script, not the submitting shell, so it cannot be forgotten.
   - PATHS RELATIVE TO THE douse CHECKOUT the job runs in (`$DOUSE_ROOT`, else the directory
     `sbatch` was run from), so scripts generated on one machine run on another.
 """
@@ -108,6 +112,7 @@ def script(spec, N, k, spec_path, out, res, runner='uv run python'):
               'cd "${DOUSE_ROOT:-$SLURM_SUBMIT_DIR}"',
               '']
     lines += [f'export {v}=1' for v in BLAS_VARS]
+    lines.append('export DOUSE_RECORD=1')
     i = '${SLURM_ARRAY_TASK_ID}'
     lines += ['',
               f'mkdir -p {shlex.quote(task_dir)}',
