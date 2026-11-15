@@ -193,3 +193,30 @@ def test_a_mirror_spec_runs_in_its_chart(monkeypatch, chart, cls):
     v = VertexPolygon(6, perim=PERIM).vertices(np.asarray(row['x']))
     for x, y in zip(_shape(v), _shape(seed)):
         np.testing.assert_allclose(x, y, atol=1e-9)
+
+
+# --- random mirror seeds (2026-11-14, final_ratio_mirror_v1) ------------------------------------
+
+ms = pytest.importorskip('benchmarks.make_seeds')
+
+
+@pytest.mark.parametrize('N', [5, 6, 7, 8, 11, 12, 16])
+def test_random_mirror_seeds_are_exactly_symmetric_with_the_intended_axis(N):
+    seeds = ms.random_mirror_seeds(N, 3, n=6)
+    assert len(seeds) == 6
+    for i, (v, note) in enumerate(seeds):
+        axis = 'vertex' if (N % 2 or i % 2 == 0) else 'edge'
+        assert axis in note
+        assert mirror_axes(v)[0][0] < 1e-14
+        fam, q, defect = FourierMirrorPolygon.from_vertices(v, PERIM, s=1.0)
+        assert defect < 1e-14 and fam.axis == axis
+        assert np.min(dg.edge_lengths(v)) >= PERIM/(10*N)
+        assert np.sum(dg.edge_lengths(v)) == pytest.approx(PERIM)
+        assert VertexPolygon(N, perim=PERIM).is_valid(param_vector(v, PERIM))
+
+
+def test_random_mirror_seeds_are_deterministic_and_the_same_for_every_k():
+    a, b = ms.random_mirror_seeds(9, 1), ms.random_mirror_seeds(9, 7)
+    for (va, _), (vb, _) in zip(a, b):
+        np.testing.assert_array_equal(va, vb)
+    assert not np.allclose(a[2][0], ms.random_mirror_seeds(9, 1, seed0=1)[2][0])

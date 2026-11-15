@@ -4,6 +4,7 @@ than drawn at random.  (2026-11-03)
     uv run python -m benchmarks.make_seeds split  --cells N6_k4 N7_k5 --out benchmarks/seeds/split_v1.json
     uv run python -m benchmarks.make_seeds mirror --cells N5_k3 N8_k5 --out benchmarks/seeds/mirror_v1.json
     uv run python -m benchmarks.make_seeds grid   --cells N3_k4 N3_k5 --out benchmarks/seeds/grid_v1.json
+    uv run python -m benchmarks.make_seeds random_mirror --cells N5_k1 .. --starts 6 --out ..
 
 `k` is the ledger's (0-based: N6_k4 is lam_5/lam_1). The rows the seeds come from are the best
 certified rows of the ledgers under `--from` (default: thesis_ratio_v1 and v2 under
@@ -17,6 +18,10 @@ starts at about the (N-1)-gon's value and is free to improve on it.
 
 MIRROR: the best certified rows of a cell whose optimum is nearly symmetric. `ratio_multistart`
 symmetrizes each about its best mirror line and runs in `MirrorPolygon`.
+
+RANDOM_MIRROR (2026-11-14, the final mirror table): no earlier rows, so random symmetric starts --
+`runs.start_shape`'s recipe drawn for half the polygon and reflected, exact by construction; even
+N alternates the two kinds of axis. The same seeds for every k of an N.
 
 GRID: the local maxima of `lam_{k+1}/lam_1` over the triangle grid (`family_grid`,
 triangle_grid_v1), as triangles. The grid cross-check found every N=3 optimum within one grid
@@ -125,6 +130,55 @@ def mirror_seeds(N, k, roots=FROM, n=2):
             for r in rows]
 
 
+def random_mirror(N, i, axis, seed0=0, perim=PERIM, near_regular=False):
+    """A random mirror-symmetric star-shaped N-gon: `runs.start_shape`'s recipe (angles at
+    least 0.25 apart, radii uniform on [0.55, 1], scaled to `perim`) drawn for half the polygon
+    and reflected in the real axis, so the symmetry is exact. `axis='vertex'` puts a vertex on
+    the axis at angle 0 (and another at pi for even N); `axis='edge'` (even N only) puts none
+    there, so the axis crosses two edges. `near_regular`: the regular N-gon with that axis,
+    angles and radii jittered by 2% symmetrically, as `start_shape`'s start 0 is."""
+    if axis == 'edge' and N % 2:
+        raise ValueError('an odd polygon has a vertex on every mirror axis')
+    on_axis = [0.0] if N % 2 else ([0.0, np.pi] if axis == 'vertex' else [])
+    m = (N - len(on_axis))//2
+    rng = np.random.default_rng([seed0, i, N, 7])
+    l_min = perim/(10.0*N)                       # `MinEdgeLength`'s default for N-gons
+    while True:
+        if near_regular:
+            full = 2*np.pi*np.arange(N)/N + (0.0 if axis == 'vertex' else np.pi/N)
+            th = np.sort(full[(full > 1e-9) & (full < np.pi - 1e-9)])
+            th = th + 0.02*rng.normal(size=m)*(2*np.pi/N)
+            r_pair, r_axis = 1 + 0.02*rng.normal(size=m), 1 + 0.02*rng.normal(size=len(on_axis))
+        else:
+            th = np.sort(rng.uniform(0, np.pi, m))
+            r_pair, r_axis = rng.uniform(0.55, 1.0, m), rng.uniform(0.55, 1.0, len(on_axis))
+        ang = np.concatenate([on_axis, th, 2*np.pi - th])
+        rad = np.concatenate([r_axis, r_pair, r_pair])
+        order = np.argsort(ang)
+        ang, rad = ang[order], rad[order]
+        v = rad*np.exp(1j*ang)
+        v = v*perim/np.abs(np.diff(np.concatenate([v, v[:1]]))).sum()
+        gaps = np.diff(np.concatenate([ang, [ang[0] + 2*np.pi]]))
+        if np.min(gaps) >= (0.0 if near_regular else 0.25) and \
+                np.min(np.abs(np.diff(np.concatenate([v, v[:1]])))) >= l_min:
+            return v
+
+
+def random_mirror_seeds(N, k, n=6, seed0=0):
+    """`n` random mirror-symmetric starts for an N-gon cell, the same for every `k`. Odd N has one
+    kind of axis; even N alternates vertex and edge axes, starting with the vertex one. The first
+    start of each axis kind is the jittered regular N-gon (`random_mirror`)."""
+    kinds = ['vertex'] if N % 2 else ['vertex', 'edge']
+    out = []
+    for i in range(n):
+        axis = kinds[i % len(kinds)]
+        near = i < len(kinds)
+        v = random_mirror(N, i, axis, seed0, near_regular=near)
+        out.append((v, f'random mirror N{N} start {i}: {axis} axis'
+                       f'{", jittered regular" if near else ""} (seed0={seed0})'))
+    return out
+
+
 def grid_seeds(N, k, grid=GRID,
                spec_path=ROOT/'specs/triangle_grid_v1.toml'):
     from scipy.spatial import cKDTree
@@ -145,18 +199,21 @@ def grid_seeds(N, k, grid=GRID,
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument('kind', choices=['split', 'mirror', 'grid'])
+    ap.add_argument('kind', choices=['split', 'mirror', 'grid', 'random_mirror'])
     ap.add_argument('--cells', nargs='+', required=True, help='target cells, e.g. N6_k4')
     ap.add_argument('--from', dest='roots', nargs='+', default=None,
                     help='ledger roots for split/mirror (default: thesis_ratio_v1 and v2)')
     ap.add_argument('--grid', default=str(GRID),
                     help='the triangle grid ledgers, for grid seeds')
+    ap.add_argument('--starts', type=int, default=6, help='random_mirror: starts per cell')
+    ap.add_argument('--seed0', type=int, default=0, help='random_mirror: the draws\' seed')
     ap.add_argument('--out', required=True)
     args = ap.parse_args(argv)
     roots = [pathlib.Path(r) for r in args.roots] if args.roots else FROM
     make = {'split': lambda N, k: split_seeds(N, k, roots),
             'mirror': lambda N, k: mirror_seeds(N, k, roots),
-            'grid': lambda N, k: grid_seeds(N, k, pathlib.Path(args.grid))}[args.kind]
+            'grid': lambda N, k: grid_seeds(N, k, pathlib.Path(args.grid)),
+            'random_mirror': lambda N, k: random_mirror_seeds(N, k, args.starts, args.seed0)}[args.kind]
     table = {}
     for c in args.cells:
         N, k = parse_cell(c)
