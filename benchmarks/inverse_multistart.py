@@ -43,6 +43,7 @@ from functools import lru_cache
 import numpy as np
 
 from douse import spec as spec_mod
+from douse.record import is_record
 
 PACKAGE_ROOT = spec_mod.PACKAGE_ROOT
 SCHEDULING = spec_mod.SCHEDULING
@@ -318,6 +319,8 @@ def _grid_table(folder):
         root = PACKAGE_ROOT/root
     verts, lams = [], []
     for f in sorted(root.glob('task_*.jsonl')):
+        if is_record(f):
+            continue
         with open(f) as fh:
             for line in fh:
                 if not line.strip():
@@ -520,6 +523,8 @@ def run(spec, task, ntasks, out, limit=None):
 def _load(spec, out):
     rows, foreign = {}, 0
     for f in sorted(pathlib.Path(out).glob('task_*.jsonl')):
+        if is_record(f):
+            continue
         with open(f) as fh:
             for line in fh:
                 if not line.strip():

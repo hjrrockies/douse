@@ -73,6 +73,7 @@ from scipy.interpolate import RBFInterpolator
 from scipy.special import gammaln, logsumexp
 
 from douse import spec as spec_mod
+from douse.record import is_record
 
 PACKAGE_ROOT = spec_mod.PACKAGE_ROOT
 SCHEDULING = spec_mod.SCHEDULING
@@ -507,6 +508,8 @@ def load_rows(spec, out):
     base = PACKAGE_ROOT/out if not pathlib.Path(out).is_absolute() else pathlib.Path(out)
     rows, foreign = [], 0
     for p in sorted(base.glob('task_*.jsonl')):
+        if is_record(p):
+            continue
         for line in p.read_text().splitlines():
             if not line.strip():
                 continue

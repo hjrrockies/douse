@@ -41,6 +41,16 @@ import numpy as np
 
 SCHEMA = 1
 
+#: A record's file name ends in this (`<ledger>.start<i>.record.jsonl`, written beside the ledger).
+#: It also ends in ``.jsonl``, so a reader that globs ledgers (``*.jsonl``, ``task_*.jsonl``)
+#: must skip records with `is_record`: their lines are not ledger rows.
+RECORD_SUFFIX = '.record.jsonl'
+
+
+def is_record(path):
+    """Whether `path` (str or Path) names a run record rather than a ledger."""
+    return str(path).endswith(RECORD_SUFFIX)
+
 #: The `_State` counters copied onto every ``iter`` line, so a reader sees what each iteration
 #: did without diffing results.
 COUNTERS = ('n_cluster_steps', 'n_interior_steps', 'n_infeasible', 'n_unresolved',

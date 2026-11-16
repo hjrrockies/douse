@@ -55,6 +55,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from douse import spec as spec_mod
+from douse.record import is_record
 
 PACKAGE_ROOT = spec_mod.PACKAGE_ROOT
 SCHEDULING = spec_mod.SCHEDULING
@@ -360,6 +361,8 @@ def _load(spec, folder):
     """`(rows by id, foreign count)` from every `task_*.jsonl` in `folder`."""
     rows, foreign = {}, 0
     for path in sorted(pathlib.Path(folder).glob('task_*.jsonl')):
+        if is_record(path):
+            continue
         with open(path) as fh:
             for line in fh:
                 if not line.strip():

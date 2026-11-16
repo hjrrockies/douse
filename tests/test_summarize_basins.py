@@ -62,6 +62,20 @@ def test_a_directory_tree_of_task_ledgers_pools_per_cell(tmp_path):
     assert len(sg.summarize(rows, 1e-6, 1e-4)['basins']) == 2
 
 
+def test_run_records_beside_the_ledgers_are_not_read_as_ledgers(tmp_path):
+    """DOUSE_RECORD=1 writes `<ledger>.start<i>.record.jsonl` beside each ledger; its lines are
+    not rows (no N, k, fun), and on 2026-11-16 reading them crashed every F2 summary."""
+    for i, r in enumerate(TWO_BASINS):
+        write(tmp_path / 'N6_k1' / f'task_{i}.jsonl', [r])
+        write(tmp_path / 'N6_k1' / f'task_{i}.jsonl.start{i}.record.jsonl', [dict(kind='iter', F=1.0)])
+    write(tmp_path / 'N4_k1.jsonl', [row(0, 2.5, N=4)])
+    write(tmp_path / 'N4_k1.jsonl.start0.record.jsonl', [dict(kind='iter', F=1.0)])
+    found = sg.cell_ledgers(str(tmp_path))
+    assert sorted(found) == ['N4_k1', 'N6_k1'] and len(found['N6_k1']) == 8
+    assert not any(p.endswith('.record.jsonl') for ps in found.values() for p in ps)
+    assert len(sg.load_cell(found['N6_k1'])) == 8
+
+
 def test_a_retried_task_counts_once(tmp_path):
     """Task 3 resubmitted: its ledger holds a crash and then the result, and a stray copy of the
     same start in another file must not add a ninth start to the cell."""

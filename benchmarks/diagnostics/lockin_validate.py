@@ -22,6 +22,8 @@ import time
 
 import numpy as np
 
+from douse.record import is_record
+
 HERE = pathlib.Path(__file__).resolve().parent
 ROWS = HERE/'lockin_rows.json'
 SPEC = HERE.parent/'specs'/'thesis_ratio_v2.toml'
@@ -110,6 +112,7 @@ def _overclaims(r):
 
 def compare(folder):
     new = [json.loads(line) for f in sorted(pathlib.Path(folder).glob('row*.jsonl'))
+           if not is_record(f)
            for line in open(f) if line.strip()]
     print(f"{'row':>3} {'tau':>6} {'N':>2} {'k':>2} {'st':>2} {'v2':>10} {'now':>10} "
           f"{'F change':>10} {'eps_g':>8} {'final':>6} {'h now':>6} {'h v2':>6} "

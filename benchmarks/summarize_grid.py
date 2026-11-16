@@ -122,15 +122,19 @@ def cell_ledgers(root):
     default, and per-task ledgers `root/N6_k2/*.jsonl` as `benchmarks/slurm.py` lays out an
     array job (one start per task, one file per task, so no two tasks share a file). Only
     directories named like a cell are descended into, so archives beside the ledgers
-    (`pre_plateau_fix/`, `rerun/`, ...) are not swept into the answer.
+    (`pre_plateau_fix/`, `rerun/`, ...) are not swept into the answer. Run records written beside
+    the ledgers (`*.record.jsonl`, `douse.record`) are not ledgers and are skipped.
     """
+    from douse.record import is_record
     cells = {}
     for path in sorted(glob.glob(os.path.join(root, 'N*_k*.jsonl'))):
+        if is_record(path):
+            continue
         cells.setdefault(os.path.basename(path)[:-len('.jsonl')], []).append(path)
     for d in sorted(glob.glob(os.path.join(root, 'N*_k*'))):
         if os.path.isdir(d):
             cells.setdefault(os.path.basename(d), []).extend(
-                sorted(glob.glob(os.path.join(d, '*.jsonl'))))
+                sorted(p for p in glob.glob(os.path.join(d, '*.jsonl')) if not is_record(p)))
     return {c: ps for c, ps in cells.items() if ps}
 
 
