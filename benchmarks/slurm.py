@@ -19,7 +19,9 @@ THE LAYOUT, and why each piece is what it is:
     that sizes itself from the node's core count oversubscribes the node many times over.
   - MEMORY AND TIME FROM THE SPEC (`slurm_mem`, `slurm_time`, and optionally `slurm_partition`,
     `slurm_account`; `douse.spec`), which are not part of its content hash. A spec without them
-    gets `DEFAULT_MEM`/`DEFAULT_TIME`, and the flags here override either.
+    gets `DEFAULT_MEM`/`DEFAULT_TIME`, and the flags here override either. `slurm_mem` may be a
+    TABLE BY N (`{"3-6" = "2G", "7-16" = "4G"}`): each cell's script then asks for its own N's
+    memory (2026-11-24, after ARC flagged 8-24 GB requests on tasks using 2-48% of them).
   - EVERY TASK KEEPS ITS RECORD (`export DOUSE_RECORD=1`; `ratio_multistart` then writes
     `task_<i>.jsonl.start<i>.record.jsonl`, `douse.record`). F1 and F2 were submitted without
     it and have endpoints but no shape paths (2026-11-15); the user's rule since then is that
@@ -75,11 +77,19 @@ def mail_lines(address):
 def resources(spec, mem=None, time=None, partition=None, account=None, mail=None):
     """`{mem, time, partition, account, mail}`: a flag wins, then the spec (or for mail the
     environment), then the default."""
-    return dict(mem=mem or spec.slurm_mem or DEFAULT_MEM,
+    # A table by N has no single figure: `mem` is then None and `script` asks `spec.mem_for(N)`.
+    by_n = isinstance(spec.slurm_mem, dict)
+    return dict(mem=mem or (None if by_n else spec.slurm_mem or DEFAULT_MEM),
                 time=time or spec.slurm_time or DEFAULT_TIME,
                 partition=partition or spec.slurm_partition,
                 account=account or spec.slurm_account,
                 mail=mail_address(mail))
+
+
+def cell_mem(spec, N, res):
+    """The memory one cell's tasks ask for: a `--mem` flag, else the spec's (by N when a table),
+    else `DEFAULT_MEM`."""
+    return res['mem'] or spec.mem_for(N) or DEFAULT_MEM
 
 
 def script(spec, N, k, spec_path, out, res, runner='uv run python'):
@@ -94,7 +104,7 @@ def script(spec, N, k, spec_path, out, res, runner='uv run python'):
              f'#SBATCH --array=0-{n - 1}',
              '#SBATCH --ntasks=1',
              '#SBATCH --cpus-per-task=1',
-             f"#SBATCH --mem={res['mem']}",
+             f"#SBATCH --mem={cell_mem(spec, N, res)}",
              f"#SBATCH --time={res['time']}"]
     if res['partition']:
         lines.append(f"#SBATCH --partition={res['partition']}")
@@ -144,8 +154,10 @@ def main(argv=None):
     out = args.out or spec_mod.run_dir('slurm', spec.name)
     spec_path = _rel(args.spec, root)
     res = resources(spec, args.mem, args.time, args.partition, args.account, args.mail)
+    mem = res['mem'] or 'by N (' + ', '.join(
+        f'N{N} {m}' for N, m in sorted({(N, cell_mem(spec, N, res)) for N, _ in spec.cells})) + ')'
     print(f'# spec {spec.name} @ {spec.sha}: {len(spec.cells)} cell(s) x {spec.starts} start(s); '
-          f"mem {res['mem']}, time {res['time']} per task"
+          f"mem {mem}, time {res['time']} per task"
           + ('' if spec.slurm_mem and spec.slurm_time else
              f' (spec sets {"neither" if not (spec.slurm_mem or spec.slurm_time) else "one"};'
              f' defaults {DEFAULT_MEM}, {DEFAULT_TIME})'))

@@ -35,6 +35,7 @@ def test_the_dry_run_on_v0_prints_one_array_job_per_cell(capsys, monkeypatch):
         raise AssertionError('slurm.py must never run a command')
     monkeypatch.setattr('subprocess.run', no_sbatch)
     monkeypatch.setattr('subprocess.Popen', no_sbatch)
+    monkeypatch.delenv('DOUSE_RUNS', raising=False)   # the default --out is relative only then
     sl.main([str(V0), '--dry-run'])
     out = capsys.readouterr().out
     v0 = S.load(V0)
@@ -107,3 +108,40 @@ def test_a_seeded_cell_runs_one_task_per_seed():
     arrays = {(N, k): re.search(r'--array=0-(\d+)', sl.script(spec, N, k, 's.toml', 'o', res)).group(1)
               for N, k in spec.cells}
     assert arrays == {(6, 4): '9', (7, 5): '11'}
+
+
+MEM_TABLE = 'slurm_mem = {"3-5" = "2G", "6" = "3G", "7-12" = "4G"}\n'
+
+
+def test_a_memory_table_by_n_is_scheduling_and_is_checked(tmp_path):
+    """`slurm_mem` as a table by N: same hash, every cell's N covered, no N twice."""
+    v0 = S.load(V0)                              # cells N = 3..6 x k
+    src = V0.read_text()
+    (tmp_path / 't.toml').write_text(src + MEM_TABLE)
+    t = S.load(tmp_path / 't.toml')
+    assert t.sha == v0.sha
+    assert [t.mem_for(N) for N in (3, 5, 6, 7, 12)] == ['2G', '2G', '3G', '4G', '4G']
+    assert t.mem_for(13) is None
+    for bad, match in [('{"3-5" = "2G"}', r'no memory for N = \[6\]'),
+                       ('{"3-5" = "2G", "5-6" = "3G"}', 'overlap'),
+                       ('{"3-x" = "2G", "6" = "3G"}', 'keys'),
+                       ('{"5-3" = "2G", "6" = "3G"}', 'empty'),
+                       ('{"3-6" = 2}', 'string')]:
+        (tmp_path / 'b.toml').write_text(src + f'slurm_mem = {bad}\n')
+        with pytest.raises(ValueError, match=match):
+            S.load(tmp_path / 'b.toml')
+
+
+def test_each_cell_asks_for_its_own_n_and_a_flag_still_wins(tmp_path, capsys):
+    (tmp_path / 't.toml').write_text(V0.read_text() + MEM_TABLE)
+    spec = S.load(tmp_path / 't.toml')
+    res = sl.resources(spec)
+    assert res['mem'] is None
+    assert '#SBATCH --mem=2G' in sl.script(spec, 3, 1, 't.toml', 'o', res)
+    assert '#SBATCH --mem=3G' in sl.script(spec, 6, 2, 't.toml', 'o', res)
+    flagged = sl.resources(spec, mem='16G')
+    assert '#SBATCH --mem=16G' in sl.script(spec, 3, 1, 't.toml', 'o', flagged)
+    sl.main([str(tmp_path / 't.toml'), '--dry-run'])
+    out = capsys.readouterr().out
+    assert 'mem by N (N3 2G, N4 2G, N5 2G, N6 3G)' in out
+    assert out.count('#SBATCH --mem=2G') == 9 and out.count('#SBATCH --mem=3G') == 3

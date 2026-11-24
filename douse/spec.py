@@ -101,8 +101,20 @@ class RunSpec:
                 raise ValueError(f"a cell needs N >= 3 and k >= 1, got {(N, k)}")
         for key in SCHEDULING:
             v = getattr(self, key)
+            if key == 'slurm_mem' and isinstance(v, dict):
+                table = _mem_table(v)
+                missing = sorted({N for N, _ in cells if _lookup(table, N) is None})
+                if missing:
+                    raise ValueError(f"slurm_mem names no memory for N = {missing}")
+                continue
             if v is not None and not isinstance(v, str):
                 raise ValueError(f"{key} must be a string as sbatch takes it, got {v!r}")
+
+    def mem_for(self, N):
+        """`slurm_mem` for a cell with `N` vertices: the string itself, the table's entry for `N`
+        (`slurm_mem = {"3-6" = "2G", "7-16" = "4G"}`), or None when the spec names none."""
+        v = self.slurm_mem
+        return _lookup(_mem_table(v), N) if isinstance(v, dict) else v
 
     @property
     def angle_bounds(self):
@@ -154,6 +166,37 @@ class RunSpec:
 
     def ledger_name(self, N, k):
         return f"N{N}_k{k}{'' if self.family == 'all' else '_' + self.family}.jsonl"
+
+
+def _mem_table(table):
+    """`{"N" | "lo-hi": "2G"}` as `[(lo, hi, mem)]`, checked: integer bounds, lo <= hi, strings as
+    sbatch takes them, no N covered twice.
+
+    MEMORY BY N (2026-11-24): a task's peak grows with the solver's matrix, and so with N, from
+    ~0.2 GB at N = 3 to ~2 GB at N = 15 once chladni frees solved shapes (thesis-lock-3). One
+    figure for a whole spec either starves its large cells or reserves 4-10x what its small cells
+    use, which is what ARC flagged. The table is scheduling, not content: it never enters the hash."""
+    out = []
+    for key, mem in table.items():
+        lo, sep, hi = str(key).partition('-')
+        try:
+            lo, hi = int(lo), int(hi if sep else lo)
+        except ValueError:
+            raise ValueError(f"slurm_mem keys are N or 'lo-hi', got {key!r}") from None
+        if lo > hi:
+            raise ValueError(f"slurm_mem range {key!r} is empty")
+        if not isinstance(mem, str):
+            raise ValueError(f"slurm_mem[{key!r}] must be a string as sbatch takes it, got {mem!r}")
+        out.append((lo, hi, mem))
+    out.sort()
+    for (_, hi, _), (lo, _, _) in zip(out, out[1:]):
+        if lo <= hi:
+            raise ValueError(f"slurm_mem ranges overlap at N = {lo}")
+    return out
+
+
+def _lookup(table, N):
+    return next((mem for lo, hi, mem in table if lo <= N <= hi), None)
 
 
 def load(path):
