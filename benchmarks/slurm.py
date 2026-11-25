@@ -22,6 +22,8 @@ THE LAYOUT, and why each piece is what it is:
     gets `DEFAULT_MEM`/`DEFAULT_TIME`, and the flags here override either. `slurm_mem` may be a
     TABLE BY N (`{"3-6" = "2G", "7-16" = "4G"}`): each cell's script then asks for its own N's
     memory (2026-11-24, after ARC flagged 8-24 GB requests on tasks using 2-48% of them).
+    LOCK-3 AND OLDER REFUSE A TABLE IN A SPEC, so for runs on those releases give it by flag
+    instead: `--mem 3-15=2G,16=3G` (`douse.spec.mem_flag`).
   - EVERY TASK KEEPS ITS RECORD (`export DOUSE_RECORD=1`; `ratio_multistart` then writes
     `task_<i>.jsonl.start<i>.record.jsonl`, `douse.record`). F1 and F2 were submitted without
     it and have endpoints but no shape paths (2026-11-15); the user's rule since then is that
@@ -78,6 +80,7 @@ def resources(spec, mem=None, time=None, partition=None, account=None, mail=None
     """`{mem, time, partition, account, mail}`: a flag wins, then the spec (or for mail the
     environment), then the default."""
     # A table by N has no single figure: `mem` is then None and `script` asks `spec.mem_for(N)`.
+    # A flag's table (`3-15=2G,16=3G`) stays as given: `script` looks each cell's N up in it.
     by_n = isinstance(spec.slurm_mem, dict)
     return dict(mem=mem or (None if by_n else spec.slurm_mem or DEFAULT_MEM),
                 time=time or spec.slurm_time or DEFAULT_TIME,
@@ -89,7 +92,7 @@ def resources(spec, mem=None, time=None, partition=None, account=None, mail=None
 def cell_mem(spec, N, res):
     """The memory one cell's tasks ask for: a `--mem` flag, else the spec's (by N when a table),
     else `DEFAULT_MEM`."""
-    return res['mem'] or spec.mem_for(N) or DEFAULT_MEM
+    return spec.mem_for(N, res['mem']) or DEFAULT_MEM
 
 
 def script(spec, N, k, spec_path, out, res, runner='uv run python'):
@@ -138,7 +141,7 @@ def main(argv=None):
     ap.add_argument('--out', default=None,
                     help='where the jobs write, relative to the douse checkout '
                          '(default: $DOUSE_RUNS/slurm/<spec name>, else benchmarks/run/...)')
-    ap.add_argument('--mem', default=None, help='override the spec (sbatch --mem)')
+    ap.add_argument('--mem', default=None, help="override the spec (sbatch --mem): one figure, or by N as '3-15=2G,16=3G'")
     ap.add_argument('--time', default=None, help='override the spec (sbatch --time)')
     ap.add_argument('--partition', default=None)
     ap.add_argument('--account', default=None)
@@ -154,7 +157,7 @@ def main(argv=None):
     out = args.out or spec_mod.run_dir('slurm', spec.name)
     spec_path = _rel(args.spec, root)
     res = resources(spec, args.mem, args.time, args.partition, args.account, args.mail)
-    mem = res['mem'] or 'by N (' + ', '.join(
+    mem = res['mem'] if res['mem'] and '=' not in res['mem'] else 'by N (' + ', '.join(
         f'N{N} {m}' for N, m in sorted({(N, cell_mem(spec, N, res)) for N, _ in spec.cells})) + ')'
     print(f'# spec {spec.name} @ {spec.sha}: {len(spec.cells)} cell(s) x {spec.starts} start(s); '
           f"mem {mem}, time {res['time']} per task"

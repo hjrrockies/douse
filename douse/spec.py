@@ -110,11 +110,17 @@ class RunSpec:
             if v is not None and not isinstance(v, str):
                 raise ValueError(f"{key} must be a string as sbatch takes it, got {v!r}")
 
-    def mem_for(self, N):
+    def mem_for(self, N, override=None):
         """`slurm_mem` for a cell with `N` vertices: the string itself, the table's entry for `N`
-        (`slurm_mem = {"3-6" = "2G", "7-16" = "4G"}`), or None when the spec names none."""
-        v = self.slurm_mem
-        return _lookup(_mem_table(v), N) if isinstance(v, dict) else v
+        (`slurm_mem = {"3-6" = "2G", "7-16" = "4G"}`), or None when the spec names none.
+        `override` (a tool's `--mem` flag: one figure, or a table as `"3-15=2G,16=3G"`) wins."""
+        v = mem_flag(override) if override else self.slurm_mem
+        if not isinstance(v, dict):
+            return v
+        mem = _lookup(_mem_table(v), N)
+        if mem is None:
+            raise ValueError(f"the memory table names no memory for N = {N}")
+        return mem
 
     @property
     def angle_bounds(self):
@@ -193,6 +199,25 @@ def _mem_table(table):
         if lo <= hi:
             raise ValueError(f"slurm_mem ranges overlap at N = {lo}")
     return out
+
+
+def mem_flag(flag):
+    """A `--mem` flag as `slurm_mem` takes it: `"4G"` stays a string; `"3-15=2G,16=3G"` is a
+    table by N (checked like one).
+
+    WHY A FLAG AND NOT THE SPEC (2026-11-24): thesis-lock-3 and older refuse a spec whose
+    `slurm_mem` is a table, and every task loads its spec. A spec a lock-3 task reads keeps one
+    figure; the tools (`benchmarks/slurm.py`, `benchmarks/resume.py`) take the table by flag."""
+    if '=' not in flag:
+        return flag
+    table = {}
+    for part in flag.split(','):
+        key, sep, mem = part.partition('=')
+        if not sep or not key.strip() or not mem.strip():
+            raise ValueError(f"a memory table flag is 'N=mem' or 'lo-hi=mem', comma-separated; got {flag!r}")
+        table[key.strip()] = mem.strip()
+    _mem_table(table)
+    return table
 
 
 def _lookup(table, N):

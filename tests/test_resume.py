@@ -77,3 +77,9 @@ def test_main_prints_sbatch_lines_and_runs_nothing(spec, tmp_path, capsys, monke
     assert f'sbatch --array=0-7 --mem=2G --qos=tc_normal_long {run}/N3_k1.sbatch' in out
     assert f'sbatch --array=0-7 --mem=3G --qos=tc_normal_long {run}/N6_k3.sbatch' in out
     assert '96 unfinished task(s) in 12 cell(s)' in out
+
+
+def test_a_table_flag_sets_each_cells_base(spec, tmp_path):
+    run = tmp_path / 'runs'
+    got = {c: m for c, m, _ in rs.plan(spec, str(run), mem='3-5=2G,6=3G')}
+    assert got['N3_k1'] == '2G' and got['N6_k1'] == '3G'

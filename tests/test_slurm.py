@@ -121,7 +121,8 @@ def test_a_memory_table_by_n_is_scheduling_and_is_checked(tmp_path):
     t = S.load(tmp_path / 't.toml')
     assert t.sha == v0.sha
     assert [t.mem_for(N) for N in (3, 5, 6, 7, 12)] == ['2G', '2G', '3G', '4G', '4G']
-    assert t.mem_for(13) is None
+    with pytest.raises(ValueError, match='no memory for N = 13'):
+        t.mem_for(13)                            # never a silent fall back to the default
     for bad, match in [('{"3-5" = "2G"}', r'no memory for N = \[6\]'),
                        ('{"3-5" = "2G", "5-6" = "3G"}', 'overlap'),
                        ('{"3-x" = "2G", "6" = "3G"}', 'keys'),
@@ -145,3 +146,24 @@ def test_each_cell_asks_for_its_own_n_and_a_flag_still_wins(tmp_path, capsys):
     out = capsys.readouterr().out
     assert 'mem by N (N3 2G, N4 2G, N5 2G, N6 3G)' in out
     assert out.count('#SBATCH --mem=2G') == 9 and out.count('#SBATCH --mem=3G') == 3
+
+
+def test_a_memory_table_by_flag_for_specs_lock3_must_read(tmp_path):
+    # thesis-lock-3 refuses a table in a spec, so the table can come by flag instead.
+    spec = S.load(V0)
+    assert isinstance(spec.slurm_mem, (str, type(None)))
+    res = sl.resources(spec, mem='3-5=2G,6=3G')
+    assert '#SBATCH --mem=2G' in sl.script(spec, 3, 1, 't.toml', 'o', res)
+    assert '#SBATCH --mem=3G' in sl.script(spec, 6, 1, 't.toml', 'o', res)
+    with pytest.raises(ValueError, match='no memory for N = 6'):
+        sl.script(spec, 6, 1, 't.toml', 'o', sl.resources(spec, mem='3-5=2G'))
+    for bad in ('3-5=2G,5=3G', '3=', 'x=2G'):
+        with pytest.raises(ValueError):
+            S.mem_flag(bad)
+    assert S.mem_flag('4G') == '4G'
+
+
+def test_campaign_specs_hold_one_memory_figure_lock3_can_load():
+    # A table in a spec would make every lock-3 task refuse it at load.
+    for path in sorted(V0.parent.glob('final_*.toml')):
+        assert isinstance(S.load(path).slurm_mem, (str, type(None))), path.name

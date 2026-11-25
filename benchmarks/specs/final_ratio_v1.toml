@@ -35,7 +35,11 @@ s = 1.0
 family = "all"
 sigma_max = 1e-6
 perim = 4.0
-slurm_mem = "12G"
+# MEMORY (2026-11-24): thesis-lock-3 peaks, from a 33-task calibration on the worst lock-2 tasks of
+# F1 N6-12 and F2 N6-16 (job 8973997): F1 <= 0.96 GB, F2 <= 1.08 GB to N12, 1.53 at N13, 1.84 at
+# N16. 2G everywhere. Lock-3 refuses a table here (every task loads this file), so a table goes
+# in the tools' flag: `slurm.py/resume.py --mem 2G`. resume.py doubles a task's memory per OOM kill.
+slurm_mem = "2G"
 slurm_time = "14-00:00:00"
 slurm_account = "siallocation"
 slurm_partition = "normal_q"

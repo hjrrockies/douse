@@ -13,7 +13,8 @@ A crashed row is retried like a missing one. Tasks still queued or running (`squ
 alone, so a resubmit cannot race a live task over one checkpoint; `--no-squeue` skips the check
 (off the cluster, or in tests).
 
-WHICH MEMORY: the cell's figure from the spec (`slurm_mem`, a table by N or one figure), doubled
+WHICH MEMORY: the cell's figure from `--mem` or the spec (`slurm_mem`; a table by N or one figure;
+lock-3 specs hold one figure, so give a table by flag: `--mem 3-15=2G,16=3G`), doubled
 for every out-of-memory kill in that task's logs (`<dir>/logs/<cell>_<job>_<i>.out`, Slurm's
 "oom_kill event" line), up to `--cap`. A task that outgrew its tier comes back one tier up from
 its checkpoint, at most ~30 minutes lost (`runs.Checkpoint` flushes every 1800 s, atomically, so
@@ -95,7 +96,7 @@ def plan(spec, run_dir, live=frozenset(), cap=DEFAULT_CAP, mem=None):
     out = []
     for N, k in spec.cells:
         cell = cell_name(spec, N, k)
-        base = gib(mem or spec.mem_for(N) or DEFAULT_MEM)
+        base = gib(spec.mem_for(N, mem) or DEFAULT_MEM)
         done = set()
         for f in pathlib.Path(run_dir, cell).glob('task_*.jsonl'):
             if re.fullmatch(r'task_\d+\.jsonl', f.name):
@@ -125,7 +126,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('spec', help='the spec the runs were made from')
     ap.add_argument('--dir', default=None, help='the runs (default $DOUSE_RUNS/slurm/<spec name>)')
-    ap.add_argument('--mem', default=None, help="override the spec's memory as the base figure")
+    ap.add_argument('--mem', default=None, help="override the spec's memory as the base figure: one, or by N as '3-15=2G,16=3G'")
     ap.add_argument('--cap', default=DEFAULT_CAP, help=f'never ask for more (default {DEFAULT_CAP})')
     ap.add_argument('--qos', default=None, help='e.g. tc_normal_long for a run over 7 days')
     ap.add_argument('--no-squeue', action='store_true', help='do not skip queued/running tasks')
