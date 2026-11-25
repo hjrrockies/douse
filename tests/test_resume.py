@@ -83,3 +83,25 @@ def test_a_table_flag_sets_each_cells_base(spec, tmp_path):
     run = tmp_path / 'runs'
     got = {c: m for c, m, _ in rs.plan(spec, str(run), mem='3-5=2G,6=3G')}
     assert got['N3_k1'] == '2G' and got['N6_k1'] == '3G'
+
+
+def test_a_refusal_stop_is_reported_not_resubmitted(spec, tmp_path, capsys):
+    run = tmp_path / 'runs'
+    cell = run / 'N3_k1'
+    cell.mkdir(parents=True)
+    bad = lambda i, err: json.dumps(dict(start=i, ok=False, spec_sha=spec.sha, error=err)) + '\n'
+    refusal = 'UnresolvedSpectrum: chladni: planner: no rung met prec=1e-09'
+    (cell / 'task_0.jsonl').write_text(bad(0, refusal))                     # refused: reported
+    (cell / 'task_1.jsonl').write_text(bad(1, 'SolverRefusal: no spectrum') + bad(1, refusal))
+    (cell / 'task_2.jsonl').write_text(bad(2, refusal) + bad(2, 'MemoryError: '))   # last is a crash
+    (cell / 'task_3.jsonl').write_text(bad(3, 'ValueError: a bug'))         # a crash: retried
+    stops = []
+    tasks = [t for c, _, t in rs.plan(spec, str(run), stops=stops) if c == 'N3_k1'][0]
+    assert tasks == [2, 3, 4, 5, 6, 7]
+    assert [(c, i) for c, i, _ in stops] == [('N3_k1', 0), ('N3_k1', 1)]
+    forced = [t for c, _, t in rs.plan(spec, str(run), retry_refused=True) if c == 'N3_k1'][0]
+    assert forced == list(range(8))
+    rs.main([spec.source, '--dir', str(run), '--no-squeue'])
+    out = capsys.readouterr().out
+    assert '# 2 refusal stop(s) NOT resubmitted' in out and '#   N3_k1 s0: UnresolvedSpectrum' in out
+    assert 'sbatch --array=2-7 --mem=2G' in out

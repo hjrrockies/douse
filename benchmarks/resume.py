@@ -9,7 +9,11 @@ code a resumed task gets. A resumed task picks up its own checkpoint (`ratio_mul
 
 WHICH TASKS: every start of every cell with no finished row in its task ledger
 (`<dir>/<cell>/task_<i>.jsonl`, the rule `ratio_multistart` resumes by: an ok row of this spec).
-A crashed row is retried like a missing one. Tasks still queued or running (`squeue`) are left
+A crashed row is retried like a missing one, BUT A REFUSAL STOP IS NOT (2026-11-25): a start
+whose last row is a `ShapeRefusal` (chladni could not certify the spectrum at the spec's prec,
+see `douse.errors`) still has its checkpoint, so a resubmit replays to the same refusal -- nine F2
+tasks did exactly that on lock-3, one twice. They are listed in a comment with their errors, for
+the debarb/repair route; `--retry-refused` resubmits them anyway. Tasks still queued or running (`squeue`) are left
 alone, so a resubmit cannot race a live task over one checkpoint; `--no-squeue` skips the check
 (off the cluster, or in tests).
 
@@ -30,11 +34,13 @@ import re
 import shutil
 import subprocess
 
-from douse import ledger, spec as spec_mod
+from douse import errors, ledger, spec as spec_mod
 
 from .slurm import DEFAULT_MEM, cell_name
 
 OOM_MARK = 'oom_kill event'
+REFUSALS = tuple(f'{name}:' for name in ('ShapeRefusal', 'SolverRefusal', 'UnresolvedSpectrum'))
+assert all(issubclass(getattr(errors, n[:-1]), errors.ShapeRefusal) for n in REFUSALS)
 DEFAULT_CAP = '16G'
 
 
@@ -64,6 +70,18 @@ def finished(spec, path):
             if r.get('ok', True) and r.get('start') is not None and r.get('spec_sha') == spec.sha}
 
 
+def refused(spec, path):
+    """`{start: error}` for starts of this spec whose LAST row is a refusal stop (no ok row)."""
+    if not os.path.exists(path):
+        return {}
+    last = {}
+    for r in ledger.read_rows(path, dedupe=False):
+        if r.get('start') is not None and r.get('spec_sha') == spec.sha:
+            last[r['start']] = r
+    return {i: r.get('error', '') for i, r in last.items()
+            if not r.get('ok', True) and str(r.get('error', '')).startswith(REFUSALS)}
+
+
 def oom_kills(logs, cell, i):
     """How many of task `i`'s logs end in an out-of-memory kill."""
     n = 0
@@ -90,20 +108,27 @@ def active(spec):
     return live
 
 
-def plan(spec, run_dir, live=frozenset(), cap=DEFAULT_CAP, mem=None):
-    """`[(cell, mem, [tasks])]` to resubmit, in the spec's cell order, one entry per memory."""
+def plan(spec, run_dir, live=frozenset(), cap=DEFAULT_CAP, mem=None, stops=None, retry_refused=False):
+    """`[(cell, mem, [tasks])]` to resubmit, in the spec's cell order, one entry per memory.
+    Refusal stops are left out (unless `retry_refused`) and, if `stops` is a list, appended to it
+    as `(cell, task, error)`."""
     logs = os.path.join(run_dir, 'logs')
     out = []
     for N, k in spec.cells:
         cell = cell_name(spec, N, k)
         base = gib(spec.mem_for(N, mem) or DEFAULT_MEM)
-        done = set()
+        done, refusals = set(), {}
         for f in pathlib.Path(run_dir, cell).glob('task_*.jsonl'):
             if re.fullmatch(r'task_\d+\.jsonl', f.name):
                 done |= finished(spec, str(f))
+                refusals.update(refused(spec, str(f)))
         by_mem = collections.defaultdict(list)
         for i in range(n_tasks(spec, N, k)):
             if i in done or (cell, i) in live:
+                continue
+            if i in refusals and not retry_refused:
+                if stops is not None:
+                    stops.append((cell, i, refusals[i]))
                 continue
             g = min(base * 2 ** oom_kills(logs, cell, i), max(base, gib(cap)))
             by_mem[g].append(i)
@@ -130,17 +155,24 @@ def main(argv=None):
     ap.add_argument('--cap', default=DEFAULT_CAP, help=f'never ask for more (default {DEFAULT_CAP})')
     ap.add_argument('--qos', default=None, help='e.g. tc_normal_long for a run over 7 days')
     ap.add_argument('--no-squeue', action='store_true', help='do not skip queued/running tasks')
+    ap.add_argument('--retry-refused', action='store_true',
+                    help='resubmit refusal stops too (they resume to the same refusal unless something changed)')
     args = ap.parse_args(argv)
 
     spec = spec_mod.load(args.spec)
     run_dir = args.dir or spec_mod.run_dir('slurm', spec.name)
     live = frozenset() if args.no_squeue else active(spec)
-    lines = plan(spec, run_dir, live, args.cap, args.mem)
+    stops = []
+    lines = plan(spec, run_dir, live, args.cap, args.mem, stops, args.retry_refused)
     qos = f' --qos={args.qos}' if args.qos else ''
     n = sum(len(t) for _, _, t in lines)
     print(f'# {spec.name} @ {spec.sha}: {n} unfinished task(s) in {len({c for c, _, _ in lines})} '
           f'cell(s){"" if args.no_squeue else f", {len(live)} queued or running left alone"}. '
           'Submit from the douse checkout the tasks should run on:')
+    if stops:
+        print(f'# {len(stops)} refusal stop(s) NOT resubmitted (debarb/repair route; --retry-refused to force):')
+        for cell, i, err in stops:
+            print(f'#   {cell} s{i}: {err[:110]}')
     for cell, mem, tasks in lines:
         print(f'sbatch --array={array_spec(tasks)} --mem={mem}{qos} {run_dir}/{cell}.sbatch')
 
