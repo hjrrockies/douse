@@ -220,3 +220,64 @@ def test_random_mirror_seeds_are_deterministic_and_the_same_for_every_k():
     for (va, _), (vb, _) in zip(a, b):
         np.testing.assert_array_equal(va, vb)
     assert not np.allclose(a[2][0], ms.random_mirror_seeds(9, 1, seed0=1)[2][0])
+
+
+# --- the probe after a mirror run (2026-11-25) ---------------------------------------------------
+
+def _mirror_spec_and_seed():
+    sp = spec_mod.RunSpec(name='t', cells=[(6, 1)], family='mirror',
+                          seeds='benchmarks/seeds/mirror_v1.json', chart='fourier', s=1.0)
+    seed = FourierMirrorPolygon(6, 'edge', PERIM, s=1.0).vertices(np.array([.03, -.02, .01, .02]))
+    return sp, seed
+
+
+def test_a_mirror_row_reaches_the_ledger_before_its_probe(monkeypatch):
+    """The F2 failure: a 146 h probe after the optimization, and the row only after it."""
+    _fake(monkeypatch)
+    sp, seed = _mirror_spec_and_seed()
+    early = []
+    row = rm.run_one(6, 1, 0, max_iter=3, seed0=0, delta0=0.05, spec=sp, seed=seed, mirror=True,
+                     on_row=early.append)
+    assert len(early) == 1 and early[0]['antisym']['pending']
+    assert 'pending' not in row['antisym'] and row['antisym']['n_probes'] > 0
+    for key in ('fun', 'x', 'x_mirror', 'vertices', 'final_case', 'spec_sha'):
+        assert early[0][key] == row[key]
+
+
+def test_a_mirror_probe_stops_at_the_deadline(monkeypatch):
+    """A deadline already passed (the fake optimizer ignores it): the probe does no solve."""
+    import time
+    _fake(monkeypatch)
+    sp, seed = _mirror_spec_and_seed()
+    row = rm.run_one(6, 1, 0, max_iter=3, seed0=0, delta0=0.05, spec=sp, seed=seed, mirror=True,
+                     deadline=time.time() - 1)
+    a = row['antisym']
+    assert a['out_of_time'] and a['n_done'] == 0 and a['verdict'] == 'no evaluations: out of time'
+    assert a['F_full'] is None
+
+
+def test_a_salvaged_row_is_the_run_s_own_row(monkeypatch):
+    """`benchmarks.salvage_record` rebuilds a run's row from the record's head, last iterate and
+    result -- here a record made from a real (fake-evaluator) run's row."""
+    sv = pytest.importorskip('benchmarks.salvage_record')
+    _fake(monkeypatch)
+    sp, seed = _mirror_spec_and_seed()
+    row = rm.run_one(6, 1, 0, max_iter=3, seed0=0, delta0=0.05, spec=sp, seed=seed, mirror=True)
+    v = np.array(row['vertices'])
+    rows = [dict(kind='head', N=6, k=1, start=0, chart='fourier', s=1.0, prec=1e-9,
+                 backend='fake', seeded=True, mirror=True, spec='t', spec_sha=row['spec_sha']),
+            dict(kind='iter', it=1, prec=1e-10, geometry=dict(v=[v[:, 0].tolist(),
+                                                                 v[:, 1].tolist()])),
+            dict(kind='result', x=row['x_mirror'], fun=row['fun'], nit=row['nit'],
+                 final_case=row['final_case'], convergence=row['convergence'], t=1.0)]
+    got = sv.salvage_row(rows, 'task_0.jsonl.start0.record.jsonl')
+    assert got['antisym']['skipped'] and got['prec'] == 1e-10
+    for key in ('fun', 'nit', 'x_mirror', 'axis', 'chart', 's', 'final_case', 'convergence',
+                'spec_sha', 'N', 'k', 'start', 'family'):
+        assert got[key] == row[key], key
+    for key in ('vertices', 'edges', 'angles'):
+        np.testing.assert_allclose(got[key], row[key], atol=1e-12)
+    rows[1]['geometry']['v'][0][0] += 0.01            # an iterate that is not the result's
+    with pytest.raises(ValueError, match="not result.x's"):
+        sv.salvage_row(rows, 'r')
+    assert sv.salvage_row(rows[:2], 'r') is None      # no result: nothing to salvage

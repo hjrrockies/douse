@@ -149,7 +149,8 @@ def _sigma(row):
 
 def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_redraws=3,
             prec=1e-10, backend='chladni', spec=None, seed=None, mirror=False, ckpt=None,
-            deadline=None, chart='vertex', s=0.0, angle_bounds=None, l_min=None, record=None):
+            deadline=None, chart='vertex', s=0.0, angle_bounds=None, l_min=None, record=None,
+            on_row=None):
     """One start. A start that cannot be SOLVED AT ALL is redrawn rather than lost.
 
     Measured over the 18-cell grid: **all nine crashed runs died at the start shape**, before a
@@ -194,7 +195,7 @@ def run_one(N, k, i, max_iter, seed0, delta0, n_eigs=None, convex=False, max_red
     try:
         if mirror:
             return run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec, ckpt,
-                              deadline, recorder=rec)
+                              deadline, recorder=rec, on_row=on_row)
         return _run_one(N, k, i, max_iter, seed0, delta0, n_eigs, convex, max_redraws, prec,
                         backend, spec, seed, ckpt, deadline, chart, s, angle_bounds, l_min, rec)
     finally:
@@ -336,7 +337,7 @@ def _resume(ckpt, ev, p0, delta0, max_iter):
 
 
 def run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec, ckpt=None,
-               deadline=None, recorder=None):
+               deadline=None, recorder=None, on_row=None):
     """One start in `MirrorPolygon` (or `FourierMirrorPolygon`, when the spec's chart is
     'fourier'), then the test of whether its optimum is a maximum among ALL
     N-gons: `certify.antisymmetric_hessian` along the symmetry-breaking directions, evaluated by
@@ -347,6 +348,15 @@ def run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec, ckp
     `x` is the optimum in `VertexPolygon` parameters (`param_vector`), with the symmetric
     parameters in `x_mirror`, the family's `axis`, the seed's own `seed_defect` (how far from
     symmetric it was) and the probe in `antisym`.
+
+    THE ROW IS WRITTEN TWICE when `on_row` is given: once, through `on_row`, the moment the
+    optimization ends, with `antisym.pending`, and again, returned, once the probe is done. A
+    ledger keeps the last row per start (`ledger.read_rows`), so the second replaces the first,
+    and a job killed during the probe still has its optimum in the ledger. Measured on F2 at lock-3
+    (2026-11-25): the probe is 1 + (N - 2)(N - 1) cold full-polygon solves, 39 h at N=13 and
+    146 h at N=15, it wrote nothing while it ran, and 15 finished optimizations sat in it with no
+    ledger row -- some killed by the 7-day limit and resubmitted, which re-ran the optimizer from
+    a stale checkpoint and then the probe again. The probe also stops at `deadline` now.
     """
     if spec is not None and spec.chart == 'fourier':
         fam, q0, defect = FourierMirrorPolygon.from_vertices(seed, PERIM, s=spec.s)
@@ -381,6 +391,10 @@ def run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec, ckp
     if row['chart'] == 'fourier':
         row['s'] = float(fam.s)
 
+    if on_row is not None:
+        on_row(dict(row, antisym=dict(pending=True,
+                                      verdict='not run yet: row written before the probe')))
+
     # THE PROBE. One anchor for every perturbed polygon -- the corner furthest from flat, as
     # `gauge_vector` asks -- so the labelling, and with it the full evaluator's frozen plan, is
     # the same at every probe point.
@@ -395,9 +409,10 @@ def run_mirror(N, k, i, seed, max_iter, delta0, n_eigs, prec, backend, spec, ckp
 
     t1 = time.perf_counter()
     try:
-        pr = antisymmetric_hessian(F, v, fam.antisymmetric_basis(res.x))
-        row['antisym'] = dict(F_full=pr['F0'], ts=pr['ts'], worst=pr['worst'],
-                              verdict=pr['verdict'], n_done=pr['n_done'], n_probes=pr['n_probes'],
+        pr = antisymmetric_hessian(F, v, fam.antisymmetric_basis(res.x), deadline=deadline)
+        row['antisym'] = dict(F_full=(pr['F0'] if np.isfinite(pr['F0']) else None), ts=pr['ts'],
+                              worst=pr['worst'], verdict=pr['verdict'], n_done=pr['n_done'],
+                              n_probes=pr['n_probes'], out_of_time=pr['out_of_time'],
                               hess_eigs=_clean_list(pr['hess_eigs']),
                               diag=_clean_list([np.diag(D) for D in pr['D']]),
                               scaling=_clean_list(pr['scaling']),
@@ -601,11 +616,17 @@ def _run_cell(args, spec=None):
         # tail, prints as FAILED, and is counted in the summary. A bare `except: continue` here
         # would turn "six starts crashed" into "six starts agreed", which is the same class of
         # mistake as the `_degeneracy_move` exception that hid an IndexError through three runs.
+        def early(row, i=i):
+            # A MIRROR RUN'S OPTIMUM, BEFORE ITS PROBE (`run_mirror`): in the ledger, and its
+            # checkpoint gone, so a job killed during the probe is a finished start, not a resubmit.
+            ledger.write_row(path, row)
+            checkpoint(i).clear()
+            print(f'  start {i}: optimum written; probing', flush=True)
         try:
             row = run_one(args.N, args.k, i, args.max_iter, args.seed0, args.delta0,
                           args.n_eigs, convex=args.convex, prec=prec, backend=backend,
                           spec=spec, ckpt=checkpoint(i), deadline=deadline,
-                          record=record_path(i),
+                          record=record_path(i), on_row=early,
                           **dict(extra, seed=seeds[i] if seeds else None))
         except Exception as exc:
             row = dict(N=args.N, k=args.k, start=i, convex=bool(args.convex), ok=False,

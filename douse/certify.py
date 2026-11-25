@@ -37,6 +37,7 @@ Measured for N = 4, 5, 6: the ratio falls along every null direction sampled, qu
 (t = 0.02 gives ~-3e-04, t = 0.05 gives ~-2e-03, the expected factor of 6.25). Consistent with
 the regular N-gon being a local maximizer; not a proof of it.
 """
+import time
 import warnings
 
 import numpy as np
@@ -167,7 +168,7 @@ def second_order_probe(evaluate_ratio, p, null_basis, h=(0.02, 0.05), n_dirs=Non
                          'refuted: the ratio increases along a null direction'))
 
 
-def antisymmetric_hessian(F, vertices, basis, ts=(0.01, 0.03)):
+def antisymmetric_hessian(F, vertices, basis, ts=(0.01, 0.03), deadline=None):
     """Is a mirror-symmetric optimum a maximum among ALL polygons, not only symmetric ones?
 
     `F(vertices) -> float` is the objective on vertex arrays (complex); `basis` is
@@ -184,6 +185,12 @@ def antisymmetric_hessian(F, vertices, basis, ts=(0.01, 0.03)):
     kink). Either way a maximum needs every `D <= 0`; one positive value refutes it. Like
     `second_order_probe`, this is evidence from finitely many steps, not a certificate.
 
+    `deadline` (a `time.time()` value) STOPS THE PROBE, not the run: no new evaluation starts after
+    it, the probes not reached stay `nan`, and `out_of_time` says so. Measured on F2 (lock-3): at
+    N=15 one probe of 1 + r(r + 1) = 183 cold full-polygon solves took 146 h, longer than a 7-day
+    Slurm limit leaves after the optimization, and a probe killed by Slurm took the run's ledger
+    row with it.
+
     Returns `dict(F0, ts, D (len(ts), r, r) of the sampled curvatures [D(e_i) on the diagonal,
     D(e_i + e_j)/2 off it], hess_eigs (len(ts), r) of the implied quadratic form,
     worst (max D), scaling (D(t_0)/D(t_1) per basis direction), verdict)`.
@@ -192,13 +199,19 @@ def antisymmetric_hessian(F, vertices, basis, ts=(0.01, 0.03)):
     n = len(v)
     B = np.asarray(basis, dtype=float)
     r = B.shape[1]
-    F0 = float(F(v))
+    def late():
+        return deadline is not None and time.time() > deadline
+    out_of_time = late()
+    F0 = np.nan if out_of_time else float(F(v))
     Ds, eigs, worst = [], [], -np.inf
     n_done, n_probes = 0, 0
     for t in ts:
         D = np.full((r, r), np.nan)
         for i in range(r):
             for j in range(i, r):
+                if out_of_time or late():
+                    out_of_time = True
+                    continue
                 d = B[:, i] + (B[:, j] if j != i else 0.0)
                 dv = d[:n] + 1j*d[n:]
                 try:
@@ -219,10 +232,13 @@ def antisymmetric_hessian(F, vertices, basis, ts=(0.01, 0.03)):
     ok = np.isfinite(worst)
     # A probe that refused says nothing, so a "local maximum" needs most of them to have answered.
     enough = n_done >= 0.75*n_probes
+    served = 'were served before the deadline' if out_of_time else 'were served'
     return dict(F0=F0, ts=list(ts), D=Ds, hess_eigs=eigs, worst=float(worst) if ok else None,
-                scaling=scaling, n_done=n_done, n_probes=n_probes,
-                verdict=('no evaluations' if not ok else
+                scaling=scaling, n_done=n_done, n_probes=n_probes, out_of_time=bool(out_of_time),
+                verdict=(('no evaluations: out of time' if out_of_time else 'no evaluations')
+                         if not ok else
                          'refuted: F increases along a symmetry-breaking direction' if worst > 0 else
-                         f'inconclusive: only {n_done} of {n_probes} probes were served' if not enough else
+                         f'inconclusive: only {n_done} of {n_probes} probes {served}'
+                         if not enough else
                          'consistent with a local maximum among all polygons' if worst <= 0 else
                          'refuted: F increases along a symmetry-breaking direction'))
