@@ -71,12 +71,14 @@ def finished(spec, path):
 
 
 def refused(spec, path):
-    """`{start: error}` for starts of this spec whose LAST row is a refusal stop (no ok row)."""
+    """`{start: error}` for starts of this spec whose LAST row is a refusal stop (no ok row).
+    A row without `spec_sha` counts as this spec's: `ratio_multistart`'s outer handler writes a
+    refusal as a bare crash row (N, k, start, ok, error, trace), in this spec's own ledger."""
     if not os.path.exists(path):
         return {}
     last = {}
     for r in ledger.read_rows(path, dedupe=False):
-        if r.get('start') is not None and r.get('spec_sha') == spec.sha:
+        if r.get('start') is not None and r.get('spec_sha') in (spec.sha, None):
             last[r['start']] = r
     return {i: r.get('error', '') for i, r in last.items()
             if not r.get('ok', True) and str(r.get('error', '')).startswith(REFUSALS)}

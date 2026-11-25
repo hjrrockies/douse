@@ -91,10 +91,12 @@ def test_a_refusal_stop_is_reported_not_resubmitted(spec, tmp_path, capsys):
     cell.mkdir(parents=True)
     bad = lambda i, err: json.dumps(dict(start=i, ok=False, spec_sha=spec.sha, error=err)) + '\n'
     refusal = 'UnresolvedSpectrum: chladni: planner: no rung met prec=1e-09'
-    (cell / 'task_0.jsonl').write_text(bad(0, refusal))                     # refused: reported
+    # as ratio_multistart's outer handler writes it: no spec_sha
+    (cell / 'task_0.jsonl').write_text(json.dumps(dict(N=3, k=1, start=0, ok=False, error=refusal)) + '\n')
     (cell / 'task_1.jsonl').write_text(bad(1, 'SolverRefusal: no spectrum') + bad(1, refusal))
     (cell / 'task_2.jsonl').write_text(bad(2, refusal) + bad(2, 'MemoryError: '))   # last is a crash
     (cell / 'task_3.jsonl').write_text(bad(3, 'ValueError: a bug'))         # a crash: retried
+    (cell / 'task_4.jsonl').write_text(json.dumps(dict(start=4, ok=False, spec_sha='other', error=refusal)) + '\n')
     stops = []
     tasks = [t for c, _, t in rs.plan(spec, str(run), stops=stops) if c == 'N3_k1'][0]
     assert tasks == [2, 3, 4, 5, 6, 7]
